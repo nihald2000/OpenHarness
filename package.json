@@ -1,0 +1,15 @@
+{
+  "name": "openharness",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun --cwd apps/web run dev",
+    "build": "bun --cwd apps/web run build",
+    "start": "bun --cwd apps/web run start",
+    "typecheck": "bun --cwd apps/web run typecheck"
+  }
+}
