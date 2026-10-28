@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { InProcessCancelBus, InProcessEventBus, InProcessJobQueue, InProcessLockService, InProcessQuotaService, InProcessRateLimiter, JsonDocumentStore, type EventEnvelope, type JobDocument } from "../../core/src/infra/index.ts";
+import { InProcessCancelBus, InProcessEventBus, InProcessJobQueue, InProcessLockService, InProcessQuotaService, InProcessRateLimiter, JsonDocumentStore, LocalStateStore, type EventEnvelope, type JobDocument, type LocalStateDocument } from "../../core/src/infra/index.ts";
 
 type TestEvent = { type: string; value?: string };
 type TestJob = JobDocument<{ text: string }, { step: number }, { ok: boolean }>;
+type TestSession = { id: string; updatedAt: number; ownerId?: string; parentId?: string };
+type TestMessage = { info: { id: string }; parts: Array<{ type: string; callId?: string; text?: string }> };
+type TestState = LocalStateDocument<TestSession, TestMessage, TestEvent, { permission: string }>;
 
 function job(id: string, now: number, overrides: Partial<TestJob> = {}): Omit<TestJob, "status" | "attempt" | "fence"> {
   return {
@@ -200,5 +203,48 @@ describe("local quota service adapter", () => {
     await quotas.releaseRunSlot("tenant-a", "user-3");
     await quotas.releaseRunSlot("tenant-a", "user-2");
     expect(await quotas.acquireRunSlot("tenant-a", "user-3", { tenant: 2, user: 1 })).toBe(true);
+  });
+});
+
+describe("local tenant-scoped state store adapter", () => {
+  test("allocates gap-free per-session event sequences under concurrent writes and isolates tenants", async () => {
+    const directory = await mkdtemp(join(process.cwd(), ".infrastructure-test-"));
+    try {
+      const persistence = new JsonDocumentStore<TestState>(join(directory, "state.json"), { sessions: {}, messages: {}, events: {}, nextSeq: {}, rules: [] });
+      const state = new LocalStateStore<TestSession, TestMessage, TestMessage["parts"][number], TestEvent, { permission: string }>(persistence, `${directory}:state`);
+      await state.putSession("tenant-a", { id: "s1", updatedAt: 10, ownerId: "u1" });
+      await state.putSession("tenant-a", { id: "s2", updatedAt: 20, ownerId: "u2" });
+      await expect(state.putSession("tenant-b", { id: "s1", updatedAt: 30 })).rejects.toThrow("another tenant");
+      await Promise.all(Array.from({ length: 50 }, (_, index) => state.appendEvents("tenant-a", "s1", [{ type: "delta", text: String(index) }])));
+      expect(await state.lastSeq("tenant-a", "s1")).toBe(50);
+      expect((await state.listEvents("tenant-a", "s1", 0, 100)).map((event) => event.seq)).toEqual(Array.from({ length: 50 }, (_, index) => index + 1));
+      expect(await state.getSession("tenant-b", "s1")).toBeUndefined();
+      expect(await state.getMessages("tenant-b", "s1")).toEqual([]);
+      expect(await state.listSessions({ tenantId: "tenant-a", ownerId: "u1", limit: 10 })).toMatchObject([{ id: "s1" }]);
+      const restored = new LocalStateStore<TestSession, TestMessage, TestMessage["parts"][number], TestEvent, { permission: string }>(persistence, `${directory}:restored`);
+      expect(await restored.lastSeq("tenant-a", "s1")).toBe(50);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("transactions commit together or roll back on failure", async () => {
+    const directory = await mkdtemp(join(process.cwd(), ".infrastructure-test-"));
+    try {
+      const persistence = new JsonDocumentStore<TestState>(join(directory, "state.json"), { sessions: {}, messages: {}, events: {}, nextSeq: {}, rules: [] });
+      const state = new LocalStateStore<TestSession, TestMessage, TestMessage["parts"][number], TestEvent, { permission: string }>(persistence, `${directory}:state`);
+      await expect(state.tx(async (tx) => {
+        await tx.putSession("tenant-a", { id: "rollback", updatedAt: 1 });
+        throw new Error("abort transaction");
+      })).rejects.toThrow("abort transaction");
+      expect(await state.getSession("tenant-a", "rollback")).toBeUndefined();
+      await state.tx(async (tx) => {
+        await tx.putSession("tenant-a", { id: "committed", updatedAt: 2 });
+        await tx.appendEvents("tenant-a", "committed", [{ type: "created" }]);
+      });
+      expect(await state.lastSeq("tenant-a", "committed")).toBe(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

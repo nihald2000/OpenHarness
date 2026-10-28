@@ -9,6 +9,8 @@ The server typecheck script cannot find `tsc`; direct invocation reports missing
 - [x] Route run abort and admin stop signals through the local `CancelBus` adapter.
 - [x] Serialize local config, secret, plugin, and MCP read-modify-write operations through the process-local `LockService`.
 - [x] Add local token-bucket `RateLimiter` and per-user/per-tenant run-slot `QuotaService` adapters.
+- [x] Add a tenant-scoped JSON-backed `StateStore` adapter with atomic transactions, per-session event sequences, pagination, and tenant-filtered reads.
+- [ ] Migrate the API's legacy mutable `Store` and global SSE event sequence onto `StateStore` without changing local SSE IDs or persistence compatibility.
 - [ ] Connect configurable rate limits, tenant quotas, and retry-after responses to API admission control.
 - [x] Implement the local in-memory job queue state machine with exclusive claims, lease recovery, fencing, waiting/resume, cancellation, and tenant-scoped idempotency.
 - [x] Route prompt acceptance through local enqueue/claim, renew its lease, checkpoint run start, and finalize/cancel the job while retaining the current API response and active-run behavior.
