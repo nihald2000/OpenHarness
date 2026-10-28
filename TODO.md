@@ -18,7 +18,8 @@ The server typecheck script cannot find `tsc`; direct invocation reports missing
 - [ ] Complete local adapters for state, jobs, cancellation, locks, rate limits, quotas, secrets, configuration, and runtime execution; remove direct infrastructure access from the server and runner.
 - [x] Add PostgreSQL schema migrations and adapters for tenant-scoped JSON state, per-session transactional event sequencing/outbox, durable job leases/fences, Redis event fan-out, and cancellation signals; add `oh migrate`.
 - [ ] Wire distributed adapters into server API/SSE and add periodic replay-gap catch-up, outbox scheduling, and deployable distributed mode selection.
-- [ ] Add a worker process and resumable run step machine; the durable queue lifecycle adapter exists, but current agent runs still execute in the API process and approval waiters remain in-memory.
+- [x] Add a reusable worker lifecycle engine for claim, batched lease heartbeat, cancellation, graceful drain, and fenced requeue.
+- [ ] Expose a worker process with a concrete run handler and resumable run step machine; current agent runs still execute in the API process and approval waiters remain in-memory.
 - [ ] Add durable approvals, restart replay rules for in-flight tool calls, lease reaper/leader schedules, and provider retry wait jobs.
 - [ ] Add OIDC identity, tenant-scoped authorization, rate limits/quotas, remote sandboxes, config/secret/content repositories, and operations instrumentation/deployment.
 - [ ] Pass local compatibility checks plus distributed contract, integration, chaos, and load acceptance criteria from `docs/SCALING.md`.

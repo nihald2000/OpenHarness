@@ -107,6 +107,14 @@ export class InProcessJobQueue<Job extends JobDocument = JobDocument> implements
     this.releaseLease(job);
   }
 
+  async requeue(jobId: string, workerId: string, fence: number, notBefore = this.clock()): Promise<void> {
+    const job = this.requireLease(jobId, workerId, fence);
+    job.status = "queued";
+    job.waitReason = undefined;
+    job.notBefore = notBefore;
+    this.releaseLease(job);
+  }
+
   async requestCancel(jobId: string): Promise<boolean> {
     const job = this.jobs.get(jobId);
     if (!job || !this.active(job)) return false;

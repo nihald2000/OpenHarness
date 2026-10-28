@@ -75,6 +75,7 @@ export interface JobQueue<Job extends JobDocument = JobDocument> {
   complete(jobId: string, workerId: string, fence: number, result?: Job["result"]): Promise<void>;
   fail(jobId: string, workerId: string, fence: number, error: string): Promise<void>;
   wait(jobId: string, workerId: string, fence: number, reason: JobWaitReason, wakeAt?: number): Promise<void>;
+  requeue(jobId: string, workerId: string, fence: number, notBefore?: number): Promise<void>;
   requestCancel(jobId: string): Promise<boolean>;
   resume(jobId: string, input?: Partial<Job["input"]>): Promise<boolean>;
 }

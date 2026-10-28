@@ -64,6 +64,13 @@ export class PostgresJobQueue<Job extends JobDocument = JobDocument> implements 
       WHERE id=${jobId} AND lease_owner=${workerId} AND fence=${fence} AND status IN ('leased','running') AND lease_until>${now} RETURNING id`;
     if (!rows.length) throw lostLease();
   }
+  async requeue(jobId: string, workerId: string, fence: number, notBefore = Date.now()) {
+    const now = Date.now();
+    const rows = await this.sql`UPDATE jobs SET status='queued',wait_reason=NULL,not_before=${notBefore},lease_owner=NULL,lease_until=NULL,updated_at=${now}
+      WHERE id=${jobId} AND lease_owner=${workerId} AND fence=${fence} AND status IN ('leased','running') AND lease_until>${now} RETURNING id`;
+    if (!rows.length) throw lostLease();
+    await this.sql`SELECT pg_notify('jobs_queued', ${jobId})`;
+  }
   async requestCancel(jobId: string) {
     const now = Date.now();
     const rows = await this.sql`UPDATE jobs SET cancel_requested_at=${now},status=CASE WHEN status IN ('queued','waiting') THEN 'cancelled' ELSE status END,wait_reason=CASE WHEN status IN ('queued','waiting') THEN NULL ELSE wait_reason END,lease_owner=CASE WHEN status IN ('queued','waiting') THEN NULL ELSE lease_owner END,lease_until=CASE WHEN status IN ('queued','waiting') THEN NULL ELSE lease_until END,updated_at=${now}
