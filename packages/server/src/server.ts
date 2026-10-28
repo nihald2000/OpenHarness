@@ -7,7 +7,7 @@ import { attachPlugin, deleteMcpServer, detachPlugin, installMcpPreset, listMcpP
 import { McpClientManager } from "./mcp-client.ts";
 import { discoverAgents, discoverContext, discoverSkillsAndCommands, mergeConfiguredAgent, resolveSlashCommand, type AgentDefinition } from "./agent-context.ts";
 import { logError } from "./logger.ts";
-import { InProcessCancelBus, InProcessEventBus, JsonDocumentStore, type EventEnvelope } from "../../core/src/infra/index.ts";
+import { InProcessCancelBus, InProcessEventBus, InProcessJobQueue, JsonDocumentStore, localLockService, type EventEnvelope, type JobDocument } from "../../core/src/infra/index.ts";
 
 type RunStatus = "idle" | "queued" | "running" | "awaiting_permission" | "verifying" | "completed" | "failed" | "cancelled";
 type Part = { type: "text"; text: string } | { type: "skill"; name: string; reason: "trigger" } | { type: "verify"; name: string; command: string; passed: boolean; exitCode: number; output?: string; iteration: number; maxIterations: number } | { type: "step"; usage?: { input: number; output: number }; cost?: number } | { type: "compaction"; summary: string; reason: string; compactedMessages: number; tokensBefore?: number; tokensAfter?: number; keptMessages?: number; requirements?: string[]; decisions?: string[]; openQuestions?: string[] } | { type: "tool"; tool: string; callId: string; state: "pending" | "running" | "completed" | "error" | "denied"; input: unknown; output?: unknown; error?: string; title?: string };
@@ -124,7 +124,10 @@ export function createServer(options: { hostname?: string; port?: number } = {})
   let writes = Promise.resolve();
   const eventBus = new InProcessEventBus<Record<string, unknown>>();
   const cancelBus = new InProcessCancelBus();
+  const localJobQueue = new InProcessJobQueue<JobDocument>();
   const activeRuns = new Map<string, AbortController>();
+  const activeRunJobs = new Map<string, { jobId: string; workerId: string; fence: number }>();
+  const reservedRunSlots = new Set<string>();
   const permissionWaiters = new Map<string, { resolve(reply: "once" | "always" | "reject"): void; timer: ReturnType<typeof setTimeout> }>();
 
   const persist = () => {
@@ -171,6 +174,8 @@ export function createServer(options: { hostname?: string; port?: number } = {})
   const stopActiveRuns = async () => {
     for (const [sessionId, controller] of activeRuns) {
       await cancelBus.request(sessionId);
+      const job = activeRunJobs.get(sessionId);
+      if (job) await localJobQueue.requestCancel(job.jobId);
       controller.abort();
       const session = store.sessions[sessionId];
       if (session) { session.status = "cancelled"; saveSession(session); }
@@ -483,6 +488,38 @@ export function createServer(options: { hostname?: string; port?: number } = {})
               await persist();
             }
           }
+          const workerId = `local:${process.pid}:${id()}`;
+          let runJob: JobDocument | undefined;
+          try {
+            runJob = await localLockService.withLock("openharness:local-job-dispatch", 30_000, async () => {
+              if (activeRuns.size + reservedRunSlots.size >= maxConcurrentRuns) throw new Error("server run concurrency limit reached");
+              reservedRunSlots.add(sessionId);
+              try {
+                const created = await localJobQueue.enqueue({
+                  id: id(), tenantId: "local", sessionId, rootSessionId: sessionId, kind: "run", priority: 100,
+                  maxAttempts: 5, input: { text: promptText, agent: session.agent, model: session.model, runtime: session.runtime, fix: body.fix },
+                  notBefore: now(), createdAt: now(), updatedAt: now(),
+                });
+                const claimed = await localJobQueue.claim(workerId, ["run"], 1);
+                const activeJob = claimed.find((job) => job.id === created.id);
+                if (!activeJob) {
+                  await localJobQueue.requestCancel(created.id);
+                  throw new Error("local job queue could not claim the submitted run");
+                }
+                return activeJob;
+              } catch (error) {
+                reservedRunSlots.delete(sessionId);
+                throw error;
+              }
+            });
+          } catch (error) {
+            const message = (error as Error).message || "could not enqueue run";
+            if (message.includes("concurrency limit")) return json({ error: message }, 429);
+            return message.includes("already has an active job")
+              ? json({ error: "session already has an active run" }, 409)
+              : json({ error: message }, 503);
+          }
+          if (!runJob) return json({ error: "local job queue did not return a run" }, 503);
           const userMessage: Message = { info: { id: id(), role: "user" }, createdAt: now(), parts: [{ type: "text", text: promptText }] };
           const assistantMessage: Message = { info: { id: id(), role: "assistant", agent: session.agent, model: session.model }, createdAt: now(), parts: [] };
           store.messages[sessionId] = [...allMessages(sessionId), userMessage, assistantMessage];
@@ -491,6 +528,18 @@ export function createServer(options: { hostname?: string; port?: number } = {})
           const abortController = new AbortController();
           const unsubscribeCancel = cancelBus.onCancel(sessionId, () => abortController.abort());
           activeRuns.set(sessionId, abortController);
+          activeRunJobs.set(sessionId, { jobId: runJob.id, workerId, fence: runJob.fence });
+          await localJobQueue.checkpoint(runJob.id, workerId, runJob.fence, { phase: "agent", step: 0 });
+          const jobHeartbeat = setInterval(() => {
+            void localJobQueue.heartbeat([runJob!.id], workerId).then(({ lost }) => {
+              if (lost.includes(runJob!.id)) {
+                logError("job.lease_lost", new Error("local run lease was lost"), { sessionId, jobId: runJob!.id });
+                abortController.abort();
+              }
+            }).catch((error) => logError("job.heartbeat_failed", error, { sessionId, jobId: runJob!.id }));
+          }, 15_000);
+          jobHeartbeat.unref?.();
+          let finalReply = "";
           const runTimeout = setTimeout(() => {
             if (!(["running", "awaiting_permission", "verifying"] as RunStatus[]).includes(store.sessions[sessionId]?.status ?? "idle")) return;
             session.status = "failed";
@@ -827,6 +876,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
             const stepPart: Extract<Part, { type: "step" }> = { type: "step", usage: assistantMessage.info.usage, ...(assistantMessage.info.cost !== undefined ? { cost: assistantMessage.info.cost } : {}) };
             assistantMessage.parts.push(stepPart);
             publish({ type: "part.updated", sessionId, messageId: assistantMessage.info.id, part: stepPart });
+            finalReply = reply;
             session.status = "completed";
             if (session.title === "New chat") session.title = promptText.trim().slice(0, 60);
             publish({ type: "message.updated", sessionId, message: assistantMessage });
@@ -840,14 +890,27 @@ export function createServer(options: { hostname?: string; port?: number } = {})
             logError("run.failed", error, { sessionId });
           }).finally(() => {
             clearTimeout(runTimeout);
+            clearInterval(jobHeartbeat);
             unsubscribeCancel();
             activeRuns.delete(sessionId);
+            reservedRunSlots.delete(sessionId);
+            const activeJob = activeRunJobs.get(sessionId);
+            activeRunJobs.delete(sessionId);
+            if (activeJob) {
+              const status = store.sessions[sessionId]?.status;
+              const finish = status === "failed"
+                ? localJobQueue.fail(activeJob.jobId, activeJob.workerId, activeJob.fence, session.error ?? "run failed")
+                : localJobQueue.complete(activeJob.jobId, activeJob.workerId, activeJob.fence, status === "completed" ? { reply: finalReply } : undefined);
+              void finish.catch((error) => logError("job.finish_failed", error, { sessionId, jobId: activeJob.jobId }));
+            }
           });
           await persist();
           return json({ messageId: userMessage.info.id }, 202);
         }
         if (action === "abort" && method === "POST") {
           session.status = "cancelled";
+          const job = activeRunJobs.get(sessionId);
+          if (job) await localJobQueue.requestCancel(job.jobId);
           await cancelBus.request(sessionId);
           activeRuns.get(sessionId)?.abort();
           for (const [requestId, request] of Object.entries(store.permissions)) {

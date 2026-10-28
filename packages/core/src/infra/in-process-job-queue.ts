@@ -87,7 +87,7 @@ export class InProcessJobQueue<Job extends JobDocument = JobDocument> implements
 
   async complete(jobId: string, workerId: string, fence: number, result?: Job["result"]): Promise<void> {
     const job = this.requireLease(jobId, workerId, fence);
-    job.status = "succeeded";
+    job.status = job.cancelRequestedAt === undefined ? "succeeded" : "cancelled";
     job.result = structuredClone(result) as Job["result"];
     this.releaseLease(job);
   }

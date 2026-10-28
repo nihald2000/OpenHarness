@@ -167,5 +167,7 @@ describe("local job queue adapter", () => {
     now++;
     expect(await queue.requestCancel(running!.id)).toBe(true);
     expect(queue.get(running!.id)).toMatchObject({ status: "leased", cancelRequestedAt: now });
+    await queue.complete(running!.id, "worker", running!.fence);
+    expect(queue.get(running!.id)?.status).toBe("cancelled");
   });
 });
