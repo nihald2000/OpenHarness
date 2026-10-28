@@ -22,6 +22,7 @@ The server typecheck script cannot find `tsc`; direct invocation reports missing
 - [x] Add Postgres advisory-lock leadership and a durable job reaper for expired leases and due retry/quota waits.
 - [x] Add tenant pause controls and a fair Postgres claim order that interleaves queued work across tenants.
 - [x] Add a session-scoped SSE replay gateway that subscribes before replay, deduplicates event sequences, and polls durable state for missed Redis publishes.
+- [x] Add a leader-elected Postgres outbox pump that retries unpublished events and relays committed envelopes to Redis.
 - [ ] Expose a worker process with a concrete run handler and resumable run step machine; current agent runs still execute in the API process and approval waiters remain in-memory.
 - [ ] Add durable approvals, restart replay rules for in-flight tool calls, lease reaper/leader schedules, and provider retry wait jobs.
 - [ ] Add OIDC identity, tenant-scoped authorization, rate limits/quotas, remote sandboxes, config/secret/content repositories, and operations instrumentation/deployment.

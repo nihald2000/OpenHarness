@@ -13,6 +13,7 @@ export * from "./postgres-state-store.ts";
 export * from "./postgres-job-queue.ts";
 export * from "./postgres-migrations.ts";
 export * from "./postgres-outbox.ts";
+export * from "./postgres-outbox-pump.ts";
 export * from "./postgres-lock-service.ts";
 export * from "./postgres-job-reaper.ts";
 export * from "./redis-event-bus.ts";
