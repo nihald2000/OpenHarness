@@ -34,7 +34,7 @@ Tracks the consolidated requirements in `prompt.md`. Items are checked only when
 - [x] Compact older context automatically at the configured token threshold; preserve recent messages and active tool calls and summarize recent requirements, decisions, and verification/error evidence.
 - [x] Persist extracted user requirements, assistant decisions, and outstanding question sentences as structured fields in compaction records; preserve the readable summary and keep extraction bounded.
 - [ ] Implement general `run_code` with typed tool bindings and isolated execution; current Modal tool is Python-only and does not provide typed bindings.
-- [ ] Implement configured verify/fix loops with bounded retries and observable run status; current verifier is a fixed set of approval-gated checks.
+- [ ] Finish configured verify/fix loops and focused coverage. Prompt `fix.commands` and `verify.auto` now guide the agent through the allowlisted checks, with bounded retries and `fix.status` events; arbitrary configured commands and integration coverage remain outstanding.
 - [ ] Implement a first-party browser plugin and general trusted plugin manifests/contributions with lifecycle health and rollback; current browser support is a Playwright MCP preset and plugins are a small built-in allowlist.
 - [x] Document each implemented HTTP route and auth rule.
 - [x] Complete SDK shapes for reasoning/step parts, structured compaction fields, verification lifecycle events, runtime reloads, and permission replies; retain the run-status/fix-status variants for their public contract.

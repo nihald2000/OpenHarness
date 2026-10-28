@@ -30,7 +30,7 @@ The Bun server defaults to `http://127.0.0.1:4096`. JSON routes return `{ "error
 | GET, POST | `/v1/sessions` | List sessions or create one. Creation accepts optional `agent`, `model`, and `runtime`. |
 | GET, PATCH, DELETE | `/v1/sessions/:id` | Read, update title/agent/model/runtime, or delete a session. |
 | GET | `/v1/sessions/:id/messages` | Read the message transcript and latest event sequence. |
-| POST | `/v1/sessions/:id/prompt` | Start a prompt with `{ "text": "..." }`; returns HTTP 202 with the user `messageId`. |
+| POST | `/v1/sessions/:id/prompt` | Start a prompt with `{ "text": "...", "fix": { "commands": ["typecheck"] } }`; `fix` is optional and accepts up to four fixed verification names (or matching configured command strings). Returns HTTP 202 with the user `messageId`. |
 | POST | `/v1/sessions/:id/abort` | Abort the active run. |
 | POST | `/v1/sessions/:id/compact` | Summarize older messages and retain recent messages and active tool calls. |
 | GET | `/v1/sessions/:id/context` | Return an approximate context-use estimate. |
