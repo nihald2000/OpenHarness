@@ -1,2 +1,4 @@
 export * from "./contracts.ts";
+export * from "./in-process-cancel-bus.ts";
 export * from "./in-process-event-bus.ts";
+export * from "./json-document-store.ts";

@@ -12,7 +12,7 @@ OpenHarness is currently a single-process, single-workspace service. This docume
 
 ## Adapter migration
 
-The shared contracts start in `packages/core/src/infra`. The local event bus is the first adapter and is now used by the API server for live event fan-out. Durable event history and sequence allocation remain in the current local store, so this change preserves local replay behavior. Other contracts define the intended seams for state, jobs, cancellation, locks, rate limits, quotas, secrets, configuration, and workspace execution; their production and local implementations are still pending. The server bundle and 19 server/SDK tests pass for this slice. The server typecheck script cannot find `tsc`; direct invocation is also blocked by missing Node/Bun type declarations and existing strict type errors. The eval suite was not run.
+The shared contracts start in `packages/core/src/infra`. The API now uses the local `InProcessEventBus` for live SSE fan-out, `JsonDocumentStore` for loading and atomically saving the legacy state document, and `InProcessCancelBus` for active-run cancellation. Durable event history and sequence allocation still live in the existing mutable local state object, so replay behavior is unchanged. Direct state access, jobs, locks, rate limits, quotas, secrets, configuration, and workspace execution still need full adapter implementations and migration. The server bundle and all 21 current server/SDK tests pass for this slice. The server typecheck script cannot find `tsc`; direct invocation is also blocked by missing Node/Bun type declarations and existing strict type errors. The eval suite was not run.
 
 ## Intended distributed topology
 

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { InProcessEventBus, type EventEnvelope } from "../../core/src/infra/index.ts";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { InProcessCancelBus, InProcessEventBus, JsonDocumentStore, type EventEnvelope } from "../../core/src/infra/index.ts";
 
 type TestEvent = { type: string; value?: string };
 
@@ -32,5 +34,40 @@ describe("local event bus adapter", () => {
     unsubscribe();
     await bus.publish(envelope("tenant-a", "s1", 2));
     expect(received).toEqual([1]);
+  });
+});
+
+describe("local JSON document store adapter", () => {
+  test("loads a cloned fallback and atomically round-trips documents", async () => {
+    const directory = await mkdtemp(join(process.cwd(), ".infrastructure-test-"));
+    try {
+      const file = join(directory, "state", "store.json");
+      const store = new JsonDocumentStore(file, { sessions: [] as string[] });
+      const fallback = await store.load();
+      fallback.sessions.push("mutated-copy");
+      expect(await store.load()).toEqual({ sessions: [] });
+
+      await store.save({ sessions: ["s1"] });
+      expect(await store.load()).toEqual({ sessions: ["s1"] });
+      await store.save({ sessions: ["s1", "s2"] });
+      expect(await store.load()).toEqual({ sessions: ["s1", "s2"] });
+      expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ sessions: ["s1", "s2"] });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("local cancellation bus adapter", () => {
+  test("routes cancellation by session and removes listeners", async () => {
+    const bus = new InProcessCancelBus();
+    const received: string[] = [];
+    const unsubscribe = bus.onCancel("s1", () => received.push("s1"));
+    bus.onCancel("s2", () => received.push("s2"));
+    await bus.request("s1");
+    unsubscribe();
+    await bus.request("s1");
+    await bus.request("s2");
+    expect(received).toEqual(["s1", "s2"]);
   });
 });

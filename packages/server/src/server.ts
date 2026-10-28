@@ -1,6 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { executeTool, getTool, listTools, TOOL_REGISTRY } from "./tools.ts";
 import { getProvider, type ChatMessage, type ProviderTool } from "./provider.ts";
 import { deleteSecret, getSettings, listConfiguredModels, listSecrets, runtimeProviderConfig, setSecret, updateSettings } from "./config-store.ts";
@@ -8,7 +7,7 @@ import { attachPlugin, deleteMcpServer, detachPlugin, installMcpPreset, listMcpP
 import { McpClientManager } from "./mcp-client.ts";
 import { discoverAgents, discoverContext, discoverSkillsAndCommands, mergeConfiguredAgent, resolveSlashCommand, type AgentDefinition } from "./agent-context.ts";
 import { logError } from "./logger.ts";
-import { InProcessEventBus, type EventEnvelope } from "../../core/src/infra/index.ts";
+import { InProcessCancelBus, InProcessEventBus, JsonDocumentStore, type EventEnvelope } from "../../core/src/infra/index.ts";
 
 type RunStatus = "idle" | "queued" | "running" | "awaiting_permission" | "verifying" | "completed" | "failed" | "cancelled";
 type Part = { type: "text"; text: string } | { type: "skill"; name: string; reason: "trigger" } | { type: "verify"; name: string; command: string; passed: boolean; exitCode: number; output?: string; iteration: number; maxIterations: number } | { type: "step"; usage?: { input: number; output: number }; cost?: number } | { type: "compaction"; summary: string; reason: string; compactedMessages: number; tokensBefore?: number; tokensAfter?: number; keptMessages?: number; requirements?: string[]; decisions?: string[]; openQuestions?: string[] } | { type: "tool"; tool: string; callId: string; state: "pending" | "running" | "completed" | "error" | "denied"; input: unknown; output?: unknown; error?: string; title?: string };
@@ -109,38 +108,31 @@ async function runSubagent(provider: ReturnType<typeof getProvider>, model: stri
   return output;
 }
 
-async function readStore(file: string): Promise<Store> {
-  try {
-    const value = JSON.parse(await readFile(file, "utf8")) as Partial<Store>;
-    return { ...EMPTY, ...value, sessions: value.sessions ?? {}, messages: value.messages ?? {}, permissions: value.permissions ?? {}, grants: value.grants ?? [], events: value.events ?? [], nextSeq: value.nextSeq ?? 1 };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(EMPTY);
-    throw error;
-  }
+function normalizeStore(value: unknown): Store {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("stored state must be a JSON object");
+  const stored = value as Partial<Store>;
+  return { ...EMPTY, ...stored, sessions: stored.sessions ?? {}, messages: stored.messages ?? {}, permissions: stored.permissions ?? {}, grants: stored.grants ?? [], events: stored.events ?? [], nextSeq: stored.nextSeq ?? 1 };
 }
 
 export function createServer(options: { hostname?: string; port?: number } = {}) {
   const dataDir = resolve(process.env.OPENHARNESS_DATA_DIR ?? ".openharness");
   const storeFile = resolve(dataDir, "store.json");
+  const localStateStore = new JsonDocumentStore<Store>(storeFile, EMPTY, normalizeStore);
   const publicToken = process.env.OPENHARNESS_SERVER_TOKEN;
   const adminToken = process.env.OPENHARNESS_ADMIN_TOKEN;
   let store = structuredClone(EMPTY);
   let writes = Promise.resolve();
   const eventBus = new InProcessEventBus<Record<string, unknown>>();
+  const cancelBus = new InProcessCancelBus();
   const activeRuns = new Map<string, AbortController>();
   const permissionWaiters = new Map<string, { resolve(reply: "once" | "always" | "reject"): void; timer: ReturnType<typeof setTimeout> }>();
 
   const persist = () => {
-    const snapshot = JSON.stringify(store);
-    writes = writes.catch(() => {}).then(async () => {
-      await mkdir(dirname(storeFile), { recursive: true });
-      const temporary = `${storeFile}.${process.pid}.tmp`;
-      await writeFile(temporary, snapshot, { mode: 0o600 });
-      await rename(temporary, storeFile);
-    });
+    const snapshot = structuredClone(store);
+    writes = writes.catch(() => {}).then(() => localStateStore.save(snapshot));
     return writes;
   };
-  const stateReady = readStore(storeFile).then(async (loaded) => {
+  const stateReady = localStateStore.load().then(async (loaded) => {
     store = loaded;
     let recovered = false;
     for (const session of Object.values(store.sessions)) {
@@ -178,6 +170,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
   const allMessages = (sessionId: string) => store.messages[sessionId] ?? [];
   const stopActiveRuns = async () => {
     for (const [sessionId, controller] of activeRuns) {
+      await cancelBus.request(sessionId);
       controller.abort();
       const session = store.sessions[sessionId];
       if (session) { session.status = "cancelled"; saveSession(session); }
@@ -496,6 +489,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
           publish({ type: "message.updated", sessionId, message: userMessage });
           publish({ type: "message.updated", sessionId, message: assistantMessage });
           const abortController = new AbortController();
+          const unsubscribeCancel = cancelBus.onCancel(sessionId, () => abortController.abort());
           activeRuns.set(sessionId, abortController);
           const runTimeout = setTimeout(() => {
             if (!(["running", "awaiting_permission", "verifying"] as RunStatus[]).includes(store.sessions[sessionId]?.status ?? "idle")) return;
@@ -846,6 +840,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
             logError("run.failed", error, { sessionId });
           }).finally(() => {
             clearTimeout(runTimeout);
+            unsubscribeCancel();
             activeRuns.delete(sessionId);
           });
           await persist();
@@ -853,6 +848,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
         }
         if (action === "abort" && method === "POST") {
           session.status = "cancelled";
+          await cancelBus.request(sessionId);
           activeRuns.get(sessionId)?.abort();
           for (const [requestId, request] of Object.entries(store.permissions)) {
             if (request.sessionId !== sessionId) continue;
