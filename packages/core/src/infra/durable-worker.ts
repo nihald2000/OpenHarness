@@ -1,4 +1,4 @@
-import type { CancelBus, JobDocument, JobQueue, JobWaitReason } from "./contracts.ts";
+import type { CancelBus, JobDocument, JobQueue, JobWaitReason, QuotaService } from "./contracts.ts";
 
 export type WorkerOutcome<Result = unknown> =
   | { status: "succeeded"; result?: Result }
@@ -15,6 +15,7 @@ export interface DurableWorkerOptions<Job extends JobDocument> {
   heartbeatMs?: number;
   pollMs?: number;
   drainMs?: number;
+  quota?: { service: QuotaService; limits(job: Job): { tenant?: number; user?: number } };
   handle(job: Job, context: { signal: AbortSignal; checkpoint(value: NonNullable<Job["checkpoint"]>): Promise<void> }): Promise<WorkerOutcome<Job["result"]>>;
   onError?(job: Job, error: unknown): void;
 }
@@ -110,7 +111,16 @@ export class DurableWorker<Job extends JobDocument = JobDocument> {
     const unsubscribe = this.options.cancelBus?.onCancel(job.sessionId, () => {
       void this.options.queue.requestCancel(job.id).finally(() => controller.abort(new Error("job cancelled")));
     });
+    let quotaAcquired = false;
     try {
+      if (this.options.quota) {
+        const limits = this.options.quota.limits(job);
+        quotaAcquired = await this.options.quota.service.acquireRunSlot(job.tenantId, String((job.input as any)?.userId ?? "unknown"), { ...limits, leaseId: job.id, leaseMs: this.leaseMs });
+        if (!quotaAcquired) {
+          await this.options.queue.wait(job.id, this.options.workerId, job.fence, "quota", Date.now() + this.pollMs);
+          return;
+        }
+      }
       const outcome = await this.options.handle(job, {
         signal: controller.signal,
         checkpoint: (value) => this.options.queue.checkpoint(job.id, this.options.workerId, job.fence, value),
@@ -131,7 +141,13 @@ export class DurableWorker<Job extends JobDocument = JobDocument> {
         catch (failError) { this.options.onError?.(job, failError); }
         this.options.onError?.(job, error);
       }
-    } finally { unsubscribe?.(); }
+    } finally {
+      unsubscribe?.();
+      if (quotaAcquired && this.options.quota) {
+        const userId = String((job.input as any)?.userId ?? "unknown");
+        await this.options.quota.service.releaseRunSlot(job.tenantId, userId, job.id).catch((error) => this.options.onError?.(job, error));
+      }
+    }
   }
 
   private async heartbeat() {
@@ -140,6 +156,15 @@ export class DurableWorker<Job extends JobDocument = JobDocument> {
     try {
       const { lost } = await this.options.queue.heartbeat(ids, this.options.workerId);
       for (const id of lost) this.active.get(id)?.controller.abort(new Error("job lease lost"));
+      if (this.options.quota) {
+        await Promise.all([...this.active.values()].map(async (entry) => {
+          const userId = String((entry.job.input as any)?.userId ?? "unknown");
+          const held = await this.options.quota!.service.acquireRunSlot(entry.job.tenantId, userId, {
+            ...this.options.quota!.limits(entry.job), leaseId: entry.job.id, leaseMs: this.leaseMs,
+          });
+          if (!held) entry.controller.abort(new Error("run quota lease lost"));
+        }));
+      }
     } catch (error) {
       // A transient heartbeat failure is bounded by the lease; retry on next loop.
       for (const entry of this.active.values()) this.options.onError?.(entry.job, error);

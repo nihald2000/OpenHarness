@@ -36,4 +36,4 @@ docker compose up --build
 
 See [deployment notes](docs/DEPLOYMENT.md), [API routes](docs/API.md), [configuration and environment](docs/CONFIGURATION.md), [environment template](.env.example), and [the sample config](openharness.example.json).
 
-The distributed scaling design and migration status are tracked in [Scaling architecture](docs/SCALING.md). The current server still runs only in local mode.
+The distributed scaling design and migration status are tracked in [Scaling architecture](docs/SCALING.md). OIDC session ownership checks and rate/quota adapters are available when configured; Postgres state and durable worker execution are still being integrated, so the API continues to use its local session/job runtime.

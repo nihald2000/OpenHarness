@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "oh": "./src/cli.ts" },
+  "bin": {
+    "oh": "./src/cli.ts"
+  },
   "scripts": {
     "start": "bun src/main.ts",
     "oh": "bun src/cli.ts",
@@ -11,5 +13,13 @@
     "test": "bun test",
     "build": "bun src/build.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "jose": "^6.2.13"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
   }
 }

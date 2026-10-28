@@ -85,6 +85,33 @@ export interface CancelBus {
   onCancel(sessionId: string, listener: () => void): () => void;
 }
 
+export type PermissionDecision = "once" | "always" | "reject";
+export interface PermissionRequestDocument {
+  id: string;
+  tenantId: string;
+  sessionId: string;
+  jobId: string;
+  messageId: string;
+  callId: string;
+  permission: string;
+  patterns: string[];
+  title: string;
+  metadata: Record<string, unknown>;
+  rules: unknown[];
+  status: "pending" | "allowed" | "rejected" | "expired";
+  reply?: PermissionDecision;
+  createdAt: number;
+  repliedAt?: number;
+}
+export interface PermissionStore {
+  create(request: PermissionRequestDocument): Promise<void>;
+  getPending(tenantId: string, requestId: string): Promise<PermissionRequestDocument | undefined>;
+  listPending(tenantId: string, sessionId?: string): Promise<PermissionRequestDocument[]>;
+  decide(tenantId: string, requestId: string, decision: PermissionDecision, repliedBy?: string): Promise<{ primary: PermissionRequestDocument; changed: PermissionRequestDocument[] } | undefined>;
+  rejectSession(tenantId: string, sessionId: string, reply: "reject"): Promise<PermissionRequestDocument[]>;
+  expireBefore(tenantId: string, cutoff: number): Promise<PermissionRequestDocument[]>;
+}
+
 export interface LockService {
   withLock<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T>;
   tryLeader(name: string, fn: () => Promise<void>): Promise<boolean>;
@@ -95,8 +122,8 @@ export interface RateLimiter {
 }
 
 export interface QuotaService {
-  acquireRunSlot(tenantId: string, userId: string, limits: { tenant?: number; user?: number }): Promise<boolean>;
-  releaseRunSlot(tenantId: string, userId: string): Promise<void>;
+  acquireRunSlot(tenantId: string, userId: string, limits: { tenant?: number; user?: number; leaseId?: string; leaseMs?: number }): Promise<boolean>;
+  releaseRunSlot(tenantId: string, userId: string, leaseId?: string): Promise<void>;
 }
 
 export interface SecretVault {

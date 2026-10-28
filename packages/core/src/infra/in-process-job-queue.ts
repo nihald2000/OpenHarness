@@ -149,6 +149,12 @@ export class InProcessJobQueue<Job extends JobDocument = JobDocument> implements
     return job ? structuredClone(job) : undefined;
   }
 
+  admissionStats(tenantId: string, now = this.clock()) {
+    const queued = [...this.jobs.values()].filter((job) => job.tenantId === tenantId && job.status === "queued");
+    const oldest = queued.reduce((value, job) => Math.min(value, job.createdAt), Number.POSITIVE_INFINITY);
+    return { queued: queued.length, oldestAgeMs: Number.isFinite(oldest) ? Math.max(0, now - oldest) : 0 };
+  }
+
   private requireLease(jobId: string, workerId: string, fence: number): Job {
     const job = this.jobs.get(jobId);
     if (!job || (job.status !== "leased" && job.status !== "running") || job.leaseOwner !== workerId || job.fence !== fence || (job.leaseUntil ?? 0) <= this.clock()) {

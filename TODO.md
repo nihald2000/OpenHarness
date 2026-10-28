@@ -1,6 +1,6 @@
 # OpenHarness backend completion checklist
 
-The server typecheck script cannot find `tsc`; direct invocation reports missing Node/Bun type declarations and strict typing errors. See `docs/SCALING.md` for the current scaling migration status.
+The server typecheck now runs with the server package's TypeScript, Bun, and Node development dependencies. See `docs/SCALING.md` for the current scaling migration status.
 
 ## Distributed scaling request
 
@@ -24,11 +24,16 @@ The server typecheck script cannot find `tsc`; direct invocation reports missing
 - [x] Add a session-scoped SSE replay gateway that subscribes before replay, deduplicates event sequences, and polls durable state for missed Redis publishes.
 - [x] Add a leader-elected Postgres outbox pump that retries unpublished events and relays committed envelopes to Redis.
 - [ ] Expose a worker process with a concrete run handler and resumable run step machine; current agent runs still execute in the API process and approval waiters remain in-memory.
-- [ ] Add durable approvals, restart replay rules for in-flight tool calls, lease reaper/leader schedules, and provider retry wait jobs.
-- [ ] Add OIDC identity, tenant-scoped authorization, rate limits/quotas, remote sandboxes, config/secret/content repositories, and operations instrumentation/deployment.
+- [x] Add a tenant-scoped Postgres permission store with atomic once/always/reject, reject cascades, saved rules, outbox events, approval-job resume, and TTL expiration primitives.
+- [ ] Wire durable permissions into the session runner/API, free worker slots while waiting, and add restart replay rules for in-flight tool calls and provider retry wait jobs.
+- [x] Add OIDC JWT verification/JWKS discovery, tenant/user provisioning, tenant owner/admin authorization for session routes and streams, and break-glass audit logging.
+- [ ] Forward end-user OIDC identity through the web proxy and complete authorization coverage for tenant-scoped config/permission resources.
+- [x] Add Redis token-bucket and per-run quota lease adapters; enforce API/prompt/admin rate limits, local/Redis run-slot quotas, prompt size, queue admission, and bounded SSE buffering.
+- [ ] Wire rate/quota/admission to durable distributed jobs, provider RPM/TPM, tenant monthly budget accounting, per-tenant queued-age admission, and distributed contract tests.
+- [ ] Add remote sandboxes, config/secret/content repositories, and operations instrumentation/deployment.
 - [ ] Pass local compatibility checks plus distributed contract, integration, chaos, and load acceptance criteria from `docs/SCALING.md`.
 
-Tracks the consolidated requirements in `prompt.md`. Items are checked only when implemented and verified. Adapter entrypoint bundling, server build, and current server/SDK tests pass; live Postgres/Redis integration is unavailable because Docker is not running in this environment.
+Tracks the consolidated requirements in `prompt.md`. Items are checked only when implemented and verified. Adapter entrypoint bundling, server build, server typecheck, and current server/SDK tests pass; live Postgres/Redis integration is unavailable because Docker is not running in this environment.
 
 ## Done in this pass
 

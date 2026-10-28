@@ -107,6 +107,12 @@ export class PostgresJobQueue<Job extends JobDocument = JobDocument> implements 
     return rows.map((row) => row.id);
   }
 
+  async admissionStats(tenantId: string) {
+    const rows = await this.sql<{ queued: string; oldest_created_at: string | null }[]>`SELECT count(*)::text AS queued,min(created_at)::text AS oldest_created_at FROM jobs WHERE tenant_id=${tenantId}::uuid AND status='queued'`;
+    const row = rows[0]!;
+    return { queued: Number(row.queued), oldestAgeMs: row.oldest_created_at === null ? 0 : Math.max(0, Date.now() - Number(row.oldest_created_at)) };
+  }
+
   private async fenced(jobId: string, workerId: string, fence: number, values: { checkpoint: ReturnType<Sql["json"]>; status: string }) {
     const now = Date.now();
     const rows = await this.sql`UPDATE jobs SET checkpoint=${values.checkpoint},status=${values.status},updated_at=${now}

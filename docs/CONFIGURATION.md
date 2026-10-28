@@ -13,6 +13,17 @@ Use `.env.example` as the environment variable template. The server reads JSON s
 | `OPENHARNESS_WORKSPACE` | Current directory | Workspace root for repository tools and context discovery. |
 | `OPENHARNESS_SERVER_TOKEN` | Unset | Optional bearer token required for `/v1/**`. |
 | `OPENHARNESS_ADMIN_TOKEN` | Unset | Separate token required for `/v1/admin/**`. Admin routes remain closed when it is unset. |
+| `DATABASE_URL` | Unset | Postgres connection for OIDC tenant/user provisioning. Run `bun run oh migrate` with `OPENHARNESS_DATABASE_URL` configured before enabling OIDC. |
+| `REDIS_URL` | Unset | Optional shared backend for API token buckets and expiring run quota leases. |
+| `OIDC_ISSUER` / `OIDC_AUDIENCE` | Unset | Enable bearer JWT verification and tenant identity provisioning. |
+| `OIDC_TENANT_CLAIM` | `tid` | JWT claim mapped to the tenant slug. |
+| `OIDC_ROLE_CLAIM` / `OIDC_ADMIN_VALUES` | `role` / `admin` | Trusted role claim and comma-separated values that provision tenant admins. Existing database roles remain authoritative. |
+| `OIDC_ALLOWED_TENANTS` | Unset | Optional comma-separated tenant allowlist. |
+| `OPENHARNESS_SERVICE_TENANT_ID` | Unset | UUID tenant used by service and break-glass tokens when OIDC is enabled. |
+| `PROMPT_MAX_BYTES` | `262144` | Maximum UTF-8 prompt body size. |
+| `QUEUE_HIGH_WATERMARK` | `2000` | Local queue depth threshold for prompt admission. |
+| `USER_MAX_RUNS` / `TENANT_MAX_RUNS` | `3` / `4` | Concurrent run-slot limits. Redis leases are shared when `REDIS_URL` is set. |
+| `SSE_MAX_BUFFER` / `SSE_MAX_PER_USER` | `1000` / `10` | Bounded queued SSE envelopes and per-user stream limit. |
 | `OPENHARNESS_SECRET_KEY` | Generated local key | Optional secret-store encryption key material; set a stable high-entropy value for portable deployments. |
 | `OPENHARNESS_PROVIDER` | `mock` | Provider selection; `mock` supports offline use. |
 | `OPENHARNESS_MODEL` | `mock/demo` | Default model ID. |

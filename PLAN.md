@@ -41,12 +41,12 @@
 - Single Bun server binary, Node 24 Docker targets for backend and web, Compose, CI build/typecheck/eval workflow, environment template, and deployment docs.
 - The server binary build and `git diff --check` succeed. `typecheck:server` cannot run because `tsc` is not installed. Web builds failed in this sandbox (Turbopack worker spawn failure; webpack `EPERM` creating a generated `.next/types` directory). End-to-end eval has not been run.
 
-## Distributed scaling migration — phase 1 started
+## Distributed scaling migration — phases 2–6 in progress
 
-- The requested scaling specification is tracked in `docs/SCALING.md`; it is a multi-phase migration and the repository remains local-only.
-- Added shared infrastructure contracts under `packages/core/src/infra` and connected API live SSE fan-out to the local `InProcessEventBus` adapter. Durable local event replay stays in the existing JSON store.
-- The focused adapter tests pass (2); the server bundle builds and all current server/SDK tests pass (19). Server type checking remains unavailable because `tsc` is not installed; the eval suite has not been run in this phase.
-- Remaining phase 1 work: move state access, run queue, cancellation, locking, config, secrets, and tool execution behind adapters, then prove local behavior with the complete check/eval suite.
-- There is no distributed-mode switch yet. Do not claim Postgres, Redis, worker, tenant-isolation, or horizontal-scaling support until their later phases and integration tests are complete.
+- The requested scaling specification and remaining implementation gaps are tracked in `docs/SCALING.md` and `TODO.md`.
+- Postgres state/job/permission/identity/usage adapters, numbered migrations, transactional events/outbox, Redis event/cancel/rate/quota adapters, worker lifecycle and reaper primitives, OIDC verification, session authorization, and phase 6 request/SSE limits have been added.
+- The server and core adapter bundles build; server/SDK suites currently report 35 passing tests. A Windows temp-file rename in the JSON store test failed once and the focused test file passed on retry. No live Postgres/Redis or multi-node integration has been run.
+- Remaining work through phase 6: wire Postgres state/jobs and durable approvals into API/worker execution, extract the resumable step machine, forward end-user identity through the web proxy, enforce tenant configuration authorization, apply provider RPM/TPM and tenant monthly budgets, then run distributed adapter/integration/chaos tests.
+- The default server still uses local session/job state and in-process run execution. Do not claim distributed readiness until the listed integration and acceptance checks pass.
 
 Other backend feature work remains tracked in `TODO.md`.

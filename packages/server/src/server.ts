@@ -7,12 +7,14 @@ import { attachPlugin, deleteMcpServer, detachPlugin, installMcpPreset, listMcpP
 import { McpClientManager } from "./mcp-client.ts";
 import { discoverAgents, discoverContext, discoverSkillsAndCommands, mergeConfiguredAgent, resolveSlashCommand, type AgentDefinition } from "./agent-context.ts";
 import { logError } from "./logger.ts";
-import { InProcessCancelBus, InProcessEventBus, InProcessJobQueue, JsonDocumentStore, localLockService, type EventEnvelope, type JobDocument } from "../../core/src/infra/index.ts";
+import { InProcessCancelBus, InProcessEventBus, InProcessJobQueue, InProcessQuotaService, InProcessRateLimiter, JsonDocumentStore, RedisQuotaService, RedisRateLimiter, localLockService, type EventEnvelope, type JobDocument, type QuotaService, type RateLimiter } from "../../core/src/infra/index.ts";
+import { PostgresIdentityStore } from "../../core/src/infra/postgres-identity-store.ts";
+import { authenticateRequest, authorize, type AuthSubject } from "./oidc-auth.ts";
 
 type RunStatus = "idle" | "queued" | "running" | "awaiting_permission" | "verifying" | "completed" | "failed" | "cancelled";
 type Part = { type: "text"; text: string } | { type: "skill"; name: string; reason: "trigger" } | { type: "verify"; name: string; command: string; passed: boolean; exitCode: number; output?: string; iteration: number; maxIterations: number } | { type: "step"; usage?: { input: number; output: number }; cost?: number } | { type: "compaction"; summary: string; reason: string; compactedMessages: number; tokensBefore?: number; tokensAfter?: number; keptMessages?: number; requirements?: string[]; decisions?: string[]; openQuestions?: string[] } | { type: "tool"; tool: string; callId: string; state: "pending" | "running" | "completed" | "error" | "denied"; input: unknown; output?: unknown; error?: string; title?: string };
 type Message = { info: { id: string; role: "user" | "assistant"; agent?: string; model?: string; summary?: boolean; error?: string; usage?: { input: number; output: number }; cost?: number }; createdAt: number; completedAt?: number; parts: Part[] };
-type Session = { id: string; title: string; agent: string; model?: string; runtime?: string | null; status: RunStatus; error?: string; updatedAt: number; usage: { input: number; output: number }; cost?: number };
+type Session = { id: string; title: string; agent: string; model?: string; runtime?: string | null; status: RunStatus; error?: string; updatedAt: number; usage: { input: number; output: number }; cost?: number; tenantId?: string; ownerId?: string };
 type EventRecord = EventEnvelope<Record<string, unknown>>;
 type Store = { sessions: Record<string, Session>; messages: Record<string, Message[]>; permissions: Record<string, Record<string, unknown>>; grants: string[]; events: EventRecord[]; nextSeq: number };
 
@@ -120,13 +122,21 @@ export function createServer(options: { hostname?: string; port?: number } = {})
   const localStateStore = new JsonDocumentStore<Store>(storeFile, EMPTY, normalizeStore);
   const publicToken = process.env.OPENHARNESS_SERVER_TOKEN;
   const adminToken = process.env.OPENHARNESS_ADMIN_TOKEN;
+  const oidcEnabled = !!process.env.OIDC_ISSUER;
+  const identityStore = oidcEnabled
+    ? PostgresIdentityStore.connect(process.env.DATABASE_URL ?? process.env.OPENHARNESS_DATABASE_URL ?? (() => { throw new Error("DATABASE_URL is required when OIDC is enabled"); })())
+    : undefined;
   let store = structuredClone(EMPTY);
   let writes = Promise.resolve();
   const eventBus = new InProcessEventBus<Record<string, unknown>>();
   const cancelBus = new InProcessCancelBus();
   const localJobQueue = new InProcessJobQueue<JobDocument>();
+  const redisUrl = process.env.REDIS_URL;
+  const rateLimiter: RateLimiter = redisUrl ? RedisRateLimiter.connect(redisUrl) : new InProcessRateLimiter();
+  const quotaService: QuotaService = redisUrl ? RedisQuotaService.connect(redisUrl) : new InProcessQuotaService();
   const activeRuns = new Map<string, AbortController>();
-  const activeRunJobs = new Map<string, { jobId: string; workerId: string; fence: number }>();
+  const sseConnections = new Map<string, number>();
+  const activeRunJobs = new Map<string, { jobId: string; workerId: string; fence: number; quotaTenantId: string; quotaUserId: string }>();
   const reservedRunSlots = new Set<string>();
   const permissionWaiters = new Map<string, { resolve(reply: "once" | "always" | "reject"): void; timer: ReturnType<typeof setTimeout> }>();
 
@@ -271,9 +281,53 @@ export function createServer(options: { hostname?: string; port?: number } = {})
       }
       if (path === "/health" && method === "GET") return json({ ok: true, version: "0.1.0" });
       if (!path.startsWith("/v1")) return json({ error: "not found" }, 404);
-      if (publicToken && path !== "/v1/admin/verify" && !secureEqual(bearer(req), publicToken)) return json({ error: "unauthorized" }, 401);
-      if (path.startsWith("/v1/admin/") && path !== "/v1/admin/verify" && !secureEqual(req.headers.get("x-openharness-admin") ?? bearer(req), adminToken)) {
+      let subject: AuthSubject | undefined;
+      if (oidcEnabled && identityStore && path !== "/v1/admin/verify") {
+        try { subject = await authenticateRequest(req, { identityStore }); }
+        catch { return json({ error: "unauthorized" }, 401); }
+        if (!subject) return json({ error: "unauthorized" }, 401);
+        if (subject.kind === "break-glass" || (subject.kind !== "break-glass" && secureEqual(req.headers.get("x-openharness-admin"), adminToken))) logError("auth.break_glass_used", new Error("Admin break-glass token used"), { requestId: headers.get("x-request-id"), path });
+      }
+      if (publicToken && path !== "/v1/admin/verify" && !secureEqual(bearer(req), publicToken) && !(oidcEnabled && subject)) return json({ error: "unauthorized" }, 401);
+      if (path.startsWith("/v1/admin/") && path !== "/v1/admin/verify" && !secureEqual(req.headers.get("x-openharness-admin") ?? bearer(req), adminToken) && subject?.kind !== "break-glass") {
         return json({ error: "admin token required" }, 401);
+      }
+      if (oidcEnabled && subject) {
+        const earlySession = path.match(/^\/v1\/sessions\/([^/]+)(?:\/|$)/);
+        if (earlySession) {
+          let sessionId: string;
+          try { sessionId = decodeURIComponent(earlySession[1]!); } catch { return json({ error: "session not found" }, 404); }
+          const session = store.sessions[sessionId];
+          if (!session?.tenantId || !authorize(subject, method === "GET" ? "read" : method === "DELETE" ? "delete" : "write", { tenantId: session.tenantId, ownerId: session.ownerId })) return json({ error: "session not found" }, 404);
+        }
+        const earlyPermission = path.match(/^\/v1\/permissions\/([^/]+)\/reply$/);
+        if (earlyPermission && method === "POST") {
+          const permission = store.permissions[earlyPermission[1]!];
+          const session = permission ? store.sessions[String(permission.sessionId ?? "")] : undefined;
+          if (!session?.tenantId || !authorize(subject, "write", { tenantId: session.tenantId, ownerId: session.ownerId })) return json({ error: "permission request not found" }, 404);
+        }
+      }
+
+      if (path !== "/v1/events") {
+        const rateSubject = subject ? `${subject.tenantId}:${subject.userId}` : bearer(req) ? createHash("sha256").update(bearer(req)!).digest("hex") : "anonymous";
+        const requests = await rateLimiter.consume(`api:${rateSubject}`, { capacity: 60, refillPerSecond: 30 });
+        const isPrompt = method === "POST" && /\/sessions\/[^/]+\/(prompt|compact)$/.test(path);
+        const prompt = isPrompt ? await rateLimiter.consume(`prompt:${rateSubject}`, { capacity: 5, refillPerSecond: 10 / 60 }) : { allowed: true, retryAfterMs: 0 };
+        const admin = path.startsWith("/v1/admin/") ? await rateLimiter.consume(`admin:${subject?.tenantId ?? "local"}`, { capacity: 5, refillPerSecond: 5 }) : { allowed: true, retryAfterMs: 0 };
+        const rejected = [requests, prompt, admin].find((result) => !result.allowed);
+        if (rejected) {
+          headers.set("retry-after", String(Math.max(1, Math.ceil(rejected.retryAfterMs / 1_000))));
+          return json({ error: "Too many requests" }, 429);
+        }
+      }
+      if (method === "POST" && /\/sessions\/[^/]+\/(prompt|compact)$/.test(path)) {
+        const configuredHighWatermark = Number(process.env.QUEUE_HIGH_WATERMARK ?? 2_000);
+        const highWatermark = Number.isInteger(configuredHighWatermark) && configuredHighWatermark > 0 ? configuredHighWatermark : 2_000;
+        const queue = localJobQueue.admissionStats("local");
+        if (queue.queued >= highWatermark || queue.oldestAgeMs > 60_000) {
+          headers.set("retry-after", "5");
+          return json({ error: "The service is busy. Try again shortly." }, 503);
+        }
       }
 
       if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && req.body) {
@@ -345,28 +399,85 @@ export function createServer(options: { hostname?: string; port?: number } = {})
       if (path === "/v1/plugins" && method === "GET") { await pluginsReady; return json(await listPlugins(dataDir)); }
 
       if (path === "/v1/events" && method === "GET") {
+        const sseIdentity = subject ? `${subject.tenantId}:${subject.userId}` : bearer(req) ? createHash("sha256").update(bearer(req)!).digest("hex") : "anonymous";
+        const maxSsePerUserRaw = Number(process.env.SSE_MAX_PER_USER ?? 10);
+        const maxSsePerUser = Number.isInteger(maxSsePerUserRaw) && maxSsePerUserRaw > 0 ? maxSsePerUserRaw : 10;
+        if ((sseConnections.get(sseIdentity) ?? 0) >= maxSsePerUser) return json({ error: "Too many event streams" }, 429);
+        sseConnections.set(sseIdentity, (sseConnections.get(sseIdentity) ?? 0) + 1);
+        let connectionReleased = false;
+        const releaseConnection = () => {
+          if (connectionReleased) return;
+          connectionReleased = true;
+          const current = sseConnections.get(sseIdentity) ?? 0;
+          if (current <= 1) sseConnections.delete(sseIdentity); else sseConnections.set(sseIdentity, current - 1);
+        };
         const after = Number(req.headers.get("last-event-id") ?? url.searchParams.get("after") ?? 0);
         const sessionFilter = url.searchParams.get("sessionId");
-        const replay = store.events.filter((event) => event.seq > after && (!sessionFilter || event.data.sessionId === sessionFilter || (event.data.session as Session | undefined)?.id === sessionFilter));
-        let cleanup = () => {};
+        const canReadEvent = (event: EventRecord) => {
+          if (!oidcEnabled || !subject) return true;
+          const eventSession = event.data.session as Session | undefined;
+          const eventSessionId = typeof event.data.sessionId === "string" ? event.data.sessionId : eventSession?.id;
+          if (!eventSessionId) return false;
+          const session = store.sessions[eventSessionId] ?? eventSession;
+          return !!session && !!session.tenantId && authorize(subject, "read", { tenantId: session.tenantId, ownerId: session.ownerId });
+        };
+        const matchesSession = (event: EventRecord) => !sessionFilter || event.data.sessionId === sessionFilter || (event.data.session as Session | undefined)?.id === sessionFilter;
+        const replay = store.events.filter((event) => event.seq > after && matchesSession(event) && canReadEvent(event));
+        let cleanup = () => { releaseConnection(); };
+        const configuredSseBuffer = Number(process.env.SSE_MAX_BUFFER ?? 1_000);
+        const maxBufferEvents = Number.isInteger(configuredSseBuffer) ? Math.max(1, Math.min(100_000, configuredSseBuffer)) : 1_000;
+        const maxBufferBytes = 1_000_000;
+        const pending: Array<{ bytes: Uint8Array; delta: boolean }> = [];
+        let pendingBytes = 0;
+        let streamClosed = false;
+        let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+        const enqueue = (bytes: Uint8Array, delta = false) => {
+          const controller = streamController;
+          if (streamClosed || !controller) return;
+          if (pending.length === 0 && controller.desiredSize !== null && controller.desiredSize > 0) { controller.enqueue(bytes); return; }
+          if (pending.length >= maxBufferEvents || pendingBytes + bytes.byteLength > maxBufferBytes) {
+            if (delta) return;
+            for (let index = pending.length - 1; index >= 0 && (pending.length >= maxBufferEvents || pendingBytes + bytes.byteLength > maxBufferBytes); index--) {
+              const item = pending[index]!;
+              if (item.delta) { pendingBytes -= item.bytes.byteLength; pending.splice(index, 1); }
+            }
+            if (pending.length >= maxBufferEvents || pendingBytes + bytes.byteLength > maxBufferBytes) {
+              streamClosed = true; pending.length = 0; pendingBytes = 0; cleanup();
+              try { controller.close(); } catch { /* stream already closed */ }
+              return;
+            }
+          }
+          pending.push({ bytes, delta }); pendingBytes += bytes.byteLength;
+        };
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
+            streamController = controller;
             const encoder = new TextEncoder();
             const send = (event: EventRecord) => {
-              if (sessionFilter && event.data.sessionId !== sessionFilter && (event.data.session as Session | undefined)?.id !== sessionFilter) return;
-              controller.enqueue(encoder.encode(`id: ${event.seq}\ndata: ${JSON.stringify({ ...event.data, seq: event.seq })}\n\n`));
+              if (!matchesSession(event) || !canReadEvent(event)) return;
+              enqueue(encoder.encode(`id: ${event.seq}\ndata: ${JSON.stringify({ ...event.data, seq: event.seq })}\n\n`), event.data.type === "part.delta");
             };
             const unsubscribe = eventBus.subscribe({ tenantId: "local", ...(sessionFilter ? { sessionId: sessionFilter } : {}) }, send);
+            let heartbeat: ReturnType<typeof setInterval> | undefined;
+            cleanup = () => { if (heartbeat) clearInterval(heartbeat); unsubscribe(); releaseConnection(); };
             for (const event of replay) send(event);
-            const heartbeat = setInterval(() => controller.enqueue(encoder.encode(`: ping ${now()}\n\n`)), 15_000);
-            cleanup = () => { clearInterval(heartbeat); unsubscribe(); };
+            if (!streamClosed) heartbeat = setInterval(() => enqueue(encoder.encode(`: ping ${now()}\n\n`)), 15_000);
             req.signal.addEventListener("abort", () => {
               cleanup();
+              streamClosed = true;
+              pending.length = 0; pendingBytes = 0;
               try { controller.close(); } catch { /* already closed */ }
             }, { once: true });
           },
-          cancel() { cleanup(); },
-        });
+          pull(controller) {
+            while (!streamClosed && pending.length && controller.desiredSize !== null && controller.desiredSize > 0) {
+              const next = pending.shift()!;
+              pendingBytes -= next.bytes.byteLength;
+              controller.enqueue(next.bytes);
+            }
+          },
+          cancel() { streamClosed = true; pending.length = 0; pendingBytes = 0; cleanup(); },
+        }, { highWaterMark: 1 });
         const sseHeaders = new Headers(headers);
         sseHeaders.set("content-type", "text/event-stream; charset=utf-8");
         sseHeaders.set("cache-control", "no-cache, no-transform");
@@ -377,13 +488,14 @@ export function createServer(options: { hostname?: string; port?: number } = {})
 
       if (path === "/v1/sessions" && method === "GET") {
         const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 200), 1), 500);
-        return json(Object.values(store.sessions).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit));
+        const sessions = Object.values(store.sessions).filter((session) => !oidcEnabled || (!!subject && !!session.tenantId && authorize(subject, "read", { tenantId: session.tenantId, ownerId: session.ownerId })));
+        return json(sessions.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit));
       }
       if (path === "/v1/sessions" && method === "POST") {
         const body = await req.json().catch(() => ({})) as Record<string, unknown>;
         const settings = await getSettings(dataDir);
         const selectedModel = text(body.model) ? body.model : text(settings.effective.model) ? settings.effective.model : undefined;
-        const session: Session = { id: id(), title: "New chat", agent: text(body.agent) ? body.agent : String(settings.effective.defaultAgent), ...(selectedModel ? { model: selectedModel } : {}), ...(text(body.runtime) ? { runtime: body.runtime } : {}), status: "idle", updatedAt: now(), usage: { input: 0, output: 0 } };
+        const session: Session = { id: id(), title: "New chat", agent: text(body.agent) ? body.agent : String(settings.effective.defaultAgent), ...(selectedModel ? { model: selectedModel } : {}), ...(text(body.runtime) ? { runtime: body.runtime } : {}), status: "idle", updatedAt: now(), usage: { input: 0, output: 0 }, ...(subject ? { tenantId: subject.tenantId, ownerId: subject.userId } : {}) };
         store.messages[session.id] = [];
         saveSession(session);
         await persist();
@@ -398,6 +510,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
         const session = store.sessions[sessionId];
         const action = sessionMatch[2] ?? "";
         if (!session) return json({ error: "session not found" }, 404);
+        if (oidcEnabled && (!subject || !session.tenantId || !authorize(subject, method === "GET" ? "read" : method === "DELETE" ? "delete" : "write", { tenantId: session.tenantId, ownerId: session.ownerId }))) return json({ error: "session not found" }, 404);
         if (!action && method === "GET") return json(session);
         if (!action && method === "PATCH") {
           const body = await req.json().catch(() => ({})) as Record<string, unknown>;
@@ -417,7 +530,8 @@ export function createServer(options: { hostname?: string; port?: number } = {})
           const body = await req.json().catch(() => ({})) as Record<string, unknown>;
           if (!text(body.text) || !body.text.trim()) return json({ error: "text is required" }, 400);
           let promptText = body.text;
-          if (promptText.length > 100_000) return json({ error: "prompt is too large" }, 413);
+          const promptMaxBytes = Math.max(1, Number(process.env.PROMPT_MAX_BYTES ?? 256 * 1024));
+          if (Buffer.byteLength(promptText, "utf8") > promptMaxBytes) return json({ error: "prompt is too large" }, 413);
           let invocation: { name: string; input: Record<string, unknown> } | undefined;
           try { invocation = parseToolPrompt(promptText.trim()); } catch (error) { return json({ error: (error as Error).message }, 400); }
           const runSettings = await getSettings(dataDir);
@@ -489,7 +603,17 @@ export function createServer(options: { hostname?: string; port?: number } = {})
             }
           }
           const workerId = `local:${process.pid}:${id()}`;
+          const quotaTenantId = session.tenantId ?? "local";
+          const quotaUserId = session.ownerId ?? "local-service";
+          const configuredQuotaLease = Number(process.env.JOB_LEASE_MS ?? 60_000);
+          const quotaLeaseMs = Number.isInteger(configuredQuotaLease) && configuredQuotaLease > 0 ? configuredQuotaLease : 60_000;
+          const configuredTenantRuns = Number(process.env.TENANT_MAX_RUNS ?? maxConcurrentRuns);
+          const configuredUserRuns = Number(process.env.USER_MAX_RUNS ?? 3);
+          const tenantRunLimit = Number.isInteger(configuredTenantRuns) && configuredTenantRuns > 0 ? configuredTenantRuns : maxConcurrentRuns;
+          const userRunLimit = Number.isInteger(configuredUserRuns) && configuredUserRuns > 0 ? configuredUserRuns : 3;
           let runJob: JobDocument | undefined;
+          let quotaHeld = false;
+          let quotaLeaseId: string | undefined;
           try {
             runJob = await localLockService.withLock("openharness:local-job-dispatch", 30_000, async () => {
               if (activeRuns.size + reservedRunSlots.size >= maxConcurrentRuns) throw new Error("server run concurrency limit reached");
@@ -497,9 +621,15 @@ export function createServer(options: { hostname?: string; port?: number } = {})
               try {
                 const created = await localJobQueue.enqueue({
                   id: id(), tenantId: "local", sessionId, rootSessionId: sessionId, kind: "run", priority: 100,
-                  maxAttempts: 5, input: { text: promptText, agent: session.agent, model: session.model, runtime: session.runtime, fix: body.fix },
+                  maxAttempts: 5, input: { text: promptText, agent: session.agent, model: session.model, runtime: session.runtime, fix: body.fix, userId: quotaUserId },
                   notBefore: now(), createdAt: now(), updatedAt: now(),
                 });
+                quotaLeaseId = created.id;
+                quotaHeld = await quotaService.acquireRunSlot(quotaTenantId, quotaUserId, { tenant: tenantRunLimit, user: userRunLimit, leaseId: quotaLeaseId, leaseMs: quotaLeaseMs });
+                if (!quotaHeld) {
+                  await localJobQueue.requestCancel(created.id);
+                  throw new Error("run quota limit reached");
+                }
                 const claimed = await localJobQueue.claim(workerId, ["run"], 1);
                 const activeJob = claimed.find((job) => job.id === created.id);
                 if (!activeJob) {
@@ -508,13 +638,14 @@ export function createServer(options: { hostname?: string; port?: number } = {})
                 }
                 return activeJob;
               } catch (error) {
+                if (quotaHeld && quotaLeaseId) { await quotaService.releaseRunSlot(quotaTenantId, quotaUserId, quotaLeaseId); quotaHeld = false; }
                 reservedRunSlots.delete(sessionId);
                 throw error;
               }
             });
           } catch (error) {
             const message = (error as Error).message || "could not enqueue run";
-            if (message.includes("concurrency limit")) return json({ error: message }, 429);
+            if (message.includes("concurrency limit") || message.includes("quota limit")) return json({ error: message }, 429);
             return message.includes("already has an active job")
               ? json({ error: "session already has an active run" }, 409)
               : json({ error: message }, 503);
@@ -528,7 +659,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
           const abortController = new AbortController();
           const unsubscribeCancel = cancelBus.onCancel(sessionId, () => abortController.abort());
           activeRuns.set(sessionId, abortController);
-          activeRunJobs.set(sessionId, { jobId: runJob.id, workerId, fence: runJob.fence });
+          activeRunJobs.set(sessionId, { jobId: runJob.id, workerId, fence: runJob.fence, quotaTenantId, quotaUserId });
           await localJobQueue.checkpoint(runJob.id, workerId, runJob.fence, { phase: "agent", step: 0 });
           const jobHeartbeat = setInterval(() => {
             void localJobQueue.heartbeat([runJob!.id], workerId).then(({ lost }) => {
@@ -537,6 +668,9 @@ export function createServer(options: { hostname?: string; port?: number } = {})
                 abortController.abort();
               }
             }).catch((error) => logError("job.heartbeat_failed", error, { sessionId, jobId: runJob!.id }));
+            void quotaService.acquireRunSlot(quotaTenantId, quotaUserId, { tenant: tenantRunLimit, user: userRunLimit, leaseId: runJob!.id, leaseMs: quotaLeaseMs }).then((held) => {
+              if (!held) { logError("quota.lease_lost", new Error("run quota lease was lost"), { sessionId, jobId: runJob!.id }); abortController.abort(); }
+            }).catch((error) => logError("quota.heartbeat_failed", error, { sessionId, jobId: runJob!.id }));
           }, 15_000);
           jobHeartbeat.unref?.();
           let finalReply = "";
@@ -897,6 +1031,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
             const activeJob = activeRunJobs.get(sessionId);
             activeRunJobs.delete(sessionId);
             if (activeJob) {
+              void quotaService.releaseRunSlot(activeJob.quotaTenantId, activeJob.quotaUserId, activeJob.jobId).catch((error) => logError("quota.release_failed", error, { sessionId, jobId: activeJob.jobId }));
               const status = store.sessions[sessionId]?.status;
               const finish = status === "failed"
                 ? localJobQueue.fail(activeJob.jobId, activeJob.workerId, activeJob.fence, session.error ?? "run failed")
@@ -947,11 +1082,23 @@ export function createServer(options: { hostname?: string; port?: number } = {})
         }
       }
 
-      if (path === "/v1/permissions" && method === "GET") return json(Object.values(store.permissions).filter((permission) => !url.searchParams.get("sessionId") || permission.sessionId === url.searchParams.get("sessionId")));
+      if (path === "/v1/permissions" && method === "GET") {
+        const permissions = Object.values(store.permissions).filter((permission) => {
+          if (url.searchParams.get("sessionId") && permission.sessionId !== url.searchParams.get("sessionId")) return false;
+          if (!oidcEnabled) return true;
+          const permissionSession = store.sessions[String(permission.sessionId ?? "")];
+          return !!subject && !!permissionSession?.tenantId && authorize(subject, "read", { tenantId: permissionSession.tenantId, ownerId: permissionSession.ownerId });
+        });
+        return json(permissions);
+      }
       const permissionMatch = path.match(/^\/v1\/permissions\/([^/]+)\/reply$/);
       if (permissionMatch && method === "POST") {
         const permission = store.permissions[permissionMatch[1]!];
         if (!permission) return json({ error: "permission request not found" }, 404);
+        if (oidcEnabled) {
+          const permissionSession = store.sessions[String(permission.sessionId ?? "")];
+          if (!subject || !permissionSession?.tenantId || !authorize(subject, "write", { tenantId: permissionSession.tenantId, ownerId: permissionSession.ownerId })) return json({ error: "permission request not found" }, 404);
+        }
         const body = await req.json().catch(() => ({})) as { reply?: unknown };
         if (!(["once", "always", "reject"] as unknown[]).includes(body.reply)) return json({ error: "reply must be once, always, or reject" }, 400);
         delete store.permissions[permissionMatch[1]!];
@@ -1068,6 +1215,8 @@ export function createServer(options: { hostname?: string; port?: number } = {})
     async shutdown(closeActiveConnections = true) {
       await mcpReady.catch(() => undefined);
       await mcpManager.shutdown();
+      await identityStore?.close();
+      await Promise.all([rateLimiter, quotaService].map((adapter) => "close" in adapter && typeof adapter.close === "function" ? adapter.close() : Promise.resolve()));
       server.stop(closeActiveConnections);
     },
   };
