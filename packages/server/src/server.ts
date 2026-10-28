@@ -51,6 +51,21 @@ function positiveAmount(value: string | undefined): number | undefined {
   return parsed;
 }
 
+function tenantPlanBudgets(value: string | undefined): Record<string, number> {
+  if (value === undefined || value.trim() === "") return {};
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { throw new Error("TENANT_PLAN_BUDGETS_USD must be a JSON object of plan names to positive USD amounts."); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("TENANT_PLAN_BUDGETS_USD must be a JSON object of plan names to positive USD amounts.");
+  const result: Record<string, number> = Object.create(null);
+  for (const [plan, amount] of Object.entries(parsed)) {
+    if (!/^[a-z0-9_-]{1,64}$/i.test(plan) || typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+      throw new Error("TENANT_PLAN_BUDGETS_USD must contain valid plan names and positive USD amounts.");
+    }
+    result[plan] = amount;
+  }
+  return result;
+}
+
 function bearer(req: Request): string | undefined {
   const value = req.headers.get("authorization");
   return value?.startsWith("Bearer ") ? value.slice(7) : undefined;
@@ -814,8 +829,9 @@ export function createServer(options: { hostname?: string; port?: number } = {})
               const providerConfig = await runtimeProviderConfig(dataDir, session.model ?? agentContext.agent.model);
               providerPrices = providerConfig;
               const configuredTenantBudget = usageStore ? positiveAmount(process.env.TENANT_MONTHLY_BUDGET_USD) : undefined;
-              if (configuredTenantBudget !== undefined && (providerConfig.inputCostPerMillion === undefined || providerConfig.outputCostPerMillion === undefined)) {
-                throw new Error("TENANT_MONTHLY_BUDGET_USD requires input and output model prices for the selected provider.");
+              const planBudgetConfig = usageStore ? tenantPlanBudgets(process.env.TENANT_PLAN_BUDGETS_USD) : {};
+              if ((configuredTenantBudget !== undefined || Object.keys(planBudgetConfig).length > 0) && (providerConfig.inputCostPerMillion === undefined || providerConfig.outputCostPerMillion === undefined)) {
+                throw new Error("Tenant monthly budgets require input and output model prices for the selected provider.");
               }
               const maxCostPerRun = typeof limits.maxCostPerRun === "number" && Number.isFinite(limits.maxCostPerRun) && limits.maxCostPerRun >= 0 ? limits.maxCostPerRun : undefined;
               const maxCostPerSession = typeof limits.maxCostPerSession === "number" && Number.isFinite(limits.maxCostPerSession) && limits.maxCostPerSession >= 0 ? limits.maxCostPerSession : undefined;
@@ -1055,7 +1071,9 @@ export function createServer(options: { hostname?: string; port?: number } = {})
               session.cost = (session.cost ?? 0) + cost;
             }
             if (usageStore && session.tenantId) {
-              const monthlyBudgetUsd = positiveAmount(process.env.TENANT_MONTHLY_BUDGET_USD);
+              const planBudgets = tenantPlanBudgets(process.env.TENANT_PLAN_BUDGETS_USD);
+              const tenantPlan = await usageStore.getTenantPlan(session.tenantId);
+              const monthlyBudgetUsd = planBudgets[tenantPlan] ?? positiveAmount(process.env.TENANT_MONTHLY_BUDGET_USD);
               const month = new Date().toISOString().slice(0, 7);
               const usageTotal = await usageStore.recordStep({
                 tenantId: session.tenantId, period: month, inputTokens: usage.input, outputTokens: usage.output,

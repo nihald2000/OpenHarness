@@ -46,7 +46,7 @@
 - The requested scaling specification and remaining implementation gaps are tracked in `docs/SCALING.md` and `TODO.md`.
 - Postgres state/job/permission/identity/usage adapters, numbered migrations, transactional events/outbox, Redis event/cancel/rate/quota adapters, worker lifecycle and reaper primitives, OIDC verification, session authorization, and phase 6 request/SSE limits have been added.
 - The server binary build and server typecheck pass; the server/SDK suites report 35 passing tests. The local JSON store retries transient Windows sharing violations during atomic rename. No live Postgres/Redis or multi-node integration has been run.
-- Remaining work through phase 6: wire Postgres state/jobs and durable approvals into API/worker execution, extract the resumable step machine, forward end-user identity through the web proxy, enforce tenant configuration authorization, add plan-specific budgets, then run distributed adapter/integration/chaos tests.
+- Remaining work through phase 6: wire Postgres state/jobs and durable approvals into API/worker execution, extract the resumable step machine, forward end-user identity through the web proxy, enforce tenant configuration authorization, then run distributed adapter/integration/chaos tests.
 - The default server still uses local session/job state and in-process run execution. Do not claim distributed readiness until the listed integration and acceptance checks pass.
 
 Other backend feature work remains tracked in `TODO.md`.

@@ -9,6 +9,12 @@ export class PostgresUsageStore {
   static connect(url: string, options: postgres.Options<{}> = {}) { return new PostgresUsageStore(postgres(url, { max: 10, ...options }), true); }
   async close() { if (this.owned) await this.sql.end({ timeout: 5 }); }
 
+  async getTenantPlan(tenantId: string): Promise<string> {
+    const rows = await this.sql<{ plan: string }[]>`SELECT plan FROM tenants WHERE id=${tenantId}::uuid`;
+    if (!rows[0]) throw new Error("tenant not found while resolving usage budget");
+    return rows[0].plan;
+  }
+
   async recordStep(input: { tenantId: string; period: string; inputTokens: number; outputTokens: number; costUsd: number; monthlyBudgetUsd?: number }): Promise<UsageSnapshot> {
     if (!/^\d{4}-\d{2}$/.test(input.period)) throw new Error("period must be YYYY-MM");
     for (const [name, value] of [["inputTokens", input.inputTokens], ["outputTokens", input.outputTokens], ["costUsd", input.costUsd]] as const) {

@@ -28,6 +28,7 @@ Use `.env.example` as the environment variable template. The server reads JSON s
 | `QUEUE_MAX_AGE_MS` | `60000` | Oldest queued job age allowed per tenant before prompt admission returns 503 with `Retry-After`. |
 | `USER_MAX_RUNS` / `TENANT_MAX_RUNS` | `3` / `4` | Concurrent run-slot limits. Redis leases are shared when `REDIS_URL` is set. |
 | `TENANT_MONTHLY_BUDGET_USD` | Unset | Optional monthly USD ceiling for OIDC tenants with usage recorded in Postgres. |
+| `TENANT_PLAN_BUDGETS_USD` | Unset | Optional JSON map of tenant plan names to monthly USD ceilings, for example `{"free":5,"pro":100}`. A matching plan value overrides `TENANT_MONTHLY_BUDGET_USD`. |
 | `PROVIDER_RPM` | Unset | Optional per-tenant, provider/model request limit per minute. Uses Redis when `REDIS_URL` is configured. |
 | `PROVIDER_TPM` | Unset | Optional per-tenant, provider/model estimated token limit per minute. Admission reserves estimated prompt tokens plus the output-token maximum. |
 | `SSE_MAX_BUFFER` / `SSE_MAX_PER_USER` | `1000` / `10` | Bounded queued SSE envelopes and per-user stream limit. |
