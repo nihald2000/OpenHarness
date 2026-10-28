@@ -20,6 +20,7 @@ The server typecheck script cannot find `tsc`; direct invocation reports missing
 - [ ] Wire distributed adapters into server API/SSE and add periodic replay-gap catch-up, outbox scheduling, and deployable distributed mode selection.
 - [x] Add a reusable worker lifecycle engine for claim, batched lease heartbeat, cancellation, graceful drain, and fenced requeue.
 - [x] Add Postgres advisory-lock leadership and a durable job reaper for expired leases and due retry/quota waits.
+- [x] Add tenant pause controls and a fair Postgres claim order that interleaves queued work across tenants.
 - [x] Add a session-scoped SSE replay gateway that subscribes before replay, deduplicates event sequences, and polls durable state for missed Redis publishes.
 - [ ] Expose a worker process with a concrete run handler and resumable run step machine; current agent runs still execute in the API process and approval waiters remain in-memory.
 - [ ] Add durable approvals, restart replay rules for in-flight tool calls, lease reaper/leader schedules, and provider retry wait jobs.

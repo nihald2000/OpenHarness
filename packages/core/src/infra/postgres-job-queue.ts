@@ -26,11 +26,19 @@ export class PostgresJobQueue<Job extends JobDocument = JobDocument> implements 
     if (!Number.isInteger(limit) || limit < 0) throw new Error("claim limit must be a non-negative integer");
     if (!limit || !kinds.length) return [];
     const now = Date.now();
-    const rows = await this.sql<Job[]>`WITH candidates AS (
-      SELECT j.id FROM jobs j WHERE j.status='queued' AND j.not_before <= ${now} AND j.kind=ANY(${kinds})
-      ORDER BY j.priority,j.created_at,j.id FOR UPDATE SKIP LOCKED LIMIT ${limit}
+    const rows = await this.sql<Job[]>`WITH ranked AS (
+      SELECT j.id,j.tenant_id,j.priority,j.created_at,
+        row_number() OVER (PARTITION BY j.tenant_id ORDER BY j.created_at,j.priority,j.id) AS tenant_rank
+      FROM jobs j
+      WHERE j.status='queued' AND j.not_before <= ${now} AND j.kind=ANY(${kinds})
+        AND NOT EXISTS (SELECT 1 FROM tenant_paused tp WHERE tp.tenant_id=j.tenant_id)
+    ), candidates AS (
+      SELECT id,tenant_rank,priority,created_at FROM ranked ORDER BY tenant_rank,priority,created_at,id LIMIT ${limit * 8}
+    ), locked AS (
+      SELECT j.id,c.tenant_rank,c.priority,c.created_at FROM jobs j JOIN candidates c ON c.id=j.id
+      WHERE j.status='queued' ORDER BY c.tenant_rank,c.priority,c.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT ${limit}
     ) UPDATE jobs j SET status='leased',lease_owner=${workerId},lease_until=${now + this.leaseMs},heartbeat_at=${now},attempt=j.attempt+1,fence=j.fence+1,updated_at=${now}
-      FROM candidates c WHERE j.id=c.id RETURNING j.*`;
+      FROM locked c WHERE j.id=c.id RETURNING j.*`;
     return rows.map(decode<Job>);
   }
 
