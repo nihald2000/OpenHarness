@@ -25,6 +25,7 @@ Use `.env.example` as the environment variable template. The server reads JSON s
 | `ADMIN_RPM` / `ADMIN_BURST` | `300` / `5` | Per-tenant admin API refill rate per minute and burst capacity. |
 | `PROMPT_MAX_BYTES` | `262144` | Maximum UTF-8 prompt body size. |
 | `QUEUE_HIGH_WATERMARK` | `2000` | Local queue depth threshold for prompt admission. |
+| `QUEUE_MAX_AGE_MS` | `60000` | Oldest queued job age allowed per tenant before prompt admission returns 503 with `Retry-After`. |
 | `USER_MAX_RUNS` / `TENANT_MAX_RUNS` | `3` / `4` | Concurrent run-slot limits. Redis leases are shared when `REDIS_URL` is set. |
 | `TENANT_MONTHLY_BUDGET_USD` | Unset | Optional monthly USD ceiling for OIDC tenants with usage recorded in Postgres. |
 | `PROVIDER_RPM` | Unset | Optional per-tenant, provider/model request limit per minute. Uses Redis when `REDIS_URL` is configured. |

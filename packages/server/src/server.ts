@@ -346,8 +346,12 @@ export function createServer(options: { hostname?: string; port?: number } = {})
       if (method === "POST" && /\/sessions\/[^/]+\/(prompt|compact)$/.test(path)) {
         const configuredHighWatermark = Number(process.env.QUEUE_HIGH_WATERMARK ?? 2_000);
         const highWatermark = Number.isInteger(configuredHighWatermark) && configuredHighWatermark > 0 ? configuredHighWatermark : 2_000;
-        const queue = localJobQueue.admissionStats("local");
-        if (queue.queued >= highWatermark || queue.oldestAgeMs > 60_000) {
+        const maxQueuedAgeMs = positiveLimit(process.env.QUEUE_MAX_AGE_MS) ?? 60_000;
+        const queuedSessionMatch = path.match(/^\/v1\/sessions\/([^/]+)\/(?:prompt|compact)$/);
+        let queuedSession: Session | undefined;
+        try { queuedSession = queuedSessionMatch ? store.sessions[decodeURIComponent(queuedSessionMatch[1]!)] : undefined; } catch { /* malformed session IDs are handled by the route */ }
+        const queue = localJobQueue.admissionStats(queuedSession?.tenantId ?? "local");
+        if (queue.queued >= highWatermark || queue.oldestAgeMs > maxQueuedAgeMs) {
           headers.set("retry-after", "5");
           return json({ error: "The service is busy. Try again shortly." }, 503);
         }
@@ -643,7 +647,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
               reservedRunSlots.add(sessionId);
               try {
                 const created = await localJobQueue.enqueue({
-                  id: id(), tenantId: "local", sessionId, rootSessionId: sessionId, kind: "run", priority: 100,
+                  id: id(), tenantId: quotaTenantId, sessionId, rootSessionId: sessionId, kind: "run", priority: 100,
                   maxAttempts: 5, input: { text: promptText, agent: session.agent, model: session.model, runtime: session.runtime, fix: body.fix, userId: quotaUserId },
                   notBefore: now(), createdAt: now(), updatedAt: now(),
                 });

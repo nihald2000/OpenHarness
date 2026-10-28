@@ -30,7 +30,8 @@ The server typecheck now runs with the server package's TypeScript, Bun, and Nod
 - [ ] Forward end-user OIDC identity through the web proxy and complete authorization coverage for tenant-scoped config/permission resources.
 - [x] Add Redis token-bucket and per-run quota lease adapters; enforce API/prompt/admin rate limits, local/Redis run-slot quotas, prompt size, queue admission, and bounded SSE buffering.
 - [x] Record per-step OIDC tenant token/cost usage in Postgres and stop runs when the configured tenant monthly budget is exceeded.
-- [ ] Wire rate/quota/admission to durable distributed jobs, plan-specific budgets, per-tenant queued-age admission, and distributed contract tests.
+- [ ] Wire rate/quota/admission to durable distributed jobs, plan-specific budgets, and distributed contract tests.
+- [x] Scope local queued-job admission and fair claiming to the real tenant ID; configure per-tenant queue high-watermark and oldest-age limits.
 - [x] Apply optional per-tenant/provider/model RPM limits and TPM estimated-token reservations through the shared rate limiter.
 - [ ] Add remote sandboxes, config/secret/content repositories, and operations instrumentation/deployment.
 - [ ] Pass local compatibility checks plus distributed contract, integration, chaos, and load acceptance criteria from `docs/SCALING.md`.
