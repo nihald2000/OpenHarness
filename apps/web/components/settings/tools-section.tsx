@@ -236,7 +236,8 @@ export function ToolsSection() {
               <tr className="border-b border-border text-[11px] uppercase text-muted">
                 <th className="py-2 pr-3">Tool</th>
                 <th className="py-2 pr-3">Description</th>
-                <th className="py-2 pr-3">Mode</th>
+                <th className="py-2 pr-3">Plugin / runtime</th>
+                <th className="py-2 pr-3">Read/write</th>
                 <th className="py-2">Source</th>
               </tr>
             </thead>
@@ -249,6 +250,15 @@ export function ToolsSection() {
                   <td className="py-2 pr-3 text-muted">
                     {t.description || "—"}
                   </td>
+                  <td className="py-2 pr-3 text-muted">
+                    {t.plugin ? (
+                      <Badge tone="accent">plugin: {t.plugin}</Badge>
+                    ) : (
+                      <span className="font-mono text-[11px]">
+                        {t.source || "built-in"}
+                      </span>
+                    )}
+                  </td>
                   <td className="py-2 pr-3">
                     {t.readOnly ? (
                       <Badge tone="accent">read-only</Badge>
@@ -258,10 +268,9 @@ export function ToolsSection() {
                   </td>
                   <td className="py-2">
                     <div className="flex flex-wrap gap-1">
-                      {t.plugin ? (
+                      <Badge tone="neutral">{t.source || "built-in"}</Badge>
+                      {t.plugin && (
                         <Badge tone="accent">plugin: {t.plugin}</Badge>
-                      ) : (
-                        <Badge tone="neutral">{t.source || "built-in"}</Badge>
                       )}
                       {t.codeOnly && <Badge tone="neutral">code-only</Badge>}
                     </div>

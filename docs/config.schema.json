@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openharness.dev/schemas/config.schema.json",
+  "title": "OpenHarness project configuration",
+  "type": "object",
+  "properties": {
+    "model": { "type": "string" },
+    "smallModel": { "type": "string" },
+    "defaultAgent": { "type": "string" },
+    "defaultRuntime": { "type": "string" },
+    "providers": { "type": "object", "additionalProperties": { "$ref": "#/$defs/provider" } },
+    "mcp": { "type": "object" },
+    "plugins": { "type": "object" },
+    "permissions": { "type": "array", "items": { "type": "object" } },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "maxConcurrentRuns": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "maxRunDurationSec": { "type": "integer", "minimum": 1 },
+        "maxSessionContextTokens": { "type": "integer", "minimum": 1000 },
+        "maxTokensPerTurn": { "type": "integer", "minimum": 100 },
+        "maxCostPerRun": { "type": "number", "minimum": 0 },
+        "maxCostPerSession": { "type": "number", "minimum": 0 },
+        "maxToolOutputChars": { "type": "integer", "minimum": 100 },
+        "maxToolDepth": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "maxIterations": { "type": "integer", "minimum": 1, "maximum": 25 },
+        "maxSubagents": { "type": "integer", "minimum": 0, "maximum": 8 }
+      },
+      "additionalProperties": false
+    },
+    "compaction": { "type": "object" },
+    "verify": { "type": "object" },
+    "guardrails": { "type": "object" },
+    "codeMode": { "type": "object" },
+    "advanced": { "type": "object" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "required": ["type", "models"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "enum": ["openai", "plugin"] },
+        "baseUrl": { "type": "string", "format": "uri" },
+        "apiKey": { "type": "string", "description": "Use {secret:NAME}; plaintext is extracted by the settings API." },
+        "timeoutMs": { "type": "integer", "minimum": 100 },
+        "models": { "type": "object", "additionalProperties": { "type": "object" } }
+      },
+      "additionalProperties": true
+    }
+  }
+}

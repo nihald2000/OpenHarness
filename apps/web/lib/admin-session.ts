@@ -14,6 +14,21 @@ interface AdminSessionState {
   failures: Map<string, number[]>;
 }
 
+export interface AuthenticatedUser {
+  id: string;
+  name: string;
+  email: string;
+  avatarUrl?: string;
+  providers: Array<"google" | "github">;
+  createdAt: number;
+}
+
+interface SessionPayload {
+  token?: unknown;
+  user?: AuthenticatedUser;
+  exp?: unknown;
+}
+
 const GLOBAL_KEY = "__openharness_web_admin_session";
 
 function getState(): AdminSessionState {
@@ -36,6 +51,30 @@ function getKey(): Buffer {
   return state.key;
 }
 
+export function sealOpaqueCookie(value: unknown, purpose: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", getKey(), iv);
+  cipher.setAAD(Buffer.from(`openharness_${purpose}_v1`, "utf8"));
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return `${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
+}
+
+export function openOpaqueCookie<T>(value: string | undefined, purpose: string): T | undefined {
+  if (!value || value.length > 8192) return undefined;
+  const [ivValue, tagValue, encryptedValue, ...extra] = value.split(".");
+  if (!ivValue || !tagValue || !encryptedValue || extra.length) return undefined;
+  try {
+    const iv = Buffer.from(ivValue, "base64url");
+    const tag = Buffer.from(tagValue, "base64url");
+    const encrypted = Buffer.from(encryptedValue, "base64url");
+    if (iv.length !== 12 || tag.length !== 16 || encrypted.length < 2) return undefined;
+    const decipher = createDecipheriv("aes-256-gcm", getKey(), iv);
+    decipher.setAAD(Buffer.from(`openharness_${purpose}_v1`, "utf8"));
+    decipher.setAuthTag(tag);
+    return JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8")) as T;
+  } catch { return undefined; }
+}
+
 export function getAdminUrl(): string {
   const raw = process.env.OPENHARNESS_URL?.trim() || "http://127.0.0.1:4096";
   return raw.replace(/\/+$/, "");
@@ -48,18 +87,18 @@ export function json(body: unknown, status = 200): NextResponse {
   });
 }
 
-export function sealSession(token: string, now = Date.now()): string {
+export function sealSession(token: string, now = Date.now(), user?: AuthenticatedUser): string {
   const key = getKey();
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   cipher.setAAD(AAD);
-  const payload = JSON.stringify({ token, exp: now + TTL_MS });
+  const payload = JSON.stringify({ token, ...(user ? { user } : {}), exp: now + TTL_MS });
   const encrypted = Buffer.concat([cipher.update(payload, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `${iv.toString("base64url")}.${tag.toString("base64url")}.${encrypted.toString("base64url")}`;
 }
 
-export function openSession(cookieValue: string | undefined, now = Date.now()): string | undefined {
+function openSessionPayload(cookieValue: string | undefined, now = Date.now()): SessionPayload | undefined {
   if (!cookieValue || cookieValue.length > 8192) return undefined;
   const parts = cookieValue.split(".");
   if (parts.length !== 3) return undefined;
@@ -74,37 +113,47 @@ export function openSession(cookieValue: string | undefined, now = Date.now()): 
     decipher.setAAD(AAD);
     decipher.setAuthTag(tag);
     const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
-    const parsed = JSON.parse(decrypted) as { token?: unknown; exp?: unknown };
+    const parsed = JSON.parse(decrypted) as SessionPayload;
     if (typeof parsed.token !== "string" || !parsed.token) return undefined;
     if (typeof parsed.exp !== "number" || parsed.exp <= now) return undefined;
-    return parsed.token;
+    return parsed;
   } catch {
     return undefined;
   }
 }
 
-export function adminTokenFrom(req: Request): string | undefined {
+function sessionCookieFrom(req: Request): string | undefined {
   const cookieHeader = req.headers.get("cookie");
   if (!cookieHeader) return undefined;
   for (const part of cookieHeader.split(";")) {
     const idx = part.indexOf("=");
-    if (idx === -1) continue;
-    const name = part.slice(0, idx).trim();
-    if (name === ADMIN_COOKIE) {
-      const val = part.slice(idx + 1).trim();
-      return openSession(val);
-    }
+    if (idx !== -1 && part.slice(0, idx).trim() === ADMIN_COOKIE) return part.slice(idx + 1).trim();
   }
   return undefined;
 }
 
-export function setSessionCookie(res: NextResponse, token: string, req?: Request): void {
-  const sealed = sealSession(token);
+export function openSession(cookieValue: string | undefined, now = Date.now()): string | undefined {
+  const parsed = openSessionPayload(cookieValue, now);
+  return typeof parsed?.token === "string" ? parsed.token : undefined;
+}
+
+export function authenticatedUserFrom(req: Request): AuthenticatedUser | undefined {
+  const user = openSessionPayload(sessionCookieFrom(req))?.user;
+  if (!user || typeof user.id !== "string" || typeof user.email !== "string" || typeof user.name !== "string") return undefined;
+  return user;
+}
+
+export function adminTokenFrom(req: Request): string | undefined {
+  return openSession(sessionCookieFrom(req));
+}
+
+export function setSessionCookie(res: NextResponse, token: string, req?: Request, user?: AuthenticatedUser): void {
+  const sealed = sealSession(token, Date.now(), user);
   const proto = req?.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
   const isSecure = proto === "https" || process.env.NODE_ENV === "production";
   res.cookies.set(ADMIN_COOKIE, sealed, {
     httpOnly: true,
-    sameSite: "strict",
+    sameSite: "lax",
     secure: isSecure,
     path: "/",
     maxAge: TTL_SEC,
@@ -114,7 +163,7 @@ export function setSessionCookie(res: NextResponse, token: string, req?: Request
 export function clearSessionCookie(res: NextResponse): void {
   res.cookies.set(ADMIN_COOKIE, "", {
     httpOnly: true,
-    sameSite: "strict",
+    sameSite: "lax",
     path: "/",
     maxAge: 0,
   });

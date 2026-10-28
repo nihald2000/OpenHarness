@@ -1,0 +1,15 @@
+{
+  "name": "@openharness/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "oh": "./src/cli.ts" },
+  "scripts": {
+    "start": "bun src/main.ts",
+    "oh": "bun src/cli.ts",
+    "eval": "bun src/cli.ts eval",
+    "test": "bun test",
+    "build": "bun src/build.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

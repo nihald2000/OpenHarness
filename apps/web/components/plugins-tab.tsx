@@ -30,7 +30,8 @@ const PLUGIN_NAME_RE = /^[a-zA-Z0-9-_]+$/;
 
 function findForbiddenSecretToken(val: unknown): string | null {
   if (typeof val === "string") {
-    const m = /\{(?:env|file|secret):[^}]+\}/i.exec(val);
+    const m =
+      /\{(?:env|file|secret):[^}]+\}|\[(?:file|env|secret):[^\]]+\]/i.exec(val);
     if (m) return m[0];
     return null;
   }
@@ -43,7 +44,9 @@ function findForbiddenSecretToken(val: unknown): string | null {
   }
   if (val && typeof val === "object") {
     for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
-      if (/^@(env|file|secret)$/i.test(k)) return k;
+      if (/^(?:@(?:env|file|secret)|\[(?:file|env|secret)[^\]]*\])$/i.test(k)) {
+        return k;
+      }
       const found = findForbiddenSecretToken(v);
       if (found) return found;
     }

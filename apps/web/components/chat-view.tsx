@@ -236,6 +236,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     }
 
     setSending(true);
+    setOptimisticPrompt(text);
+    setStickTrigger((t) => t + 1);
     try {
       const created = await client.session.create({
         agent: overrideAgent ?? selectedAgent,
@@ -250,6 +252,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
       });
       router.push(`/c/${encodeURIComponent(created.id)}`);
     } catch (err) {
+      setOptimisticPrompt(null);
       composerRef.current?.setText(text);
       notify("error", `Could not start a chat: ${errorMessage(err)}`);
     } finally {
@@ -324,7 +327,6 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
       await client.session.compact(sessionId);
       await fetchContextUsage();
     } catch (err) {
-      setCompacting(false);
       if (errorMessage(err) === NOTHING_TO_COMPACT) {
         notify(
           "info",
@@ -333,6 +335,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
       } else {
         notify("error", `Could not compact: ${errorMessage(err)}`);
       }
+    } finally {
+      setCompacting(false);
     }
   };
 

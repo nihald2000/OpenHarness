@@ -1,0 +1,32 @@
+{
+  "model": "mock/demo",
+  "defaultAgent": "assistant",
+  "defaultRuntime": "local",
+  "providers": {},
+  "permissions": [],
+  "limits": {
+    "maxConcurrentRuns": 4,
+    "maxRunDurationSec": 600,
+    "maxSessionContextTokens": 128000,
+    "maxTokensPerTurn": 8192,
+    "maxToolOutputChars": 20000,
+    "maxToolDepth": 3,
+    "maxIterations": 25,
+    "maxSubagents": 2
+  },
+  "compaction": {
+    "enabled": true,
+    "triggerTokens": 102400,
+    "keepRecentMessages": 4
+  },
+  "verify": {
+    "maxIterations": 3
+  },
+  "guardrails": {},
+  "codeMode": {
+    "enabled": false,
+    "timeoutMs": 10000,
+    "maxOutputChars": 20000
+  },
+  "advanced": {}
+}

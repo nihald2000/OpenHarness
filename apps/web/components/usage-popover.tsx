@@ -37,7 +37,15 @@ export function UsagePopover({
 
   const estimated = contextUsage?.estimatedTokens ?? 0;
   const windowSize = contextUsage?.contextWindow ?? 0;
-  const triggerAt = contextUsage?.triggerAt ?? 0.8;
+  const rawTriggerAt = contextUsage?.triggerAt ?? 0.8;
+  // Servers may report the trigger either as a ratio (0.75) or as an
+  // absolute token count (e.g. 102400). Normalize to a ratio.
+  const triggerAt =
+    rawTriggerAt > 1
+      ? windowSize > 0
+        ? rawTriggerAt / windowSize
+        : 0.8
+      : rawTriggerAt;
   const warnAt = Math.min(0.8, triggerAt) - 0.15;
   const fillRatio = windowSize > 0 ? estimated / windowSize : 0;
   const fillPct = Math.min(100, Math.round(fillRatio * 100));

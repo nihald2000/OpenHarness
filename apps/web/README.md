@@ -35,10 +35,14 @@ OpenHarness Server (OPENHARNESS_URL, default http://127.0.0.1:4096)
 ```text
 apps/web/
   app/
+    api/auth/[provider]/route.ts          # OAuth start and PKCE/state cookie
+    api/auth/[provider]/callback/route.ts # Verified provider callback and account signup
+    api/auth/providers/route.ts           # Configured provider/signup status
     api/oh/[...path]/route.ts   # Same-origin proxy to /health and /v1/**
     api/admin/login/route.ts    # Rate-limited admin token verification & cookie sealing
     api/admin/logout/route.ts   # Clears the oh_admin session cookie
     api/admin/session/route.ts  # Checks whether a valid admin cookie is present
+    login/page.tsx              # Google/GitHub sign-in and account creation
     c/[id]/page.tsx             # Session chat route
     settings/page.tsx           # Admin settings route
     globals.css                 # Tailwind v4 theme tokens & markdown typography
@@ -50,6 +54,7 @@ apps/web/
     ...                         # AppShell, Sidebar, ChatView, ChatHeader, Composer, Transcript, etc.
   lib/
     admin-session.ts            # Server-only AES-256-GCM session cookie & rate-limiter
+    oauth.ts                    # OAuth/PKCE, provider identity validation, and account store
     app-context.tsx             # Global catalog, sessions, permissions, theme, and toast state
     client.ts                   # Singleton OpenHarnessClient instance
     format.ts                   # Token, cost, duration, and relative time formatters
@@ -99,9 +104,16 @@ apps/web/
 | :--- | :--- | :--- |
 | `OPENHARNESS_URL` | `http://127.0.0.1:4096` | Upstream URL of the OpenHarness server (server-side only). |
 | `OPENHARNESS_SERVER_TOKEN` | *(empty)* | Optional bearer token injected by the Next.js proxy on upstream requests. |
-| `OPENHARNESS_WEB_SESSION_SECRET` | *(random per process)* | Secret used to derive the AES-256-GCM key for the `oh_admin` session cookie. |
+| `OPENHARNESS_WEB_SESSION_SECRET` | *(random per process)* | Secret used to derive the AES-256-GCM key for the `oh_admin` session cookie. Set a stable secret in production. |
+| `OPENHARNESS_WEB_URL` | Local request origin in development | Public origin used to build the fixed OAuth callback URLs. |
+| `OPENHARNESS_ADMIN_TOKEN` | *(empty)* | Server administrator token; must match the API server token. |
+| `OPENHARNESS_AUTH_DATA_DIR` | `OPENHARNESS_DATA_DIR` or `.openharness-auth` | Persistent web account profile directory. |
+| `OPENHARNESS_AUTH_ALLOWED_EMAILS` | *(empty)* | Comma-separated verified email allowlist for signup. |
+| `OPENHARNESS_AUTH_ALLOW_SIGNUP` | `false` | Allows signup when no email allowlist is configured. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | *(empty)* | Google OAuth web application credentials. |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | *(empty)* | GitHub OAuth app credentials. |
 
-## Settings & Administrator Sign-In Flow
+## Web Sign-In and Administrator Recovery
 
 1. Generate or view the administrator token on the server:
 
@@ -109,12 +121,14 @@ apps/web/
    bun run oh admin token
    ```
 
-2. Navigate to [http://localhost:3000/settings](http://localhost:3000/settings) and enter the token.
-3. `POST /api/admin/login` verifies the token against `POST /v1/admin/verify` on the OpenHarness server and seals it inside an `httpOnly`, `SameSite=Strict`, AES-256-GCM encrypted cookie (`oh_admin`) valid for 8 hours.
+2. Configure Google/GitHub OAuth callback URLs at `/api/auth/google/callback` and `/api/auth/github/callback`, then set the client credentials, `OPENHARNESS_WEB_URL`, and signup policy.
+3. Navigate to `/login`. First OAuth signup requires a verified primary email and is stored in `web-users.json`; login for an unknown account does not auto-create it.
+4. `POST /api/admin/login` remains available as a recovery path. It verifies the token against `POST /v1/admin/verify` and seals it in an AES-256-GCM encrypted `httpOnly` cookie valid for 8 hours.
 
 ## Security Notes
 
 - **Strict Proxy Allowlist**: `/api/oh/[...path]` only forwards `/health` and `/v1/**`, rejecting path traversal segments.
 - **CSRF & Header Stripping**: Mutating proxy requests and requests carrying an admin session require a valid same-origin header (`Origin` / `Sec-Fetch-Site`). Client-supplied `x-openharness-admin` headers are never forwarded.
 - **Encrypted HttpOnly Cookie**: The admin token is sealed with AES-256-GCM (AAD `oh_admin_v1`) and is never readable by client JavaScript or stored in `localStorage`.
+- **OAuth Flow**: Provider callbacks use state and PKCE; Google identity tokens are signature/claim checked. The proxy denies `/v1/**` without a valid login cookie. See [Authentication](../../docs/AUTHENTICATION.md) for signup policy and the current single-workspace authorization model.
 - **Safe Markdown & Secret Handling**: Raw HTML and remote images are disabled in Markdown rendering, external links enforce `noopener noreferrer nofollow`, secrets are write-only, and web-submitted plugin options reject `{"@Env":...}` / `{env:...}` / `{file:...}` secret interpolation tokens.

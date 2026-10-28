@@ -1,17 +1,25 @@
 "use client";
 
-import React from "react";
+import React, { useEffect } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { AppProvider } from "@/lib/app-context";
+import { useAdmin } from "@/lib/use-admin";
 import { Sidebar } from "./sidebar";
 import { Toasts } from "./toast";
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const { admin, loading, expired } = useAdmin();
+  useEffect(() => {
+    if (!loading && !admin && pathname !== "/login") router.replace(`/login?returnTo=${encodeURIComponent(pathname || "/")}${expired ? "&error=session_expired" : ""}`);
+  }, [admin, expired, loading, pathname, router]);
+  if (pathname === "/login") return <>{children}</>;
+  if (loading) return <main className="grid min-h-dvh w-full place-items-center text-sm text-muted" role="status">Checking your session…</main>;
+  if (!admin) return <main className="grid min-h-dvh w-full place-items-center text-sm text-muted" role="status">Redirecting to sign in…</main>;
   return (
     <AppProvider>
-      <a
-        href="#oh-composer"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-lg focus:bg-accent focus:px-3 focus:py-1.5 focus:text-xs focus:font-medium focus:text-accent-fg"
-      >
+      <a href="#oh-composer" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-lg focus:bg-accent focus:px-3 focus:py-1.5 focus:text-xs focus:font-medium focus:text-accent-fg">
         Skip to message input
       </a>
       <div className="flex h-dvh overflow-hidden">
@@ -20,5 +28,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
       <Toasts />
     </AppProvider>
+  );
+}
+
+export function AppShell({ children }: { children: React.ReactNode }) {
+  return (
+    <AuthGate>{children}</AuthGate>
   );
 }

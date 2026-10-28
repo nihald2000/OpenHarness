@@ -79,6 +79,9 @@ export interface CompactionPart {
   tokensBefore?: number;
   tokensAfter?: number;
   keptMessages?: number;
+  requirements?: string[];
+  decisions?: string[];
+  openQuestions?: string[];
 }
 
 export interface VerifyPart {
@@ -295,10 +298,13 @@ export interface FixStatusEvent {
 export type OpenHarnessEvent =
   | { type: "session.updated"; session: Session }
   | { type: "session.deleted"; sessionId: string }
+  | { type: "runtime.reloaded"; at: number }
   | { type: "run.status"; sessionId: string; status: RunStatus; error?: string }
   | FixStatusEvent
+  | { type: "verification.started"; sessionId: string; command: string; iteration: number; maxIterations: number }
+  | { type: "verification.completed"; sessionId: string; result: { command?: string; passed?: boolean; exitCode?: number | null; timedOut?: boolean; stdout?: string; stderr?: string; truncated?: boolean }; iteration: number; maxIterations: number }
   | { type: "permission.asked"; request: PermissionRequest }
-  | { type: "permission.replied"; requestId: string }
+  | { type: "permission.replied"; requestId: string; reply?: PermissionReply }
   | { type: "message.updated"; sessionId: string; message: Message }
   | { type: "part.updated"; sessionId: string; messageId: string; part: Part };
 

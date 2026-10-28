@@ -1,4 +1,7 @@
 node_modules
+.openharness/
+.openharness-auth/
+dist/
 .DS_Store
 *.log
 .env

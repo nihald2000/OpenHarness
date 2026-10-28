@@ -1,23 +1,27 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
+import type { AuthenticatedUser } from "./admin-session";
 
 export interface AdminSnapshot {
   admin: boolean;
   loading: boolean;
   expired: boolean;
+  user: AuthenticatedUser | null;
 }
 
 let state: AdminSnapshot = {
   admin: false,
   loading: true,
   expired: false,
+  user: null,
 };
 
 const SERVER_SNAPSHOT: AdminSnapshot = {
   admin: false,
   loading: true,
   expired: false,
+  user: null,
 };
 
 let initialized = false;
@@ -57,19 +61,20 @@ export function refreshAdmin(): Promise<boolean> {
         cache: "no-store",
       });
       if (!res.ok) {
-        setState({ admin: false, loading: false });
+        setState({ admin: false, loading: false, user: null });
         return false;
       }
-      const data = (await res.json()) as { admin?: boolean };
+      const data = (await res.json()) as { admin?: boolean; user?: AuthenticatedUser | null };
       const isAdmin = Boolean(data.admin);
       setState({
         admin: isAdmin,
         loading: false,
+        user: isAdmin ? data.user ?? null : null,
         expired: isAdmin ? false : state.expired,
       });
       return isAdmin;
     } catch {
-      setState({ admin: false, loading: false });
+      setState({ admin: false, loading: false, user: null });
       return false;
     } finally {
       inFlight = null;
@@ -79,7 +84,7 @@ export function refreshAdmin(): Promise<boolean> {
 }
 
 export function markSignedOut(expired = true): void {
-  setState({ admin: false, loading: false, expired });
+  setState({ admin: false, loading: false, expired, user: null });
 }
 
 export async function adminLogin(
@@ -101,7 +106,7 @@ export async function adminLogin(
       }
       return { ok: false, error: msg };
     }
-    setState({ admin: true, loading: false, expired: false });
+    setState({ admin: true, loading: false, expired: false, user: null });
     return { ok: true };
   } catch {
     return { ok: false, error: "Could not reach the web server" };
@@ -114,7 +119,7 @@ export async function adminLogout(): Promise<void> {
   } catch {
     // ignore network errors on logout
   }
-  setState({ admin: false, loading: false, expired: false });
+  setState({ admin: false, loading: false, expired: false, user: null });
 }
 
 export function useAdmin() {
@@ -131,6 +136,7 @@ export function useAdmin() {
     admin: snapshot.admin,
     loading: snapshot.loading,
     expired: snapshot.expired,
+    user: snapshot.user,
     refresh: refreshAdmin,
     login: adminLogin,
     logout: adminLogout,

@@ -1,0 +1,49 @@
+services:
+  openharness:
+    build:
+      context: .
+      target: server
+    ports:
+      - "${OPENHARNESS_PORT:-4096}:4096"
+    environment:
+      OPENHARNESS_HOST: 0.0.0.0
+      OPENHARNESS_PORT: 4096
+      OPENHARNESS_DATA_DIR: /data
+      OPENHARNESS_WORKSPACE: /workspace
+      OPENHARNESS_SERVER_TOKEN: ${OPENHARNESS_SERVER_TOKEN:-}
+      OPENHARNESS_ADMIN_TOKEN: ${OPENHARNESS_ADMIN_TOKEN:-}
+      OPENHARNESS_PROVIDER: ${OPENHARNESS_PROVIDER:-mock}
+      OPENHARNESS_MODEL: ${OPENHARNESS_MODEL:-mock/demo}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - openharness-data:/data
+      - ${OPENHARNESS_WORKSPACE:-.}:/workspace
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      target: web
+    depends_on:
+      - openharness
+    ports:
+      - "${OPENHARNESS_WEB_PORT:-3000}:3000"
+    environment:
+      OPENHARNESS_URL: http://openharness:4096
+      OPENHARNESS_SERVER_TOKEN: ${OPENHARNESS_SERVER_TOKEN:-}
+      OPENHARNESS_ADMIN_TOKEN: ${OPENHARNESS_ADMIN_TOKEN:-}
+      OPENHARNESS_WEB_SESSION_SECRET: ${OPENHARNESS_WEB_SESSION_SECRET:-}
+      OPENHARNESS_WEB_URL: ${OPENHARNESS_WEB_URL:-http://localhost:3000}
+      OPENHARNESS_AUTH_DATA_DIR: /data
+      OPENHARNESS_AUTH_ALLOWED_EMAILS: ${OPENHARNESS_AUTH_ALLOWED_EMAILS:-}
+      OPENHARNESS_AUTH_ALLOW_SIGNUP: ${OPENHARNESS_AUTH_ALLOW_SIGNUP:-false}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+    restart: unless-stopped
+    volumes:
+      - openharness-data:/data
+
+volumes:
+  openharness-data:

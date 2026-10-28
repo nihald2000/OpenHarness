@@ -34,6 +34,10 @@ async function handle(
   const originOk = sameOrigin(req);
   const adminToken = adminTokenFrom(req);
 
+  if (targetPath !== "/health" && !adminToken) {
+    return json({ error: "authentication required" }, 401);
+  }
+
   if (isMutating && !originOk) {
     return json({ error: "bad origin" }, 403);
   }

@@ -7,9 +7,16 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "bun --cwd apps/web run dev",
-    "build": "bun --cwd apps/web run build",
-    "start": "bun --cwd apps/web run start",
-    "typecheck": "bun --cwd apps/web run typecheck"
+    "dev": "bun run --cwd apps/web dev",
+    "server": "bun run --cwd packages/server start",
+    "oh": "bun run --cwd packages/server oh",
+    "eval": "bun run --cwd packages/server eval",
+    "test:server": "bun run --cwd packages/server test",
+    "test:sdk": "bun run --cwd packages/sdk test",
+    "build:server": "bun run --cwd packages/server build",
+    "build": "bun run --cwd apps/web build",
+    "start": "bun run --cwd apps/web start",
+    "typecheck": "bun run --cwd apps/web typecheck",
+    "typecheck:server": "tsc --noEmit -p packages/server/tsconfig.json"
   }
 }

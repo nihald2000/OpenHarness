@@ -65,7 +65,7 @@ function isValidSection(val: string): val is SectionId {
 
 export function SettingsView() {
   const { setSidebarOpen } = useApp();
-  const { admin, loading: adminLoading, expired, logout, markSignedOut } =
+  const { admin, loading: adminLoading, expired, user, logout, markSignedOut } =
     useAdmin();
 
   const [view, setView] = useState<SettingsPreviewResponse | null>(null);
@@ -158,14 +158,17 @@ export function SettingsView() {
         </div>
 
         {admin && (
-          <button
-            type="button"
-            onClick={() => void logout()}
-            className={buttonSecondary}
-          >
-            <LogOut className="size-3.5" aria-hidden="true" />
-            <span>Sign out</span>
-          </button>
+          <div className="flex items-center gap-3">
+            {user && <span className="hidden max-w-44 truncate text-xs text-muted sm:block" title={user.email}>{user.name}</span>}
+            <button
+              type="button"
+              onClick={() => void logout()}
+              className={buttonSecondary}
+            >
+              <LogOut className="size-3.5" aria-hidden="true" />
+              <span>Sign out</span>
+            </button>
+          </div>
         )}
       </header>
 

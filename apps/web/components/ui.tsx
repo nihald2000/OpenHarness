@@ -180,8 +180,8 @@ export function BrandLogo({ className = "size-6" }: { className?: string }) {
           <stop offset="100%" stopColor="#8b55ff" />
         </linearGradient>
       </defs>
-      <rect width="64" height="64" rx="16" fill="url(#oh-brand-grad)" />
-      <circle cx="32" cy="32" r="16" stroke="#ffffff" strokeWidth="5" />
+      <rect width="64" height="64" rx="28" fill="url(#oh-brand-grad)" />
+      <circle cx="32" cy="32" r="26" stroke="#ffffff" strokeWidth="5" />
       <path
         d="M32 12v8M32 44v8M12 32h8M44 32h8"
         stroke="#ffffff"

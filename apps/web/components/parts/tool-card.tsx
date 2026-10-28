@@ -192,6 +192,27 @@ export function ToolCard({
         </div>
       )}
 
+      {!open && isRunning && part.tool === "run_code" && calls.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 border-t border-border px-3 py-1.5">
+          {calls.slice(-4).map((c, idx) => (
+            <span
+              key={idx}
+              className="inline-flex items-center gap-1 rounded border border-border bg-code px-1.5 py-0.5 font-mono text-[10px]"
+            >
+              <span>{c.tool || "call"}</span>
+              {c.state === "error" && (
+                <span className="text-danger">failed</span>
+              )}
+            </span>
+          ))}
+          {calls.length > 4 && (
+            <span className="text-[10px] text-muted">
+              +{calls.length - 4} earlier
+            </span>
+          )}
+        </div>
+      )}
+
       {!open && (isError || isDenied) && part.error && (
         <div
           className={`border-t border-border px-3 py-1.5 text-[11px] line-clamp-2 ${
@@ -239,9 +260,11 @@ export function ToolCard({
             <div>
               <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">
                 Tool calls ({calls.length})
+                {calls.filter((c) => c.state === "error").length > 0 &&
+                  ` · ${calls.filter((c) => c.state === "error").length} failed`}
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {calls.map((c, idx) => (
+                {calls.slice(-4).map((c, idx) => (
                   <span
                     key={idx}
                     className="inline-flex items-center gap-1 rounded border border-border bg-code px-1.5 py-0.5 font-mono text-[10px]"
@@ -252,6 +275,11 @@ export function ToolCard({
                     )}
                   </span>
                 ))}
+                {calls.length > 4 && (
+                  <span className="text-[10px] text-muted">
+                    +{calls.length - 4} earlier
+                  </span>
+                )}
               </div>
             </div>
           )}
