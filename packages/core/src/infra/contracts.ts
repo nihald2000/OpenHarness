@@ -62,6 +62,7 @@ export interface JobDocument<Input = unknown, Checkpoint = unknown, Result = unk
   error?: string;
   cancelRequestedAt?: number;
   idempotencyKey?: string;
+  notBefore: number;
   createdAt: number;
   updatedAt: number;
 }
