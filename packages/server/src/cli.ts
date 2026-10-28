@@ -178,6 +178,7 @@ Usage: bun run oh <command> [args] [--json]
 
 Commands:
   server                    Start the local server
+  migrate                   Apply distributed Postgres schema migrations
   info                      Show server information
   sessions                  List sessions
   tools                     List available tools
@@ -194,13 +195,26 @@ Commands:
   admin token               Generate a random admin token
   help                      Show this help
 
-Environment: OPENHARNESS_URL, OPENHARNESS_SERVER_TOKEN, OPENHARNESS_ADMIN_TOKEN.`;
+Environment: OPENHARNESS_URL, OPENHARNESS_SERVER_TOKEN, OPENHARNESS_ADMIN_TOKEN, OPENHARNESS_DATABASE_URL.`;
 
 async function main() {
   const command = positional[0] ?? "help";
   switch (command) {
     case "help": case "--help": case "-h": console.log(help); return;
     case "server": await import("./main.ts"); return;
+    case "migrate": {
+      const databaseUrl = process.env.OPENHARNESS_DATABASE_URL;
+      if (!databaseUrl) throw new Error("OPENHARNESS_DATABASE_URL is required for migrations");
+      const [{ default: postgres }, { runPostgresMigrations }] = await Promise.all([
+        import("postgres"), import("../../core/src/infra/postgres-migrations.ts"),
+      ]);
+      const sql = postgres(databaseUrl, { max: 1 });
+      try {
+        const result = await runPostgresMigrations(sql, resolve(workspaceRoot, "packages/core/migrations"));
+        print({ migrated: result.applied });
+      } finally { await sql.end({ timeout: 5 }); }
+      return;
+    }
     case "info": print(await api("/v1/info")); return;
     case "sessions": print(await api("/v1/sessions")); return;
     case "tools": print(await api("/v1/tools")); return;

@@ -5,5 +5,9 @@
   "type": "module",
   "exports": {
     "./infra": "./src/infra/index.ts"
+  },
+  "dependencies": {
+    "ioredis": "^6.0.0",
+    "postgres": "^3.4.9"
   }
 }

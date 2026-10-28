@@ -16,12 +16,14 @@ The server typecheck script cannot find `tsc`; direct invocation reports missing
 - [x] Route prompt acceptance through local enqueue/claim, renew its lease, checkpoint run start, and finalize/cancel the job while retaining the current API response and active-run behavior.
 - [ ] Checkpoint each agent step and resume from those checkpoints after worker/process interruption.
 - [ ] Complete local adapters for state, jobs, cancellation, locks, rate limits, quotas, secrets, configuration, and runtime execution; remove direct infrastructure access from the server and runner.
-- [ ] Add PostgreSQL/Redis adapters, schema migrations, atomic per-session event sequencing, and cross-node SSE replay recovery.
-- [ ] Add durable worker jobs, leases, fencing, checkpoints, durable approvals, and resumable runs.
+- [x] Add PostgreSQL schema migrations and adapters for tenant-scoped JSON state, per-session transactional event sequencing/outbox, durable job leases/fences, Redis event fan-out, and cancellation signals; add `oh migrate`.
+- [ ] Wire distributed adapters into server API/SSE and add periodic replay-gap catch-up, outbox scheduling, and deployable distributed mode selection.
+- [ ] Add a worker process and resumable run step machine; the durable queue lifecycle adapter exists, but current agent runs still execute in the API process and approval waiters remain in-memory.
+- [ ] Add durable approvals, restart replay rules for in-flight tool calls, lease reaper/leader schedules, and provider retry wait jobs.
 - [ ] Add OIDC identity, tenant-scoped authorization, rate limits/quotas, remote sandboxes, config/secret/content repositories, and operations instrumentation/deployment.
 - [ ] Pass local compatibility checks plus distributed contract, integration, chaos, and load acceptance criteria from `docs/SCALING.md`.
 
-Tracks the consolidated requirements in `prompt.md`. Items are checked only when implemented and verified. `build:server` and `git diff --check` pass for this workspace revision; the server typecheck script cannot find `tsc`, while direct invocation is blocked by missing Node/Bun type declarations and strict typing errors.
+Tracks the consolidated requirements in `prompt.md`. Items are checked only when implemented and verified. Adapter entrypoint bundling, server build, and current server/SDK tests pass; live Postgres/Redis integration is unavailable because Docker is not running in this environment.
 
 ## Done in this pass
 
