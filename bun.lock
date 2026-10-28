@@ -26,6 +26,10 @@
         "typescript": "^5.9",
       },
     },
+    "packages/core": {
+      "name": "@openharness/core",
+      "version": "0.1.0",
+    },
     "packages/sdk": {
       "name": "@openharness/sdk",
       "version": "0.1.0",

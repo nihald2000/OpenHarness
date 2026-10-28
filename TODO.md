@@ -1,6 +1,17 @@
 # OpenHarness backend completion checklist
 
-Tracks the consolidated requirements in `prompt.md`. Items are checked only when implemented and verified. `build:server` and `git diff --check` pass for this workspace revision; `typecheck:server` cannot run because `tsc` is not installed in the checkout.
+The server typecheck script cannot find `tsc`; direct invocation reports missing Node/Bun type declarations and strict typing errors. See `docs/SCALING.md` for the current scaling migration status.
+
+## Distributed scaling request
+
+- [x] Add the initial shared infrastructure contracts and route local live SSE fan-out through the in-process EventBus; preserve the existing event replay store.
+- [ ] Complete local adapters for state, jobs, cancellation, locks, rate limits, quotas, secrets, configuration, and runtime execution; remove direct infrastructure access from the server and runner.
+- [ ] Add PostgreSQL/Redis adapters, schema migrations, atomic per-session event sequencing, and cross-node SSE replay recovery.
+- [ ] Add durable worker jobs, leases, fencing, checkpoints, durable approvals, and resumable runs.
+- [ ] Add OIDC identity, tenant-scoped authorization, rate limits/quotas, remote sandboxes, config/secret/content repositories, and operations instrumentation/deployment.
+- [ ] Pass local compatibility checks plus distributed contract, integration, chaos, and load acceptance criteria from `docs/SCALING.md`.
+
+Tracks the consolidated requirements in `prompt.md`. Items are checked only when implemented and verified. `build:server` and `git diff --check` pass for this workspace revision; the server typecheck script cannot find `tsc`, while direct invocation is blocked by missing Node/Bun type declarations and strict typing errors.
 
 ## Done in this pass
 

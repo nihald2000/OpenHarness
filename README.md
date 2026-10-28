@@ -35,3 +35,5 @@ docker compose up --build
 ```
 
 See [deployment notes](docs/DEPLOYMENT.md), [API routes](docs/API.md), [configuration and environment](docs/CONFIGURATION.md), [environment template](.env.example), and [the sample config](openharness.example.json).
+
+The distributed scaling design and migration status are tracked in [Scaling architecture](docs/SCALING.md). The current server still runs only in local mode.

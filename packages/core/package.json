@@ -1,0 +1,9 @@
+{
+  "name": "@openharness/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./infra": "./src/infra/index.ts"
+  }
+}

@@ -41,9 +41,12 @@
 - Single Bun server binary, Node 24 Docker targets for backend and web, Compose, CI build/typecheck/eval workflow, environment template, and deployment docs.
 - The server binary build and `git diff --check` succeed. `typecheck:server` cannot run because `tsc` is not installed. Web builds failed in this sandbox (Turbopack worker spawn failure; webpack `EPERM` creating a generated `.next/types` directory). End-to-end eval has not been run.
 
-## Current starting point
+## Distributed scaling migration — phase 1 started
 
-- Existing workspace: Next.js web UI and SDK only; backend package is absent.
-- Baseline commit: `aab4a94` (`chore: save existing OpenHarness workspace`).
-- Working branch: `codex/backend-runtime`.
-- Remaining work is tracked in `TODO.md`, including full browser/plugin lifecycle, general sandboxed `run_code`, automatic verify/fix loops, YAML evals, complete SDK event coverage, and automated safety-focused tests.
+- The requested scaling specification is tracked in `docs/SCALING.md`; it is a multi-phase migration and the repository remains local-only.
+- Added shared infrastructure contracts under `packages/core/src/infra` and connected API live SSE fan-out to the local `InProcessEventBus` adapter. Durable local event replay stays in the existing JSON store.
+- The focused adapter tests pass (2); the server bundle builds and all current server/SDK tests pass (19). Server type checking remains unavailable because `tsc` is not installed; the eval suite has not been run in this phase.
+- Remaining phase 1 work: move state access, run queue, cancellation, locking, config, secrets, and tool execution behind adapters, then prove local behavior with the complete check/eval suite.
+- There is no distributed-mode switch yet. Do not claim Postgres, Redis, worker, tenant-isolation, or horizontal-scaling support until their later phases and integration tests are complete.
+
+Other backend feature work remains tracked in `TODO.md`.

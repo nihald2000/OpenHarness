@@ -8,12 +8,13 @@ import { attachPlugin, deleteMcpServer, detachPlugin, installMcpPreset, listMcpP
 import { McpClientManager } from "./mcp-client.ts";
 import { discoverAgents, discoverContext, discoverSkillsAndCommands, mergeConfiguredAgent, resolveSlashCommand, type AgentDefinition } from "./agent-context.ts";
 import { logError } from "./logger.ts";
+import { InProcessEventBus, type EventEnvelope } from "../../core/src/infra/index.ts";
 
 type RunStatus = "idle" | "queued" | "running" | "awaiting_permission" | "verifying" | "completed" | "failed" | "cancelled";
 type Part = { type: "text"; text: string } | { type: "skill"; name: string; reason: "trigger" } | { type: "verify"; name: string; command: string; passed: boolean; exitCode: number; output?: string; iteration: number; maxIterations: number } | { type: "step"; usage?: { input: number; output: number }; cost?: number } | { type: "compaction"; summary: string; reason: string; compactedMessages: number; tokensBefore?: number; tokensAfter?: number; keptMessages?: number; requirements?: string[]; decisions?: string[]; openQuestions?: string[] } | { type: "tool"; tool: string; callId: string; state: "pending" | "running" | "completed" | "error" | "denied"; input: unknown; output?: unknown; error?: string; title?: string };
 type Message = { info: { id: string; role: "user" | "assistant"; agent?: string; model?: string; summary?: boolean; error?: string; usage?: { input: number; output: number }; cost?: number }; createdAt: number; completedAt?: number; parts: Part[] };
 type Session = { id: string; title: string; agent: string; model?: string; runtime?: string | null; status: RunStatus; error?: string; updatedAt: number; usage: { input: number; output: number }; cost?: number };
-type EventRecord = { seq: number; data: Record<string, unknown> };
+type EventRecord = EventEnvelope<Record<string, unknown>>;
 type Store = { sessions: Record<string, Session>; messages: Record<string, Message[]>; permissions: Record<string, Record<string, unknown>>; grants: string[]; events: EventRecord[]; nextSeq: number };
 
 declare const Bun: {
@@ -125,7 +126,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
   const adminToken = process.env.OPENHARNESS_ADMIN_TOKEN;
   let store = structuredClone(EMPTY);
   let writes = Promise.resolve();
-  const subscribers = new Set<(event: EventRecord) => void>();
+  const eventBus = new InProcessEventBus<Record<string, unknown>>();
   const activeRuns = new Map<string, AbortController>();
   const permissionWaiters = new Map<string, { resolve(reply: "once" | "always" | "reject"): void; timer: ReturnType<typeof setTimeout> }>();
 
@@ -161,10 +162,12 @@ export function createServer(options: { hostname?: string; port?: number } = {})
   const mcpReady = pluginsReady.then(() => mcpManager.start());
   void mcpReady.catch((error) => logError("mcp.startup_failed", error));
   const publish = (data: Record<string, unknown>) => {
-    const event = { seq: store.nextSeq++, data };
+    const session = data.session && typeof data.session === "object" ? data.session as { id?: unknown } : undefined;
+    const sessionId = text(data.sessionId) ? data.sessionId : text(session?.id) ? session.id : undefined;
+    const event: EventRecord = { seq: store.nextSeq++, data, tenantId: "local", ...(sessionId ? { sessionId } : {}), at: now() };
     store.events.push(event);
     if (store.events.length > EVENT_LIMIT) store.events.splice(0, store.events.length - EVENT_LIMIT);
-    for (const subscriber of subscribers) subscriber(event);
+    void eventBus.publish(event).catch((error) => logError("event_bus.publish_failed", error, { seq: event.seq }));
     void persist().catch((error) => logError("store.persist_failed", error));
   };
   const saveSession = (session: Session) => {
@@ -355,11 +358,10 @@ export function createServer(options: { hostname?: string; port?: number } = {})
               if (sessionFilter && event.data.sessionId !== sessionFilter && (event.data.session as Session | undefined)?.id !== sessionFilter) return;
               controller.enqueue(encoder.encode(`id: ${event.seq}\ndata: ${JSON.stringify({ ...event.data, seq: event.seq })}\n\n`));
             };
-            const subscriber = (event: EventRecord) => send(event);
+            const unsubscribe = eventBus.subscribe({ tenantId: "local", ...(sessionFilter ? { sessionId: sessionFilter } : {}) }, send);
             for (const event of replay) send(event);
-            subscribers.add(subscriber);
             const heartbeat = setInterval(() => controller.enqueue(encoder.encode(`: ping ${now()}\n\n`)), 15_000);
-            cleanup = () => { clearInterval(heartbeat); subscribers.delete(subscriber); };
+            cleanup = () => { clearInterval(heartbeat); unsubscribe(); };
             req.signal.addEventListener("abort", () => {
               cleanup();
               try { controller.close(); } catch { /* already closed */ }
