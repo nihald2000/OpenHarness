@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import type { RedisOptions } from "ioredis";
 import type { RateLimiter } from "./contracts.ts";
 
 const TOKEN_BUCKET = `
@@ -27,7 +28,7 @@ return {allowed, tokens, retry}
 export class RedisRateLimiter implements RateLimiter {
   private readonly redis: Redis;
   constructor(redis: Redis, private readonly ownsClient = false, private readonly prefix = "openharness:rl:") { this.redis = redis; }
-  static connect(url: string, options: Redis.RedisOptions = {}) { return new RedisRateLimiter(new Redis(url, options), true); }
+  static connect(url: string, options: RedisOptions = {}) { return new RedisRateLimiter(new Redis(url, options), true); }
   async consume(key: string, input: { capacity: number; refillPerSecond: number; cost?: number }) {
     const { capacity, refillPerSecond } = input;
     const cost = input.cost ?? 1;

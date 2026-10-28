@@ -23,6 +23,9 @@ Use `.env.example` as the environment variable template. The server reads JSON s
 | `PROMPT_MAX_BYTES` | `262144` | Maximum UTF-8 prompt body size. |
 | `QUEUE_HIGH_WATERMARK` | `2000` | Local queue depth threshold for prompt admission. |
 | `USER_MAX_RUNS` / `TENANT_MAX_RUNS` | `3` / `4` | Concurrent run-slot limits. Redis leases are shared when `REDIS_URL` is set. |
+| `TENANT_MONTHLY_BUDGET_USD` | Unset | Optional monthly USD ceiling for OIDC tenants with usage recorded in Postgres. |
+| `PROVIDER_RPM` | Unset | Optional per-tenant, provider/model request limit per minute. Uses Redis when `REDIS_URL` is configured. |
+| `PROVIDER_TPM` | Unset | Optional per-tenant, provider/model estimated token limit per minute. Admission reserves estimated prompt tokens plus the output-token maximum. |
 | `SSE_MAX_BUFFER` / `SSE_MAX_PER_USER` | `1000` / `10` | Bounded queued SSE envelopes and per-user stream limit. |
 | `OPENHARNESS_SECRET_KEY` | Generated local key | Optional secret-store encryption key material; set a stable high-entropy value for portable deployments. |
 | `OPENHARNESS_PROVIDER` | `mock` | Provider selection; `mock` supports offline use. |

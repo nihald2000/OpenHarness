@@ -95,7 +95,7 @@ export async function attachPlugin(dataDir: string, input: { name: string; modul
   await localLockService.withLock(file, 30_000, async () => {
     const records = await load(file);
     const name = trustedModule === "builtin:modal-sandbox" ? "modal-sandbox" : "word-count";
-    records[name] = { name, module: trustedModule, options, attached: true, configured: Boolean(input.persist), attachedAt: Date.now() } satisfies PluginRecord;
+    records[name] = { name, module: trustedModule, options: options as Record<string, unknown>, attached: true, configured: Boolean(input.persist), attachedAt: Date.now() } satisfies PluginRecord;
     await save(file, records);
   });
 }

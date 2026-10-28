@@ -1,5 +1,5 @@
 import postgres from "postgres";
-import type { Sql } from "postgres";
+import type { Sql, TransactionSql } from "postgres";
 import type { PermissionDecision, PermissionRequestDocument, PermissionStore } from "./contracts.ts";
 
 /** Tenant-scoped durable approvals. Replies and saved rules commit atomically. */
@@ -13,7 +13,7 @@ export class PostgresPermissionStore implements PermissionStore {
   async create(request: PermissionRequestDocument) {
     const rows = await this.sql`INSERT INTO permission_requests
       (id,tenant_id,session_id,job_id,message_id,call_id,permission,patterns,title,metadata,rules,status,created_at)
-      SELECT ${request.id},${request.tenantId}::uuid,${request.sessionId},${request.jobId},${request.messageId},${request.callId},${request.permission},${this.sql.json(request.patterns)},${request.title},${this.sql.json(request.metadata)},${this.sql.json(request.rules)},'pending',${request.createdAt}
+      SELECT ${request.id},${request.tenantId}::uuid,${request.sessionId},${request.jobId},${request.messageId},${request.callId},${request.permission},${this.sql.json(request.patterns as any)},${request.title},${this.sql.json(request.metadata as any)},${this.sql.json(request.rules as any)},'pending',${request.createdAt}
       WHERE EXISTS (SELECT 1 FROM sessions WHERE tenant_id=${request.tenantId}::uuid AND id=${request.sessionId}) RETURNING id`;
     if (!rows.length) throw new Error("session not found");
   }
@@ -111,7 +111,7 @@ export class PostgresPermissionStore implements PermissionStore {
   }
 }
 
-async function writePermissionEvents(tx: Sql, tenantId: string, sessionId: string, requests: PermissionRequestDocument[], at: number) {
+async function writePermissionEvents(tx: Sql | TransactionSql, tenantId: string, sessionId: string, requests: PermissionRequestDocument[], at: number) {
   if (!requests.length) return;
   await tx`INSERT INTO session_seq (session_id,seq) VALUES (${sessionId},0) ON CONFLICT (session_id) DO NOTHING`;
   const rows = await tx<{ seq: string }[]>`UPDATE session_seq SET seq=seq+${requests.length} WHERE session_id=${sessionId} RETURNING seq`;
@@ -121,8 +121,8 @@ async function writePermissionEvents(tx: Sql, tenantId: string, sessionId: strin
     const request = requests[index]!;
     const event = { type: "permission.replied", requestId: request.id, reply: request.reply ?? "reject", sessionId };
     const seq = first + index;
-    await tx`INSERT INTO events (tenant_id,session_id,seq,at,type,data) VALUES (${tenantId}::uuid,${sessionId},${seq},${at},'permission.replied',${tx.json(event)})`;
-    await tx`INSERT INTO event_outbox (tenant_id,session_id,seq,at,data) VALUES (${tenantId}::uuid,${sessionId},${seq},${at},${tx.json(event)})`;
+    await tx`INSERT INTO events (tenant_id,session_id,seq,at,type,data) VALUES (${tenantId}::uuid,${sessionId},${seq},${at},'permission.replied',${tx.json(event as any)})`;
+    await tx`INSERT INTO event_outbox (tenant_id,session_id,seq,at,data) VALUES (${tenantId}::uuid,${sessionId},${seq},${at},${tx.json(event as any)})`;
   }
 }
 

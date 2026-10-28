@@ -1,6 +1,13 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import postgres from "postgres";
 import type { Sql } from "postgres";
+
+export async function migratePostgresUrl(url: string, directory: string) {
+  const sql = postgres(url, { max: 1 });
+  try { return await runPostgresMigrations(sql, directory); }
+  finally { await sql.end({ timeout: 5 }); }
+}
 
 /** Apply numbered SQL migrations once, in lexical order, inside transactions. */
 export async function runPostgresMigrations(sql: Sql, directory: string) {

@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import type { RedisOptions } from "ioredis";
 import type { CancelBus, EventBus, EventEnvelope } from "./contracts.ts";
 
 const EVENT_CHANNEL = "openharness:events:v1";
@@ -23,7 +24,7 @@ export class RedisEventBus<Event = unknown> implements EventBus<Event> {
     void subscriber.subscribe(EVENT_CHANNEL);
   }
 
-  static connect<Event = unknown>(url: string, options: Redis.RedisOptions = {}) {
+  static connect<Event = unknown>(url: string, options: RedisOptions = {}) {
     return new RedisEventBus<Event>(new Redis(url, options), new Redis(url, options), true);
   }
 
@@ -53,7 +54,7 @@ export class RedisCancelBus implements CancelBus {
     };
     subscriber.on("message", this.onMessage);
   }
-  static connect(url: string, options: Redis.RedisOptions = {}) { return new RedisCancelBus(new Redis(url, options), new Redis(url, options), true); }
+  static connect(url: string, options: RedisOptions = {}) { return new RedisCancelBus(new Redis(url, options), new Redis(url, options), true); }
   async request(sessionId: string) { await this.publisher.publish(`openharness:cancel:${sessionId}`, "1"); }
   onCancel(sessionId: string, listener: () => void) {
     let set = this.listeners.get(sessionId);

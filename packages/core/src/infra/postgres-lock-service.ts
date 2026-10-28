@@ -12,11 +12,11 @@ export class PostgresLockService implements LockService {
 
   async withLock<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
     if (!Number.isInteger(ttlMs) || ttlMs < 1) throw new Error("lock timeout must be a positive integer");
-    return this.sql.begin(async (tx) => {
+    return await this.sql.begin(async (tx) => {
       await tx`SELECT set_config('lock_timeout', ${`${ttlMs}ms`}, true)`;
       await tx`SELECT pg_advisory_xact_lock(hashtext('openharness'),hashtext(${key}))`;
       return fn();
-    });
+    }) as unknown as T;
   }
 
   async tryLeader(name: string, fn: () => Promise<void>): Promise<boolean> {

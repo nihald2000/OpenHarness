@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /** Minimal local persistence port for legacy JSON documents during migration. */
@@ -30,6 +30,18 @@ export class JsonDocumentStore<T> implements LocalDocumentStore<T> {
     await mkdir(dirname(this.file), { recursive: true });
     const temporary = `${this.file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
     await writeFile(temporary, document, { encoding: "utf8", mode: 0o600 });
-    await rename(temporary, this.file);
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try { await rename(temporary, this.file); return; }
+        catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (process.platform !== "win32" || !["EPERM", "EACCES"].includes(code ?? "") || attempt >= 4) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+        }
+      }
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined);
+      throw error;
+    }
   }
 }

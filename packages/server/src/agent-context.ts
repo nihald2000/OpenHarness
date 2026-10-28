@@ -323,7 +323,7 @@ export async function discoverSkillsAndCommands(workspace: string, configuredSki
   for (const command of await markdownDirectory(root, ".openharness/commands")) commands.set(command.name, command);
   return {
     skills: [...skillMap.values()].map(({ content: _content, ...skill }) => skill),
-    commands: [...commands.values()].map(({ content: _content, ...command }) => command),
+    commands: [...commands.values()],
   };
 }
 

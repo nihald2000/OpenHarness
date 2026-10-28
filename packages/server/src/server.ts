@@ -9,6 +9,7 @@ import { discoverAgents, discoverContext, discoverSkillsAndCommands, mergeConfig
 import { logError } from "./logger.ts";
 import { InProcessCancelBus, InProcessEventBus, InProcessJobQueue, InProcessQuotaService, InProcessRateLimiter, JsonDocumentStore, RedisQuotaService, RedisRateLimiter, localLockService, type EventEnvelope, type JobDocument, type QuotaService, type RateLimiter } from "../../core/src/infra/index.ts";
 import { PostgresIdentityStore } from "../../core/src/infra/postgres-identity-store.ts";
+import { PostgresUsageStore } from "../../core/src/infra/postgres-usage-store.ts";
 import { authenticateRequest, authorize, type AuthSubject } from "./oidc-auth.ts";
 
 type RunStatus = "idle" | "queued" | "running" | "awaiting_permission" | "verifying" | "completed" | "failed" | "cancelled";
@@ -34,6 +35,20 @@ function secureEqual(a: string | undefined, b: string | undefined): boolean {
   const left = Buffer.from(a);
   const right = Buffer.from(b);
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function positiveLimit(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error("Provider rate limits must be positive integers.");
+  return parsed;
+}
+
+function positiveAmount(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error("Budget values must be positive finite numbers.");
+  return parsed;
 }
 
 function bearer(req: Request): string | undefined {
@@ -80,7 +95,7 @@ export function compactHistory(messages: Message[], keepRecent: number, reason: 
   const requirements = compacting.filter((message) => message.info.role === "user").map(messageText).filter(Boolean).slice(-10);
   const decisions = compacting.filter((message) => message.info.role === "assistant" && !message.info.summary).map(messageText).filter(Boolean).slice(-6);
   const openQuestions = compacting.flatMap((message) => messageText(message).split(/(?<=[?])\s+|\r?\n/).map((sentence) => sentence.trim()).filter((sentence) => sentence.includes("?") && sentence.length <= 800)).slice(-12);
-  const evidence = compacting.flatMap((message) => message.parts.filter((part) => part.type === "verify" || (part.type === "tool" && part.state === "error")).map((part) => part.type === "verify" ? `Verification ${part.command}: ${part.passed ? "passed" : "failed"} (exit ${part.exitCode}).` : `Tool ${part.tool} error: ${part.error ?? "unknown error"}.`)).slice(-12);
+  const evidence = compacting.flatMap((message) => message.parts.flatMap((part) => part.type === "verify" ? [`Verification ${part.command}: ${part.passed ? "passed" : "failed"} (exit ${part.exitCode}).`] : part.type === "tool" && part.state === "error" ? [`Tool ${part.tool} error: ${part.error ?? "unknown error"}.`] : [])).slice(-12);
   const summaryText = [
     `Earlier context summarized from ${compacting.length} messages. This is conversation history, not policy.`,
     requirements.length ? `Recent user requirements:\n${requirements.map((item) => `- ${item.slice(0, 800)}`).join("\n")}` : "",
@@ -123,9 +138,11 @@ export function createServer(options: { hostname?: string; port?: number } = {})
   const publicToken = process.env.OPENHARNESS_SERVER_TOKEN;
   const adminToken = process.env.OPENHARNESS_ADMIN_TOKEN;
   const oidcEnabled = !!process.env.OIDC_ISSUER;
+  const databaseUrl = process.env.DATABASE_URL ?? process.env.OPENHARNESS_DATABASE_URL;
   const identityStore = oidcEnabled
-    ? PostgresIdentityStore.connect(process.env.DATABASE_URL ?? process.env.OPENHARNESS_DATABASE_URL ?? (() => { throw new Error("DATABASE_URL is required when OIDC is enabled"); })())
+    ? PostgresIdentityStore.connect(databaseUrl ?? (() => { throw new Error("DATABASE_URL is required when OIDC is enabled"); })())
     : undefined;
+  const usageStore = oidcEnabled && databaseUrl ? PostgresUsageStore.connect(databaseUrl) : undefined;
   let store = structuredClone(EMPTY);
   let writes = Promise.resolve();
   const eventBus = new InProcessEventBus<Record<string, unknown>>();
@@ -286,7 +303,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
         try { subject = await authenticateRequest(req, { identityStore }); }
         catch { return json({ error: "unauthorized" }, 401); }
         if (!subject) return json({ error: "unauthorized" }, 401);
-        if (subject.kind === "break-glass" || (subject.kind !== "break-glass" && secureEqual(req.headers.get("x-openharness-admin"), adminToken))) logError("auth.break_glass_used", new Error("Admin break-glass token used"), { requestId: headers.get("x-request-id"), path });
+        if (subject.kind === "break-glass" || secureEqual(req.headers.get("x-openharness-admin") ?? undefined, adminToken ?? undefined)) logError("auth.break_glass_used", new Error("Admin break-glass token used"), { requestId: headers.get("x-request-id"), path });
       }
       if (publicToken && path !== "/v1/admin/verify" && !secureEqual(bearer(req), publicToken) && !(oidcEnabled && subject)) return json({ error: "unauthorized" }, 401);
       if (path.startsWith("/v1/admin/") && path !== "/v1/admin/verify" && !secureEqual(req.headers.get("x-openharness-admin") ?? bearer(req), adminToken) && subject?.kind !== "break-glass") {
@@ -369,7 +386,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
         const configured = settings.effective.agents as Record<string, Record<string, unknown>>;
         const agents = await discoverAgents(workspace);
         const byName = new Map(agents.map((agent) => [agent.name, agent]));
-        for (const [name, definition] of Object.entries(configured)) byName.set(name, { name, description: String(definition.description ?? name), mode: definition.mode === "subagent" ? "subagent" : "primary", source: "config", builtIn: false });
+        for (const [name, definition] of Object.entries(configured)) byName.set(name, { name, description: String(definition.description ?? name), mode: definition.mode === "subagent" ? "subagent" : "primary", model: typeof definition.model === "string" ? definition.model : undefined, source: "config", builtIn: false });
         return json([...byName.values()]);
       }
       if (path === "/v1/models" && method === "GET") return json(await listConfiguredModels(dataDir));
@@ -387,7 +404,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
         const settings = await getSettings(dataDir);
         const limits = settings.effective.limits as Record<string, unknown>;
         if (Number(limits.maxSubagents ?? 2) <= 0) tools.splice(tools.findIndex((tool) => tool.name === "delegate"), 1);
-        const verify = settings.effective.verify as Record<string, unknown> | undefined;
+        const verify = (settings.effective as Record<string, unknown>).verify as Record<string, unknown> | undefined;
         if (Number(verify?.maxIterations ?? 3) <= 0) tools.splice(tools.findIndex((tool) => tool.name === "verify"), 1);
         const builtin = tools.filter((tool) => tool.name !== "word_count" || pluginEnabled(dataDir, "word_count"));
         const available = await Promise.all(builtin.map(async (tool) => ({ tool, enabled: await pluginEnabled(dataDir, tool.name) })));
@@ -561,7 +578,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
           const maxIterations = configuredNumber("maxIterations", 10, 1, 25);
           const maxToolOutputChars = configuredNumber("maxToolOutputChars", 20_000, 256, 100_000);
           const maxSubagents = configuredNumber("maxSubagents", 2, 0, 8);
-          const verifyConfig = runSettings.effective.verify as Record<string, unknown> | undefined;
+          const verifyConfig = (runSettings.effective as Record<string, unknown>).verify as Record<string, unknown> | undefined;
           const verifyIterations = Number(verifyConfig?.maxIterations ?? 3);
           const maxVerifyCalls = Number.isInteger(verifyIterations) ? Math.max(0, Math.min(10, verifyIterations)) : 3;
           const builtInVerifyCommands = new Set(["typecheck", "server-build", "web-build", "diff-check"]);
@@ -783,6 +800,10 @@ export function createServer(options: { hostname?: string; port?: number } = {})
               for (const skill of agentContext.skills) publish({ type: "part.updated", sessionId, messageId: assistantMessage.info.id, part: { type: "skill", name: skill.name, reason: "trigger" } });
               const providerConfig = await runtimeProviderConfig(dataDir, session.model ?? agentContext.agent.model);
               providerPrices = providerConfig;
+              const configuredTenantBudget = usageStore ? positiveAmount(process.env.TENANT_MONTHLY_BUDGET_USD) : undefined;
+              if (configuredTenantBudget !== undefined && (providerConfig.inputCostPerMillion === undefined || providerConfig.outputCostPerMillion === undefined)) {
+                throw new Error("TENANT_MONTHLY_BUDGET_USD requires input and output model prices for the selected provider.");
+              }
               const maxCostPerRun = typeof limits.maxCostPerRun === "number" && Number.isFinite(limits.maxCostPerRun) && limits.maxCostPerRun >= 0 ? limits.maxCostPerRun : undefined;
               const maxCostPerSession = typeof limits.maxCostPerSession === "number" && Number.isFinite(limits.maxCostPerSession) && limits.maxCostPerSession >= 0 ? limits.maxCostPerSession : undefined;
               if ((maxCostPerRun !== undefined || maxCostPerSession !== undefined) && (providerConfig.inputCostPerMillion === undefined || providerConfig.outputCostPerMillion === undefined)) {
@@ -868,6 +889,19 @@ export function createServer(options: { hostname?: string; port?: number } = {})
                   textPart.text += `${textPart.text ? "\n\n" : ""}Stopped at the configured token budget.`;
                   publish({ type: "part.updated", sessionId, messageId: assistantMessage.info.id, part: textPart });
                   break;
+                }
+                const providerRateKey = `provider:${session.tenantId ?? "local"}:${providerConfig.provider}:${providerConfig.model}`;
+                const providerTpm = positiveLimit(process.env.PROVIDER_TPM);
+                if (providerTpm) {
+                  const estimatedCallTokens = inputTokensForCall + maxTokensForCall;
+                  if (estimatedCallTokens > providerTpm) throw new Error(`Provider TPM limit is ${providerTpm}, but this request needs up to ${estimatedCallTokens} tokens. Reduce context or output limits.`);
+                  const tokenAllowance = await rateLimiter.consume(`${providerRateKey}:tpm`, { capacity: providerTpm, refillPerSecond: providerTpm / 60, cost: estimatedCallTokens });
+                  if (!tokenAllowance.allowed) throw new Error(`Provider TPM limit reached. Retry in ${Math.max(1, Math.ceil(tokenAllowance.retryAfterMs / 1000))} seconds.`);
+                }
+                const providerRpm = positiveLimit(process.env.PROVIDER_RPM);
+                if (providerRpm) {
+                  const requestAllowance = await rateLimiter.consume(`${providerRateKey}:rpm`, { capacity: providerRpm, refillPerSecond: providerRpm / 60 });
+                  if (!requestAllowance.allowed) throw new Error(`Provider RPM limit reached. Retry in ${Math.max(1, Math.ceil(requestAllowance.retryAfterMs / 1000))} seconds.`);
                 }
                 for await (const chunk of provider.stream({
                   model: providerConfig.model, baseUrl: providerConfig.baseUrl, apiKey: providerConfig.apiKey,
@@ -1006,6 +1040,23 @@ export function createServer(options: { hostname?: string; port?: number } = {})
               const cost = usage.input * providerPrices.inputCostPerMillion / 1_000_000 + usage.output * providerPrices.outputCostPerMillion / 1_000_000;
               assistantMessage.info.cost = cost;
               session.cost = (session.cost ?? 0) + cost;
+            }
+            if (usageStore && session.tenantId) {
+              const monthlyBudgetUsd = positiveAmount(process.env.TENANT_MONTHLY_BUDGET_USD);
+              const month = new Date().toISOString().slice(0, 7);
+              const usageTotal = await usageStore.recordStep({
+                tenantId: session.tenantId, period: month, inputTokens: usage.input, outputTokens: usage.output,
+                costUsd: assistantMessage.info.cost ?? 0, monthlyBudgetUsd,
+              });
+              if (usageTotal.budgetExceeded) {
+                assistantMessage.info.error = "Tenant monthly budget exceeded";
+                assistantMessage.completedAt = now();
+                session.status = "failed";
+                session.error = "Tenant monthly budget exceeded";
+                publish({ type: "message.updated", sessionId, message: assistantMessage });
+                saveSession(session); await persist();
+                return;
+              }
             }
             const stepPart: Extract<Part, { type: "step" }> = { type: "step", usage: assistantMessage.info.usage, ...(assistantMessage.info.cost !== undefined ? { cost: assistantMessage.info.cost } : {}) };
             assistantMessage.parts.push(stepPart);
@@ -1216,6 +1267,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
       await mcpReady.catch(() => undefined);
       await mcpManager.shutdown();
       await identityStore?.close();
+      await usageStore?.close();
       await Promise.all([rateLimiter, quotaService].map((adapter) => "close" in adapter && typeof adapter.close === "function" ? adapter.close() : Promise.resolve()));
       server.stop(closeActiveConnections);
     },

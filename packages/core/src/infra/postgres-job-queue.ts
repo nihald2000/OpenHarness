@@ -1,5 +1,5 @@
 import postgres from "postgres";
-import type { Sql } from "postgres";
+import type { Sql, TransactionSql } from "postgres";
 import type { JobDocument, JobQueue, JobWaitReason } from "./contracts.ts";
 
 /** Durable, lease-based Postgres queue. Fence values are checked on every worker write. */
@@ -12,13 +12,13 @@ export class PostgresJobQueue<Job extends JobDocument = JobDocument> implements 
   async close() { if (this.owned) await this.sql.end({ timeout: 5 }); }
 
   async enqueue(input: Omit<Job, "status" | "attempt" | "fence">, options?: { tx?: unknown }): Promise<Job> {
-    const db = isSql(options?.tx) ? options!.tx as Sql : this.sql;
+    const db = (options?.tx as Sql | TransactionSql | undefined) ?? this.sql;
     const now = Date.now();
-    const rows = await db<Job[]>`INSERT INTO jobs (id,tenant_id,session_id,root_session_id,parent_job_id,kind,status,priority,attempt,max_attempts,not_before,fence,input,checkpoint,result,error,cancel_requested_at,idempotency_key,created_at,updated_at)
-      VALUES (${input.id},${input.tenantId}::uuid,${input.sessionId},${input.rootSessionId},${input.parentJobId ?? null},${input.kind},'queued',${input.priority},0,${input.maxAttempts},${input.notBefore},0,${db.json(input.input)},${input.checkpoint === undefined ? null : db.json(input.checkpoint)},${input.result === undefined ? null : db.json(input.result)},${input.error ?? null},${input.cancelRequestedAt ?? null},${input.idempotencyKey ?? null},${input.createdAt ?? now},${input.updatedAt ?? now})
+    const rows = await db<Record<string, unknown>[]>`INSERT INTO jobs (id,tenant_id,session_id,root_session_id,parent_job_id,kind,status,priority,attempt,max_attempts,not_before,fence,input,checkpoint,result,error,cancel_requested_at,idempotency_key,created_at,updated_at)
+      VALUES (${input.id},${input.tenantId}::uuid,${input.sessionId},${input.rootSessionId},${input.parentJobId ?? null},${input.kind},'queued',${input.priority},0,${input.maxAttempts},${input.notBefore},0,${db.json(input.input as any)},${input.checkpoint === undefined ? null : db.json(input.checkpoint as any)},${input.result === undefined ? null : db.json(input.result as any)},${input.error ?? null},${input.cancelRequestedAt ?? null},${input.idempotencyKey ?? null},${input.createdAt ?? now},${input.updatedAt ?? now})
       ON CONFLICT (tenant_id,idempotency_key) DO UPDATE SET id=jobs.id RETURNING *`;
     await db`SELECT pg_notify('jobs_queued', ${input.tenantId})`;
-    return decode(rows[0]!);
+    return decode<Job>(rows[0]!);
   }
 
   async claim(workerId: string, kinds: Job["kind"][], limit: number): Promise<Job[]> {
@@ -26,7 +26,7 @@ export class PostgresJobQueue<Job extends JobDocument = JobDocument> implements 
     if (!Number.isInteger(limit) || limit < 0) throw new Error("claim limit must be a non-negative integer");
     if (!limit || !kinds.length) return [];
     const now = Date.now();
-    const rows = await this.sql<Job[]>`WITH ranked AS (
+    const rows = await this.sql<Record<string, unknown>[]>`WITH ranked AS (
       SELECT j.id,j.tenant_id,j.priority,j.created_at,
         row_number() OVER (PARTITION BY j.tenant_id ORDER BY j.created_at,j.priority,j.id) AS tenant_rank
       FROM jobs j
@@ -39,7 +39,7 @@ export class PostgresJobQueue<Job extends JobDocument = JobDocument> implements 
       WHERE j.status='queued' ORDER BY c.tenant_rank,c.priority,c.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT ${limit}
     ) UPDATE jobs j SET status='leased',lease_owner=${workerId},lease_until=${now + this.leaseMs},heartbeat_at=${now},attempt=j.attempt+1,fence=j.fence+1,updated_at=${now}
       FROM locked c WHERE j.id=c.id RETURNING j.*`;
-    return rows.map(decode<Job>);
+    return rows.map((row) => decode<Job>(row));
   }
 
   async heartbeat(jobIds: string[], workerId: string) {
@@ -56,7 +56,7 @@ export class PostgresJobQueue<Job extends JobDocument = JobDocument> implements 
   }
   async complete(jobId: string, workerId: string, fence: number, result?: Job["result"]) {
     const now = Date.now();
-    const rows = await this.sql`UPDATE jobs SET status=CASE WHEN cancel_requested_at IS NULL THEN 'succeeded' ELSE 'cancelled' END,result=${result === undefined ? null : this.sql.json(result)},lease_owner=NULL,lease_until=NULL,updated_at=${now}
+    const rows = await this.sql`UPDATE jobs SET status=CASE WHEN cancel_requested_at IS NULL THEN 'succeeded' ELSE 'cancelled' END,result=${result === undefined ? null : this.sql.json(result as any)},lease_owner=NULL,lease_until=NULL,updated_at=${now}
       WHERE id=${jobId} AND lease_owner=${workerId} AND fence=${fence} AND status IN ('leased','running') AND lease_until>${now} RETURNING id`;
     if (!rows.length) throw lostLease();
   }
@@ -87,7 +87,7 @@ export class PostgresJobQueue<Job extends JobDocument = JobDocument> implements 
   }
   async resume(jobId: string, input?: Partial<Job["input"]>) {
     const now = Date.now();
-    const rows = await this.sql`UPDATE jobs SET status='queued',wait_reason=NULL,not_before=${now},cancel_requested_at=NULL,input=CASE WHEN ${input === undefined} THEN input ELSE input || ${this.sql.json(input ?? {})} END,updated_at=${now}
+    const rows = await this.sql`UPDATE jobs SET status='queued',wait_reason=NULL,not_before=${now},cancel_requested_at=NULL,input=CASE WHEN ${input === undefined} THEN input ELSE input || ${this.sql.json(input ?? {} as any)} END,updated_at=${now}
       WHERE id=${jobId} AND status='waiting' RETURNING tenant_id`;
     if (rows.length) await this.sql`SELECT pg_notify('jobs_queued', ${String(rows[0]!.tenant_id)})`;
     return rows.length > 0;
@@ -122,7 +122,6 @@ export class PostgresJobQueue<Job extends JobDocument = JobDocument> implements 
 }
 
 function lostLease() { return new Error("job lease lost or fencing token is stale"); }
-function isSql(value: unknown): value is Sql { return !!value && typeof value === "function" && typeof (value as Sql).begin === "function"; }
 function decode<T extends JobDocument>(row: Record<string, unknown>): T {
   return {
     id: row.id, tenantId: row.tenant_id, sessionId: row.session_id, rootSessionId: row.root_session_id,

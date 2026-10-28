@@ -31,7 +31,9 @@ function print(value: unknown) {
   else console.log(JSON.stringify(value, null, 2));
 }
 
-async function runPrompt(prompt: string) {
+type PromptRunResult = { sessionId: string; status: string; error?: string; text: string; toolsCalled: string[]; toolsSucceeded: string[]; pendingApprovals: string[] };
+
+async function runPrompt(prompt: string): Promise<PromptRunResult> {
   const session = await api<{ id: string }>("/v1/sessions", { method: "POST", body: JSON.stringify({}) });
   await api(`/v1/sessions/${encodeURIComponent(session.id)}/prompt`, { method: "POST", body: JSON.stringify({ text: prompt }) });
   const started = Date.now();
@@ -45,12 +47,12 @@ async function runPrompt(prompt: string) {
     }
     if (state.status === "awaiting_permission") {
       const requests = await api<Array<{ permission: string; title?: string }>>(`/v1/permissions?sessionId=${encodeURIComponent(session.id)}`);
-      return { sessionId: session.id, status: state.status, error: "Approve or reject the tool request in the web UI.", toolsCalled: [], toolsSucceeded: [], pendingApprovals: requests.map((request) => request.permission) };
+      return { sessionId: session.id, status: state.status, error: "Approve or reject the tool request in the web UI.", text: "", toolsCalled: [], toolsSucceeded: [], pendingApprovals: requests.map((request) => request.permission) };
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
   }
   await api(`/v1/sessions/${encodeURIComponent(session.id)}/abort`, { method: "POST" }).catch(() => undefined);
-  return { sessionId: session.id, status: "timeout", error: "Run exceeded 120 seconds.", toolsCalled: [], toolsSucceeded: [], pendingApprovals: [] };
+  return { sessionId: session.id, status: "timeout", error: "Run exceeded 120 seconds.", text: "", toolsCalled: [], toolsSucceeded: [], pendingApprovals: [] };
 }
 
 async function runEval(file: string, outputFile?: string) {
@@ -64,12 +66,12 @@ async function runEval(file: string, outputFile?: string) {
     try { run = await runPrompt(testCase.prompt); }
     catch (error) { results.push({ id: testCase.id ?? String(index + 1), passed: false, error: (error as Error).message, latencyMs: Date.now() - started }); continue; }
     const checks: Record<string, boolean> = {};
-    if (testCase.contains !== undefined) checks.contains = run.text.includes(testCase.contains);
-    if (testCase.regex !== undefined) checks.regex = new RegExp(testCase.regex, "i").test(run.text);
+    if (testCase.contains !== undefined) checks.contains = (run.text ?? "").includes(testCase.contains);
+    if (testCase.regex !== undefined) checks.regex = new RegExp(testCase.regex, "i").test(run.text ?? "");
     if (testCase.tool !== undefined) checks.tool = run.toolsCalled.includes(testCase.tool);
-    if (testCase.toolsCalled !== undefined) checks.toolsCalled = testCase.toolsCalled.every((tool) => run.toolsCalled.includes(tool));
-    if (testCase.toolsNotCalled !== undefined) checks.toolsNotCalled = testCase.toolsNotCalled.every((tool) => !run.toolsCalled.includes(tool));
-    if (testCase.toolsSucceeded !== undefined) checks.toolsSucceeded = testCase.toolsSucceeded.every((tool) => run.toolsSucceeded.includes(tool));
+    if (testCase.toolsCalled !== undefined) checks.toolsCalled = testCase.toolsCalled.every((tool) => (run.toolsCalled as string[]).includes(tool));
+    if (testCase.toolsNotCalled !== undefined) checks.toolsNotCalled = testCase.toolsNotCalled.every((tool) => !(run.toolsCalled as string[]).includes(tool));
+    if (testCase.toolsSucceeded !== undefined) checks.toolsSucceeded = testCase.toolsSucceeded.every((tool) => (run.toolsSucceeded as string[]).includes(tool));
     if (testCase.approvalPending !== undefined) checks.approvalPending = (run.pendingApprovals.length > 0) === testCase.approvalPending;
     checks.completed = run.status === "completed";
     if (testCase.maxMs !== undefined) checks.latency = Date.now() - started <= testCase.maxMs;
@@ -205,14 +207,9 @@ async function main() {
     case "migrate": {
       const databaseUrl = process.env.OPENHARNESS_DATABASE_URL;
       if (!databaseUrl) throw new Error("OPENHARNESS_DATABASE_URL is required for migrations");
-      const [{ default: postgres }, { runPostgresMigrations }] = await Promise.all([
-        import("postgres"), import("../../core/src/infra/postgres-migrations.ts"),
-      ]);
-      const sql = postgres(databaseUrl, { max: 1 });
-      try {
-        const result = await runPostgresMigrations(sql, resolve(workspaceRoot, "packages/core/migrations"));
-        print({ migrated: result.applied });
-      } finally { await sql.end({ timeout: 5 }); }
+      const { migratePostgresUrl } = await import("../../core/src/infra/postgres-migrations.ts");
+      const result = await migratePostgresUrl(databaseUrl, resolve(workspaceRoot, "packages/core/migrations"));
+      print({ migrated: result.applied });
       return;
     }
     case "info": print(await api("/v1/info")); return;

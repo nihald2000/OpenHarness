@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import Redis from "ioredis";
+import type { RedisOptions } from "ioredis";
 import type { QuotaService } from "./contracts.ts";
 
 const ACQUIRE = `
@@ -35,7 +36,7 @@ export class RedisQuotaService implements QuotaService {
   private readonly redis: Redis;
   private readonly legacy = new Map<string, string[]>();
   constructor(redis: Redis, private readonly ownsClient = false, private readonly prefix = "openharness:quota:") { this.redis = redis; }
-  static connect(url: string, options: Redis.RedisOptions = {}) { return new RedisQuotaService(new Redis(url, options), true); }
+  static connect(url: string, options: RedisOptions = {}) { return new RedisQuotaService(new Redis(url, options), true); }
 
   async acquireRunSlot(tenantId: string, userId: string, limits: { tenant?: number; user?: number; leaseId?: string; leaseMs?: number }) {
     if (!tenantId || !userId) throw new Error("tenantId and userId are required");

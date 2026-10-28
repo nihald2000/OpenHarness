@@ -1,5 +1,5 @@
 import postgres from "postgres";
-import type { Sql } from "postgres";
+import type { Sql, TransactionSql } from "postgres";
 import type { StateStore } from "./contracts.ts";
 
 type Identified = { id: string };
@@ -14,23 +14,24 @@ export class PostgresStateStore<
   Event = unknown,
   Rule = unknown,
 > implements StateStore<Session, Message, Part, Event, Rule> {
-  private constructor(private readonly sql: Sql, private readonly owned: boolean, private readonly inTransaction = false) {}
+  private constructor(private readonly sql: Sql | TransactionSql, private readonly owned: boolean, private readonly inTransaction = false) {}
 
   static connect<Session extends Identified & { updatedAt?: number; createdAt?: number; ownerId?: string; parentId?: string }, Message extends MessageShape<Part>, Part = unknown, Event = unknown, Rule = unknown>(url: string, options: postgres.Options<{}> = {}) {
     return new PostgresStateStore<Session, Message, Part, Event, Rule>(postgres(url, { max: 10, ...options }), true);
   }
 
-  async close() { if (this.owned) await this.sql.end({ timeout: 5 }); }
+  async close() { if (this.owned) await (this.sql as Sql).end({ timeout: 5 }); }
 
   async tx<T>(fn: (tx: StateStore<Session, Message, Part, Event, Rule>) => Promise<T>): Promise<T> {
-    return this.sql.begin(async (transaction) => fn(new PostgresStateStore<Session, Message, Part, Event, Rule>(transaction as Sql, false, true)));
+    if (this.inTransaction) return fn(this);
+    return await (this.sql as Sql).begin(async (transaction) => fn(new PostgresStateStore<Session, Message, Part, Event, Rule>(transaction, false, true))) as unknown as T;
   }
 
   async putSession(tenantId: string, session: Session) {
     const now = Date.now();
     const ownerId = session.ownerId ?? null;
     const rows = await this.sql`INSERT INTO sessions (id, tenant_id, owner_id, parent_id, status, data, created_at, updated_at)
-      VALUES (${session.id}, ${tenantId}::uuid, ${ownerId}::uuid, ${session.parentId ?? null}, ${String((session as any).status ?? "created")}, ${this.sql.json(session)}, ${session.createdAt ?? now}, ${session.updatedAt ?? now})
+      VALUES (${session.id}, ${tenantId}::uuid, ${ownerId}::uuid, ${session.parentId ?? null}, ${String((session as any).status ?? "created")}, ${this.sql.json(session as any)}, ${session.createdAt ?? now}, ${session.updatedAt ?? now})
       ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, parent_id=EXCLUDED.parent_id, status=EXCLUDED.status, data=EXCLUDED.data, updated_at=EXCLUDED.updated_at
       WHERE sessions.tenant_id=EXCLUDED.tenant_id RETURNING id`;
     if (!rows.length) throw new Error("session belongs to another tenant");
@@ -63,7 +64,7 @@ export class PostgresStateStore<
   async putMessage(tenantId: string, sessionId: string, message: Message) {
     const now = Date.now();
     const data = { ...message, parts: [] };
-    const rows = await this.sql`INSERT INTO messages (id,tenant_id,session_id,data,created_at) SELECT ${message.info.id},${tenantId}::uuid,${sessionId},${this.sql.json(data)},${now} WHERE EXISTS (SELECT 1 FROM sessions WHERE tenant_id=${tenantId}::uuid AND id=${sessionId})
+    const rows = await this.sql`INSERT INTO messages (id,tenant_id,session_id,data,created_at) SELECT ${message.info.id},${tenantId}::uuid,${sessionId},${this.sql.json(data as any)},${now} WHERE EXISTS (SELECT 1 FROM sessions WHERE tenant_id=${tenantId}::uuid AND id=${sessionId})
       ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data WHERE messages.tenant_id=EXCLUDED.tenant_id AND messages.session_id=EXCLUDED.session_id RETURNING id`;
     if (!rows.length) throw new Error("session or message belongs to another tenant");
     for (const part of message.parts) await this.upsertPart(tenantId, sessionId, message.info.id, part);
@@ -78,7 +79,7 @@ export class PostgresStateStore<
   private async upsertPart(tenantId: string, sessionId: string, messageId: string, part: Part) {
     const id = partKey(part);
     const rows = await this.sql`INSERT INTO parts (id,tenant_id,session_id,message_id,data,updated_at)
-      SELECT ${id},${tenantId}::uuid,${sessionId},${messageId},${this.sql.json(part)},${Date.now()}
+      SELECT ${id},${tenantId}::uuid,${sessionId},${messageId},${this.sql.json(part as any)},${Date.now()}
       WHERE EXISTS (SELECT 1 FROM messages m JOIN sessions s ON s.id=m.session_id WHERE m.tenant_id=${tenantId}::uuid AND m.session_id=${sessionId} AND m.id=${messageId} AND s.tenant_id=${tenantId}::uuid)
       ON CONFLICT (tenant_id,message_id,id) DO UPDATE SET data=EXCLUDED.data,updated_at=EXCLUDED.updated_at RETURNING id`;
     if (!rows.length) throw new Error("message not found");
@@ -93,7 +94,7 @@ export class PostgresStateStore<
 
   async appendEvents(tenantId: string, sessionId: string, events: Event[]) {
     if (!events.length) return [];
-    const write = async (tx: Sql) => {
+    const write = async (tx: Sql | TransactionSql) => {
       const valid = await tx`SELECT id FROM sessions WHERE tenant_id=${tenantId}::uuid AND id=${sessionId} FOR UPDATE`;
       if (!valid.length) throw new Error("session not found");
       await tx`INSERT INTO session_seq (session_id,seq) VALUES (${sessionId},0) ON CONFLICT (session_id) DO NOTHING`;
@@ -104,13 +105,13 @@ export class PostgresStateStore<
       for (const { seq, event } of assigned) {
         const at = Date.now();
         const type = event && typeof event === "object" && typeof (event as any).type === "string" ? (event as any).type as string : "event";
-        const data = this.sql.json(event);
+        const data = tx.json(event as any);
         await tx`INSERT INTO events (tenant_id,session_id,seq,at,type,data) VALUES (${tenantId}::uuid,${sessionId},${seq},${at},${type},${data})`;
         await tx`INSERT INTO event_outbox (tenant_id,session_id,seq,at,data) VALUES (${tenantId}::uuid,${sessionId},${seq},${at},${data})`;
       }
       return assigned.map((row) => row.seq);
     };
-    return this.inTransaction ? write(this.sql) : this.sql.begin((tx) => write(tx as Sql));
+    return this.inTransaction ? write(this.sql) : (this.sql as Sql).begin((tx) => write(tx));
   }
 
   async listEvents(tenantId: string, sessionId: string, afterSeq: number, limit: number) {
