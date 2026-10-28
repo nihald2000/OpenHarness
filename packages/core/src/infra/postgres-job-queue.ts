@@ -92,6 +92,13 @@ export class PostgresJobQueue<Job extends JobDocument = JobDocument> implements 
     return rows.map((row) => ({ id: String(row.id), status: String(row.status) }));
   }
 
+  async wakeDue(now = Date.now()) {
+    const rows = await this.sql<{ id: string; tenant_id: string }[]>`UPDATE jobs SET status='queued',wait_reason=NULL,updated_at=${now}
+      WHERE status='waiting' AND wait_reason IN ('retry','quota') AND not_before<=${now} RETURNING id,tenant_id`;
+    for (const tenant of new Set(rows.map((row) => row.tenant_id))) await this.sql`SELECT pg_notify('jobs_queued', ${tenant})`;
+    return rows.map((row) => row.id);
+  }
+
   private async fenced(jobId: string, workerId: string, fence: number, values: { checkpoint: ReturnType<Sql["json"]>; status: string }) {
     const now = Date.now();
     const rows = await this.sql`UPDATE jobs SET checkpoint=${values.checkpoint},status=${values.status},updated_at=${now}
