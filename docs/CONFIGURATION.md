@@ -14,12 +14,15 @@ Use `.env.example` as the environment variable template. The server reads JSON s
 | `OPENHARNESS_SERVER_TOKEN` | Unset | Optional bearer token required for `/v1/**`. |
 | `OPENHARNESS_ADMIN_TOKEN` | Unset | Separate token required for `/v1/admin/**`. Admin routes remain closed when it is unset. |
 | `DATABASE_URL` | Unset | Postgres connection for OIDC tenant/user provisioning. Run `bun run oh migrate` with `OPENHARNESS_DATABASE_URL` configured before enabling OIDC. |
-| `REDIS_URL` | Unset | Optional shared backend for API token buckets and expiring run quota leases. |
+| `REDIS_URL` | Unset | Optional shared backend for API/provider token buckets and expiring run quota leases. |
 | `OIDC_ISSUER` / `OIDC_AUDIENCE` | Unset | Enable bearer JWT verification and tenant identity provisioning. |
 | `OIDC_TENANT_CLAIM` | `tid` | JWT claim mapped to the tenant slug. |
 | `OIDC_ROLE_CLAIM` / `OIDC_ADMIN_VALUES` | `role` / `admin` | Trusted role claim and comma-separated values that provision tenant admins. Existing database roles remain authoritative. |
 | `OIDC_ALLOWED_TENANTS` | Unset | Optional comma-separated tenant allowlist. |
 | `OPENHARNESS_SERVICE_TENANT_ID` | Unset | UUID tenant used by service and break-glass tokens when OIDC is enabled. |
+| `API_RPM` / `API_BURST` | `1800` / `60` | Per-identity API token-bucket refill rate per minute and burst capacity. |
+| `PROMPT_RPM` / `PROMPT_BURST` | `10` / `5` | Per-identity prompt/compaction refill rate per minute and burst capacity. |
+| `ADMIN_RPM` / `ADMIN_BURST` | `300` / `5` | Per-tenant admin API refill rate per minute and burst capacity. |
 | `PROMPT_MAX_BYTES` | `262144` | Maximum UTF-8 prompt body size. |
 | `QUEUE_HIGH_WATERMARK` | `2000` | Local queue depth threshold for prompt admission. |
 | `USER_MAX_RUNS` / `TENANT_MAX_RUNS` | `3` / `4` | Concurrent run-slot limits. Redis leases are shared when `REDIS_URL` is set. |

@@ -40,7 +40,7 @@ function secureEqual(a: string | undefined, b: string | undefined): boolean {
 function positiveLimit(value: string | undefined): number | undefined {
   if (value === undefined || value.trim() === "") return undefined;
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error("Provider rate limits must be positive integers.");
+  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error("Rate and burst limits must be positive integers.");
   return parsed;
 }
 
@@ -139,6 +139,12 @@ export function createServer(options: { hostname?: string; port?: number } = {})
   const adminToken = process.env.OPENHARNESS_ADMIN_TOKEN;
   const oidcEnabled = !!process.env.OIDC_ISSUER;
   const databaseUrl = process.env.DATABASE_URL ?? process.env.OPENHARNESS_DATABASE_URL;
+  const apiRpm = positiveLimit(process.env.API_RPM) ?? 1_800;
+  const apiBurst = positiveLimit(process.env.API_BURST) ?? 60;
+  const promptRpm = positiveLimit(process.env.PROMPT_RPM) ?? 10;
+  const promptBurst = positiveLimit(process.env.PROMPT_BURST) ?? 5;
+  const adminRpm = positiveLimit(process.env.ADMIN_RPM) ?? 300;
+  const adminBurst = positiveLimit(process.env.ADMIN_BURST) ?? 5;
   const identityStore = oidcEnabled
     ? PostgresIdentityStore.connect(databaseUrl ?? (() => { throw new Error("DATABASE_URL is required when OIDC is enabled"); })())
     : undefined;
@@ -327,10 +333,10 @@ export function createServer(options: { hostname?: string; port?: number } = {})
 
       if (path !== "/v1/events") {
         const rateSubject = subject ? `${subject.tenantId}:${subject.userId}` : bearer(req) ? createHash("sha256").update(bearer(req)!).digest("hex") : "anonymous";
-        const requests = await rateLimiter.consume(`api:${rateSubject}`, { capacity: 60, refillPerSecond: 30 });
+        const requests = await rateLimiter.consume(`api:${rateSubject}`, { capacity: apiBurst, refillPerSecond: apiRpm / 60 });
         const isPrompt = method === "POST" && /\/sessions\/[^/]+\/(prompt|compact)$/.test(path);
-        const prompt = isPrompt ? await rateLimiter.consume(`prompt:${rateSubject}`, { capacity: 5, refillPerSecond: 10 / 60 }) : { allowed: true, retryAfterMs: 0 };
-        const admin = path.startsWith("/v1/admin/") ? await rateLimiter.consume(`admin:${subject?.tenantId ?? "local"}`, { capacity: 5, refillPerSecond: 5 }) : { allowed: true, retryAfterMs: 0 };
+        const prompt = isPrompt ? await rateLimiter.consume(`prompt:${rateSubject}`, { capacity: promptBurst, refillPerSecond: promptRpm / 60 }) : { allowed: true, retryAfterMs: 0 };
+        const admin = path.startsWith("/v1/admin/") ? await rateLimiter.consume(`admin:${subject?.tenantId ?? "local"}`, { capacity: adminBurst, refillPerSecond: adminRpm / 60 }) : { allowed: true, retryAfterMs: 0 };
         const rejected = [requests, prompt, admin].find((result) => !result.allowed);
         if (rejected) {
           headers.set("retry-after", String(Math.max(1, Math.ceil(rejected.retryAfterMs / 1_000))));
@@ -662,7 +668,10 @@ export function createServer(options: { hostname?: string; port?: number } = {})
             });
           } catch (error) {
             const message = (error as Error).message || "could not enqueue run";
-            if (message.includes("concurrency limit") || message.includes("quota limit")) return json({ error: message }, 429);
+            if (message.includes("concurrency limit") || message.includes("quota limit")) {
+              headers.set("retry-after", "5");
+              return json({ error: message }, 429);
+            }
             return message.includes("already has an active job")
               ? json({ error: "session already has an active run" }, 409)
               : json({ error: message }, 503);
