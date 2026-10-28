@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { InProcessCancelBus, InProcessEventBus, InProcessJobQueue, InProcessLockService, JsonDocumentStore, type EventEnvelope, type JobDocument } from "../../core/src/infra/index.ts";
+import { InProcessCancelBus, InProcessEventBus, InProcessJobQueue, InProcessLockService, InProcessQuotaService, InProcessRateLimiter, JsonDocumentStore, type EventEnvelope, type JobDocument } from "../../core/src/infra/index.ts";
 
 type TestEvent = { type: string; value?: string };
 type TestJob = JobDocument<{ text: string }, { step: number }, { ok: boolean }>;
@@ -169,5 +169,36 @@ describe("local job queue adapter", () => {
     expect(queue.get(running!.id)).toMatchObject({ status: "leased", cancelRequestedAt: now });
     await queue.complete(running!.id, "worker", running!.fence);
     expect(queue.get(running!.id)?.status).toBe("cancelled");
+  });
+});
+
+describe("local rate limiter adapter", () => {
+  test("refills token buckets over time and scopes them by key", async () => {
+    let now = 1_000;
+    const limiter = new InProcessRateLimiter(() => now);
+    expect(await limiter.consume("tenant-a:user-1", { capacity: 2, refillPerSecond: 1 })).toMatchObject({ allowed: true, remaining: 1, retryAfterMs: 0 });
+    await limiter.consume("tenant-a:user-1", { capacity: 2, refillPerSecond: 1 });
+    expect(await limiter.consume("tenant-a:user-1", { capacity: 2, refillPerSecond: 1 })).toMatchObject({ allowed: false, remaining: 0, retryAfterMs: 1_000 });
+    expect(await limiter.consume("tenant-b:user-1", { capacity: 2, refillPerSecond: 1 })).toMatchObject({ allowed: true, remaining: 1 });
+    now += 500;
+    expect(await limiter.consume("tenant-a:user-1", { capacity: 2, refillPerSecond: 1 })).toMatchObject({ allowed: false, remaining: 0.5, retryAfterMs: 500 });
+    now += 500;
+    expect(await limiter.consume("tenant-a:user-1", { capacity: 2, refillPerSecond: 1 })).toMatchObject({ allowed: true, remaining: 0 });
+  });
+});
+
+describe("local quota service adapter", () => {
+  test("enforces tenant and user slots and releases capacity", async () => {
+    const quotas = new InProcessQuotaService();
+    expect(await quotas.acquireRunSlot("tenant-a", "user-1", { tenant: 2, user: 1 })).toBe(true);
+    expect(await quotas.acquireRunSlot("tenant-a", "user-1", { tenant: 2, user: 1 })).toBe(false);
+    expect(await quotas.acquireRunSlot("tenant-a", "user-2", { tenant: 2, user: 1 })).toBe(true);
+    expect(await quotas.acquireRunSlot("tenant-a", "user-3", { tenant: 2, user: 1 })).toBe(false);
+    await quotas.releaseRunSlot("tenant-a", "user-1");
+    await quotas.releaseRunSlot("tenant-a", "user-1");
+    expect(await quotas.acquireRunSlot("tenant-a", "user-3", { tenant: 2, user: 1 })).toBe(true);
+    await quotas.releaseRunSlot("tenant-a", "user-3");
+    await quotas.releaseRunSlot("tenant-a", "user-2");
+    expect(await quotas.acquireRunSlot("tenant-a", "user-3", { tenant: 2, user: 1 })).toBe(true);
   });
 });
