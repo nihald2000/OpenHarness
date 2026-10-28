@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { InProcessCancelBus, InProcessEventBus, JsonDocumentStore, type EventEnvelope } from "../../core/src/infra/index.ts";
+import { InProcessCancelBus, InProcessEventBus, InProcessLockService, JsonDocumentStore, type EventEnvelope } from "../../core/src/infra/index.ts";
 
 type TestEvent = { type: string; value?: string };
 
@@ -69,5 +69,41 @@ describe("local cancellation bus adapter", () => {
     await bus.request("s1");
     await bus.request("s2");
     expect(received).toEqual(["s1", "s2"]);
+  });
+});
+
+describe("local lock service adapter", () => {
+  test("serializes work for one key while allowing independent keys", async () => {
+    const locks = new InProcessLockService();
+    const order: string[] = [];
+    let begin!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { begin = resolve; });
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const first = locks.withLock("same-file", 1_000, async () => {
+      order.push("first-start");
+      begin();
+      await hold;
+      order.push("first-end");
+    });
+    await started;
+    const second = locks.withLock("same-file", 1_000, async () => { order.push("second"); });
+    await locks.withLock("other-file", 1_000, async () => { order.push("independent"); });
+    expect(order).toEqual(["first-start", "independent"]);
+    release();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["first-start", "independent", "first-end", "second"]);
+  });
+
+  test("runs only one local leader callback for a name at a time", async () => {
+    const locks = new InProcessLockService();
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const leader = locks.tryLeader("reaper", async () => { await hold; });
+    await Promise.resolve();
+    expect(await locks.tryLeader("reaper", async () => {})).toBe(false);
+    release();
+    expect(await leader).toBe(true);
+    expect(await locks.tryLeader("reaper", async () => {})).toBe(true);
   });
 });

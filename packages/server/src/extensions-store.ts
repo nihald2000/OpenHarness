@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { localLockService } from "../../core/src/infra/index.ts";
 
 const NAME = /^[a-zA-Z0-9_-]{1,64}$/;
 const TRUSTED_PLUGIN_MODULES = new Map([
@@ -70,12 +71,14 @@ export async function pluginEnabled(dataDir: string, name: string) {
 
 export async function resetEphemeralPlugins(dataDir: string) {
   const file = pluginFile(dataDir);
-  const records = await load(file);
-  let changed = false;
-  for (const [name, record] of Object.entries(records)) {
-    if (record && typeof record === "object" && (record as PluginRecord).configured === false) { delete records[name]; changed = true; }
-  }
-  if (changed) await save(file, records);
+  await localLockService.withLock(file, 30_000, async () => {
+    const records = await load(file);
+    let changed = false;
+    for (const [name, record] of Object.entries(records)) {
+      if (record && typeof record === "object" && (record as PluginRecord).configured === false) { delete records[name]; changed = true; }
+    }
+    if (changed) await save(file, records);
+  });
 }
 
 export async function attachPlugin(dataDir: string, input: { name: string; module?: string; options?: unknown; persist?: boolean }) {
@@ -89,18 +92,22 @@ export async function attachPlugin(dataDir: string, input: { name: string; modul
   const optionText = JSON.stringify(options);
   if (Buffer.byteLength(optionText, "utf8") > 64_000 || /\{\s*(?:@?Env|file)\s*:/i.test(optionText)) throw new Error("plugin options are too large or contain forbidden secret interpolation");
   const file = pluginFile(dataDir);
-  const records = await load(file);
-  const name = trustedModule === "builtin:modal-sandbox" ? "modal-sandbox" : "word-count";
-  records[name] = { name, module: trustedModule, options, attached: true, configured: Boolean(input.persist), attachedAt: Date.now() } satisfies PluginRecord;
-  await save(file, records);
+  await localLockService.withLock(file, 30_000, async () => {
+    const records = await load(file);
+    const name = trustedModule === "builtin:modal-sandbox" ? "modal-sandbox" : "word-count";
+    records[name] = { name, module: trustedModule, options, attached: true, configured: Boolean(input.persist), attachedAt: Date.now() } satisfies PluginRecord;
+    await save(file, records);
+  });
 }
 
 export async function detachPlugin(dataDir: string, name: string, persist: boolean) {
   const file = pluginFile(dataDir);
-  const records = await load(file);
   if (name !== "word-count" && name !== "modal-sandbox") throw new Error("plugin is not installed");
-  records[name] = { name, module: name === "word-count" ? "builtin:word-count" : "builtin:modal-sandbox", options: {}, attached: false, configured: persist } satisfies PluginRecord;
-  await save(file, records);
+  await localLockService.withLock(file, 30_000, async () => {
+    const records = await load(file);
+    records[name] = { name, module: name === "word-count" ? "builtin:word-count" : "builtin:modal-sandbox", options: {}, attached: false, configured: persist } satisfies PluginRecord;
+    await save(file, records);
+  });
 }
 
 function validateMcp(name: string, input: unknown): McpRecord {
@@ -178,8 +185,6 @@ export function listMcpPresets() {
 export async function installMcpPreset(dataDir: string, presetId: string, input: { name?: unknown; root?: unknown }) {
   if (presetId !== "filesystem" && presetId !== "browser") throw new Error("MCP preset not found");
   const name = typeof input.name === "string" && input.name ? input.name : presetId;
-  const configs = await getMcpConfigs(dataDir);
-  if (configs[name]) throw new Error(`MCP server ${name} already exists`);
   const root = typeof input.root === "string" && input.root ? input.root : (process.env.OPENHARNESS_WORKSPACE ?? process.cwd());
   if (root.length > 2_000 || /[\0\r\n]/.test(root)) throw new Error("workspace root is invalid");
   const packageName = presetId === "filesystem" ? "@modelcontextprotocol/server-filesystem" : "@playwright/mcp@latest";
@@ -187,8 +192,14 @@ export async function installMcpPreset(dataDir: string, presetId: string, input:
   const command = process.platform === "win32" ? "cmd.exe" : "npx";
   const commandArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx", ...args] : args;
   const config = { transport: "stdio", command, args: commandArgs, ...(presetId === "filesystem" ? { cwd: root } : {}), readOnly: false, enabled: true };
-  await putMcpServer(dataDir, name, config);
-  return { name, config };
+  const file = mcpFile(dataDir);
+  return await localLockService.withLock(file, 30_000, async () => {
+    const records = await load(file);
+    if (records[name]) throw new Error(`MCP server ${name} already exists`);
+    records[name] = validateMcp(name, config);
+    await save(file, records);
+    return { name, config };
+  });
 }
 
 function maskSecretRefs(values: Record<string, string> | undefined) {
@@ -199,26 +210,32 @@ function maskSecretRefs(values: Record<string, string> | undefined) {
 export async function putMcpServer(dataDir: string, name: string, input: unknown) {
   const validated = validateMcp(name, input);
   const file = mcpFile(dataDir);
-  const records = await load(file);
-  records[name] = validated;
-  await save(file, records);
+  await localLockService.withLock(file, 30_000, async () => {
+    const records = await load(file);
+    records[name] = validated;
+    await save(file, records);
+  });
 }
 
 export async function setMcpEnabled(dataDir: string, name: string, enabled: boolean) {
   const file = mcpFile(dataDir);
-  const records = await load(file);
-  const current = records[name] as McpRecord | undefined;
-  if (!current) throw new Error("MCP server not found");
-  current.enabled = enabled;
-  records[name] = current;
-  await save(file, records);
+  await localLockService.withLock(file, 30_000, async () => {
+    const records = await load(file);
+    const current = records[name] as McpRecord | undefined;
+    if (!current) throw new Error("MCP server not found");
+    current.enabled = enabled;
+    records[name] = current;
+    await save(file, records);
+  });
 }
 
 export async function deleteMcpServer(dataDir: string, name: string) {
   const file = mcpFile(dataDir);
-  const records = await load(file);
-  if (!(name in records)) return false;
-  delete records[name];
-  await save(file, records);
-  return true;
+  return await localLockService.withLock(file, 30_000, async () => {
+    const records = await load(file);
+    if (!(name in records)) return false;
+    delete records[name];
+    await save(file, records);
+    return true;
+  });
 }

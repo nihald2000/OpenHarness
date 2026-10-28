@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { localLockService } from "../../core/src/infra/index.ts";
 
 const CONFIG_SECTIONS = new Set(["model", "smallModel", "defaultAgent", "defaultRuntime", "providers", "mcp", "plugins", "codeMode", "permissions", "limits", "compaction", "verify", "guardrails", "advanced", "agents", "skills", "commands", "prompt", "hooks"]);
 const SCALAR_SECTIONS = new Set(["model", "smallModel", "defaultAgent", "defaultRuntime"]);
@@ -116,11 +117,13 @@ export async function updateSettings(dataDir: string, section: string, value: un
   const normalized = await extractSecrets(dataDir, value, section.toUpperCase());
   extractedSecrets.push(...normalized.names);
   const file = resolve(dataDir, "config.json");
-  const config = await readJson(file);
-  if (value === null) delete config[section];
-  else config[section] = normalized.value;
-  await atomicJson(file, config);
-  return { extractedSecrets: [...new Set(extractedSecrets)] };
+  return await localLockService.withLock(file, 30_000, async () => {
+    const config = await readJson(file);
+    if (value === null) delete config[section];
+    else config[section] = normalized.value;
+    await atomicJson(file, config);
+    return { extractedSecrets: [...new Set(extractedSecrets)] };
+  });
 }
 
 async function extractSecrets(dataDir: string, value: unknown, prefix: string): Promise<{ value: unknown; names: string[] }> {
@@ -186,19 +189,23 @@ export async function setSecret(dataDir: string, name: string, value: string) {
   const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   const record: SecretRecord = { version: 1, iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64"), updatedAt: Date.now() };
   const file = resolve(dataDir, "secrets.json");
-  const records = await readJson(file);
-  records[name] = record;
-  await atomicJson(file, records);
+  await localLockService.withLock(file, 30_000, async () => {
+    const records = await readJson(file);
+    records[name] = record;
+    await atomicJson(file, records);
+  });
 }
 
 export async function deleteSecret(dataDir: string, name: string) {
   if (!SECRET_NAME.test(name)) throw new Error("invalid secret name");
   const file = resolve(dataDir, "secrets.json");
-  const records = await readJson(file);
-  if (!(name in records)) return false;
-  delete records[name];
-  await atomicJson(file, records);
-  return true;
+  return await localLockService.withLock(file, 30_000, async () => {
+    const records = await readJson(file);
+    if (!(name in records)) return false;
+    delete records[name];
+    await atomicJson(file, records);
+    return true;
+  });
 }
 
 export async function resolveSecret(dataDir: string, name: string): Promise<string | undefined> {

@@ -7,6 +7,7 @@ The server typecheck script cannot find `tsc`; direct invocation reports missing
 - [x] Add the initial shared infrastructure contracts and route local live SSE fan-out through the in-process EventBus; preserve the existing event replay store.
 - [x] Move local JSON state loading and atomic snapshot saves behind the `LocalDocumentStore` adapter.
 - [x] Route run abort and admin stop signals through the local `CancelBus` adapter.
+- [x] Serialize local config, secret, plugin, and MCP read-modify-write operations through the process-local `LockService`.
 - [ ] Complete local adapters for state, jobs, cancellation, locks, rate limits, quotas, secrets, configuration, and runtime execution; remove direct infrastructure access from the server and runner.
 - [ ] Add PostgreSQL/Redis adapters, schema migrations, atomic per-session event sequencing, and cross-node SSE replay recovery.
 - [ ] Add durable worker jobs, leases, fencing, checkpoints, durable approvals, and resumable runs.

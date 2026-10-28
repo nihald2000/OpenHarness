@@ -53,6 +53,17 @@ describe("safety-sensitive backend behavior", () => {
     expect(await readFile(join(dataDir, "secrets.json"), "utf8")).not.toContain("very-secret-value");
   });
 
+  test("concurrent settings writes preserve both updated sections", async () => {
+    const dataDir = await temporaryDirectory();
+    await Promise.all([
+      updateSettings(dataDir, "limits", { maxConcurrentRuns: 5 }),
+      updateSettings(dataDir, "providers", { example: { type: "openai", models: { test: {} } } }),
+    ]);
+    const settings = await getSettings(dataDir);
+    expect(settings.config.limits).toEqual({ maxConcurrentRuns: 5 });
+    expect(settings.config.providers).toEqual({ example: { type: "openai", models: { test: {} } } });
+  });
+
   test("verifier accepts only fixed allowlisted check names", async () => {
     await expect(executeTool("verify", { command: "rm -rf" }, process.cwd())).rejects.toThrow("must be typecheck");
   });
