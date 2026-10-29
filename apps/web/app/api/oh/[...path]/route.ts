@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { adminTokenFrom, getAdminUrl, json, sameOrigin, upstreamHeaders } from "@/lib/admin-session";
+import { authDisabled } from "@/lib/auth-mode";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,9 +33,15 @@ async function handle(
 
   const isMutating = MUTATING.has(req.method);
   const originOk = sameOrigin(req);
-  const adminToken = adminTokenFrom(req);
+  const demoMode = authDisabled();
+  // In demo mode, optionally act as the server administrator so the settings UI
+  // works without a sign-in. Only set OPENHARNESS_ADMIN_TOKEN when every visitor
+  // is allowed to administer the backend.
+  const adminToken =
+    adminTokenFrom(req) ??
+    (demoMode ? process.env.OPENHARNESS_ADMIN_TOKEN?.trim() || undefined : undefined);
 
-  if (targetPath !== "/health" && !adminToken) {
+  if (targetPath !== "/health" && !adminToken && !demoMode) {
     return json({ error: "authentication required" }, 401);
   }
 

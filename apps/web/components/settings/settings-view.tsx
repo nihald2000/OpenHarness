@@ -65,7 +65,7 @@ function isValidSection(val: string): val is SectionId {
 
 export function SettingsView() {
   const { setSidebarOpen } = useApp();
-  const { admin, loading: adminLoading, expired, user, logout, markSignedOut } =
+  const { admin, authDisabled, loading: adminLoading, expired, user, logout, markSignedOut } =
     useAdmin();
 
   const [view, setView] = useState<SettingsPreviewResponse | null>(null);
@@ -157,7 +157,7 @@ export function SettingsView() {
           )}
         </div>
 
-        {admin && (
+        {admin && !authDisabled && (
           <div className="flex items-center gap-3">
             {user && <span className="hidden max-w-44 truncate text-xs text-muted sm:block" title={user.email}>{user.name}</span>}
             <button

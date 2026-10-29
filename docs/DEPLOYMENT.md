@@ -50,6 +50,8 @@ The Next.js UI can be deployed to Vercel independently of the Bun API server. Th
 
 `OPENHARNESS_URL` must be a public HTTPS origin reachable from Vercel Functions. The Bun server cannot run as a Vercel Function because it needs a long-lived process, local disk state, and SSE. Run it on Modal (or another container host) with a persistent volume and stream-friendly ingress, then point `OPENHARNESS_URL` at it.
 
+For a temporary UI-only demo, set `OPENHARNESS_WEB_AUTH_DISABLED=true`. This skips the sign-in screen and the proxy's admin-cookie requirement. If `OPENHARNESS_ADMIN_TOKEN` is also set, the proxy forwards it upstream, which gives every visitor administrator access; only do that for a private demo. Remove the variable and redeploy to restore sign-in.
+
 Hobby notes: functions allow up to 300 seconds, builds are capped at 45 minutes, and deployment size is limited. The repository `.vercelignore` keeps the local `dist/` server binary out of CLI uploads. Git auto-deploy requires connecting GitHub under Vercel Account Settings -> Login Connections, then running `vercel git connect`.
 
 ## CI

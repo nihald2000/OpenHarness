@@ -8,6 +8,7 @@ export interface AdminSnapshot {
   loading: boolean;
   expired: boolean;
   user: AuthenticatedUser | null;
+  authDisabled: boolean;
 }
 
 let state: AdminSnapshot = {
@@ -15,6 +16,7 @@ let state: AdminSnapshot = {
   loading: true,
   expired: false,
   user: null,
+  authDisabled: false,
 };
 
 const SERVER_SNAPSHOT: AdminSnapshot = {
@@ -22,6 +24,7 @@ const SERVER_SNAPSHOT: AdminSnapshot = {
   loading: true,
   expired: false,
   user: null,
+  authDisabled: false,
 };
 
 let initialized = false;
@@ -64,10 +67,16 @@ export function refreshAdmin(): Promise<boolean> {
         setState({ admin: false, loading: false, user: null });
         return false;
       }
-      const data = (await res.json()) as { admin?: boolean; user?: AuthenticatedUser | null };
-      const isAdmin = Boolean(data.admin);
+      const data = (await res.json()) as {
+        admin?: boolean;
+        user?: AuthenticatedUser | null;
+        authDisabled?: boolean;
+      };
+      const disabled = Boolean(data.authDisabled);
+      const isAdmin = Boolean(data.admin) || disabled;
       setState({
         admin: isAdmin,
+        authDisabled: disabled,
         loading: false,
         user: isAdmin ? data.user ?? null : null,
         expired: isAdmin ? false : state.expired,
@@ -84,6 +93,7 @@ export function refreshAdmin(): Promise<boolean> {
 }
 
 export function markSignedOut(expired = true): void {
+  if (state.authDisabled) return;
   setState({ admin: false, loading: false, expired, user: null });
 }
 
@@ -114,6 +124,7 @@ export async function adminLogin(
 }
 
 export async function adminLogout(): Promise<void> {
+  if (state.authDisabled) return;
   try {
     await fetch("/api/admin/logout", { method: "POST" });
   } catch {
@@ -134,6 +145,7 @@ export function useAdmin() {
 
   return {
     admin: snapshot.admin,
+    authDisabled: snapshot.authDisabled,
     loading: snapshot.loading,
     expired: snapshot.expired,
     user: snapshot.user,

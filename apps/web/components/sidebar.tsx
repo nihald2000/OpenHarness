@@ -41,7 +41,7 @@ export function Sidebar() {
   } = useApp();
   const { sessions, loading } = useSessions();
   const { info } = useCatalog();
-  const { admin } = useAdmin();
+  const { admin, authDisabled } = useAdmin();
 
   const [query, setQuery] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -262,7 +262,7 @@ export function Sidebar() {
               <Settings className="size-4 text-muted" aria-hidden="true" />
               <span>Settings</span>
             </span>
-            {admin && <Badge tone="accent">Admin</Badge>}
+            {admin && !authDisabled && <Badge tone="accent">Admin</Badge>}
           </Link>
 
           <div className="flex items-center justify-between px-2.5 py-1.5 text-xs text-muted">
