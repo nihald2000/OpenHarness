@@ -1,0 +1,13 @@
+# Local build output and large server binaries are not needed to build the web app.
+dist
+apps/web/.next
+apps/web/tsconfig.tsbuildinfo
+**/node_modules
+
+# Development and repository-only files.
+.git
+.github
+.openharness
+.tmp
+docs
+examples
