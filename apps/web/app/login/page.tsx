@@ -5,6 +5,7 @@ import { authDisabled } from "@/lib/auth-mode";
 import { safeReturnTo } from "@/lib/oauth";
 
 export const metadata: Metadata = { title: "Sign in - OpenHarness" };
+export const dynamic = "force-dynamic";
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ returnTo?: string; error?: string }> }) {
   if (authDisabled()) redirect("/");
