@@ -9,3 +9,5 @@ dist/
 *.tsbuildinfo
 
 .vercel
+__pycache__/
+*.pyc
