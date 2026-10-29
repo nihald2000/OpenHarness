@@ -20,7 +20,7 @@ type EventRecord = EventEnvelope<Record<string, unknown>>;
 type Store = { sessions: Record<string, Session>; messages: Record<string, Message[]>; permissions: Record<string, Record<string, unknown>>; grants: string[]; events: EventRecord[]; nextSeq: number };
 
 declare const Bun: {
-  serve(options: { hostname?: string; port?: number; fetch: (request: Request) => Response | Promise<Response> }): { port: number; stop(closeActiveConnections?: boolean): void };
+  serve(options: { hostname?: string; port?: number; idleTimeout?: number; fetch: (request: Request) => Response | Promise<Response> }): { port: number; stop(closeActiveConnections?: boolean): void };
 };
 
 const EMPTY: Store = { sessions: {}, messages: {}, permissions: {}, grants: [], events: [], nextSeq: 1 };
@@ -293,6 +293,9 @@ export function createServer(options: { hostname?: string; port?: number } = {})
   const server = Bun.serve({
     hostname: options.hostname,
     port: options.port,
+    // SSE keep-alive pings are sent every 5s; Bun's 10s default would close
+    // idle event streams before the first ping.
+    idleTimeout: 120,
     async fetch(req) {
       await stateReady;
       const url = new URL(req.url);
@@ -503,7 +506,7 @@ export function createServer(options: { hostname?: string; port?: number } = {})
             let heartbeat: ReturnType<typeof setInterval> | undefined;
             cleanup = () => { if (heartbeat) clearInterval(heartbeat); unsubscribe(); releaseConnection(); };
             for (const event of replay) send(event);
-            if (!streamClosed) heartbeat = setInterval(() => enqueue(encoder.encode(`: ping ${now()}\n\n`)), 15_000);
+            if (!streamClosed) heartbeat = setInterval(() => enqueue(encoder.encode(`: ping ${now()}\n\n`)), 5_000);
             req.signal.addEventListener("abort", () => {
               cleanup();
               streamClosed = true;
