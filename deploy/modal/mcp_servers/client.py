@@ -118,10 +118,15 @@ def default_specs() -> dict[str, ServerSpec]:
                 "--headless",
                 "--isolated",
                 "--no-sandbox",
-                "--browser",
-                "chromium",
+                # Chromium is the default. `--browser` selects a *channel*
+                # (chrome/firefox/webkit/msedge), so passing "chromium" here
+                # is at best a no-op and at worst rejected.
                 "--viewport-size",
                 "1280x720",
+                # Screenshots are written to disk and read back by path, so
+                # base64 image payloads would only bloat the context.
+                "--image-responses",
+                "omit",
                 "--output-dir",
                 artifact_dir,
             ),

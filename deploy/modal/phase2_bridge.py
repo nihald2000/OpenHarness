@@ -70,7 +70,9 @@ image = (
         "npx --yes playwright@1.64.0-alpha-1790635538000 install --with-deps chromium",
         "mkdir -p /mnt/mcp_servers /mnt/data/artifacts /mnt/data/checks",
     )
-    .pip_install("mcp==1.9.0", "pyyaml")
+    # mcp 1.9.0 imports `eval_type_backport` from pydantic internals, which was
+    # removed in pydantic 2.12. Pin the pair that is verified to work.
+    .pip_install("mcp==1.9.0", "pydantic==2.11.5", "pyyaml")
     .add_local_dir(str(SERVERS), remote_path="/mnt/mcp_servers", copy=True)
     .add_local_dir(str(CHECKS), remote_path="/mnt/data/checks", copy=True)
 )

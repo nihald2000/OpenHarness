@@ -21,7 +21,7 @@ from playwright import (  # noqa: E402
     type_text,
 )
 
-SITE = Path("/mnt/data/site")
+SITE = Path("/mnt/data/checks/site")
 
 
 def flatten(nodes, out):
