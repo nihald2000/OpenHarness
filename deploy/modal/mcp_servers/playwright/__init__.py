@@ -542,11 +542,13 @@ return axe.run(document, {json.dumps(options)}).then((r) => ({{
 }}));
 }}"""
 
-    raw = _text("browser_evaluate", {"function": function}, timeout=180)
+    try:
+        raw = _text("browser_evaluate", {"function": function}, timeout=180)
+    except Exception as exc:  # noqa: BLE001 - an audit must not kill the session
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:600]}
     result = _maybe_json(raw)
     if not isinstance(result, dict):
         return {"ok": False, "raw": _clip(str(result), 2000)}
-
     violations = result.get("violations") or []
     return {
         "ok": True,

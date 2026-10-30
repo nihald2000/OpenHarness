@@ -331,12 +331,22 @@ async def serve(spec: ServerSpec) -> int:
             await writer.drain()
         except (ConnectionResetError, BrokenPipeError):
             pass
+        except Exception as exc:  # noqa: BLE001 - never kill the daemon
+            with contextlib.suppress(Exception):
+                writer.write(json.dumps(_error(exc)).encode() + b"\n")
+                await writer.drain()
         finally:
             with contextlib.suppress(Exception):
                 writer.close()
                 await writer.wait_closed()
 
-    server = await asyncio.start_unix_server(handle, path=str(sock))
+    # Requests can carry large payloads (an inline axe-core bundle is ~560 KB),
+    # which is well past asyncio's 64 KiB default line limit.
+    server = await asyncio.start_unix_server(
+        handle,
+        path=str(sock),
+        limit=int(os.environ.get("OH_MCP_STREAM_LIMIT", str(16 * 1024 * 1024))),
+    )
     os.chmod(sock, 0o600)
 
     def _stop(*_: Any) -> None:
@@ -423,7 +433,13 @@ def _request(name: str, payload: dict[str, Any], timeout: float) -> dict[str, An
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
         conn.settimeout(timeout)
         conn.connect(str(sock))
-        conn.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+        try:
+            conn.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+        except BrokenPipeError as exc:
+            raise MCPBridgeError(
+                f"MCP daemon {name!r} closed the connection while receiving "
+                f"a {len(payload.get('arguments', {}).get('function', '')) or 0}-byte payload"
+            ) from exc
         chunks: list[bytes] = []
         while True:
             chunk = conn.recv(1 << 16)
