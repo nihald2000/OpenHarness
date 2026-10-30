@@ -5,8 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { resolveInside, PathEscapeError } from "../packages/core/src/util/safe-path.ts";
 import { SandboxToolRouter } from "../packages/core/src/tools/catalog.ts";
+import { SandboxDaemon } from "../packages/sandboxd/src/server.ts";
+import { compileSandboxPolicy } from "../packages/core/src/sandbox/policy.ts";
 
-test("Step 2 (S1): resolveInside and fallback tools block .., ../../outside.txt, absolute paths, external symlinks, and sibling-prefix directories", async () => {
+test("Step 2 (S1): resolveInside, fallback tools, and SandboxDaemon block .., ../../outside.txt, absolute paths, external symlinks, and sibling-prefix directories", async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "oh-safepath-"));
   const root = path.join(base, "workspace");
   const evilSibling = path.join(base, "workspace-evil");
@@ -90,6 +92,41 @@ test("Step 2 (S1): resolveInside and fallback tools block .., ../../outside.txt,
     );
     assert.ok(memEscape.error, "memory escape must fail");
     assert.equal(fs.readFileSync(outsideFile, "utf8"), "DO_NOT_TOUCH");
+
+    // 3. SandboxDaemon (oh-sandboxd) symlink escape check via resolveSafePath
+    const daemon = new SandboxDaemon({
+      sessionId: "sess_safepath_d",
+      runId: "run_safepath_d",
+      sessionKey: "key_safepath",
+      workspacePath: root,
+      memoriesPath: path.join(base, "memories"),
+      tmpPath: path.join(base, "tmp"),
+      shadowGitDir: path.join(base, ".shadow-git"),
+      policy: compileSandboxPolicy({
+        runId: "run_safepath_d",
+        phase: "agent",
+        workspacePath: root,
+        memoriesPath: path.join(base, "memories"),
+        tmpPath: path.join(base, "tmp"),
+        networkMode: "none",
+      }),
+    });
+    const symlinkView = await daemon.handleRequest(
+      "POST",
+      "/files/view",
+      { "x-session-key": "key_safepath" },
+      { path: "link-outside.txt" }
+    );
+    assert.equal(symlinkView.status, 403);
+    const symlinkWrite = await daemon.handleRequest(
+      "POST",
+      "/files/create",
+      { "x-session-key": "key_safepath" },
+      { path: "link-outside.txt", content: "PWNED" }
+    );
+    assert.equal(symlinkWrite.status, 403);
+    assert.equal(fs.readFileSync(outsideFile, "utf8"), "DO_NOT_TOUCH");
+    await daemon.close();
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
   }

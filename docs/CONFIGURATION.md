@@ -103,3 +103,16 @@ Unknown keys in `openharness.json` or `/v1/admin/settings` are rejected fail-clo
 - `schedules`: Array of cron/webhook schedule definitions.
 
 See also [Sandbox Architecture](SANDBOX.md) and [Long-Horizon Tasks Guide](LONG_TASKS.md).
+
+
+## Modal Sandbox & Fail-Closed Server Environment Variables
+
+| Variable | Description |
+|---|---|
+| `OPENHARNESS_HOST` | Bind host (`127.0.0.1` default; non-loopback requires `OPENHARNESS_SERVER_TOKEN` or `OPENHARNESS_OIDC_ISSUER`). |
+| `OPENHARNESS_PORT` | HTTP server port (`4096` default). |
+| `OPENHARNESS_SERVER_TOKEN` | Bearer token required for API clients when bound to a non-loopback address (`>= 24` chars). |
+| `OPENHARNESS_ADMIN_TOKEN` | Admin token required for `/v1/admin/*` and `POST /v1/admin/session` (`>= 24` chars; auto-generated in `<dataDir>/admin-token` on loopback). |
+| `OPENHARNESS_POSTGRES` | Set to `1` alongside `DATABASE_URL` to enable `PostgresStateStore` and `PostgresJobQueue`. |
+| `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | Modal credentials for `ModalSandboxProvider` (`modal` runtime). |
+| `VITE_OPENHARNESS_DEMO` | Set to `1` to run the web UI in offline demo mode (`DemoOpenHarnessClient`). |

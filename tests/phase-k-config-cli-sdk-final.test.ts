@@ -152,6 +152,16 @@ test("§14 & §15 Acceptance: fail-closed configuration validation rejects unkno
   for (const rel of requiredPaths) {
     assert.ok(fs.existsSync(rel), `Missing §15/§17 file: ${rel}`);
   }
+
+  // Verify exported behavior of §15 modules (Step 10 F5)
+  const { isValidShadowGitSha } = await import("../packages/core/src/checkpoint/shadow-git.ts");
+  assert.equal(isValidShadowGitSha("0123456789abcdef0123456789abcdef01234567"), true);
+  const { shouldTriggerCompaction } = await import("../packages/core/src/context/compaction.ts");
+  assert.equal(shouldTriggerCompaction(30_000, 32_000), true);
+  const { containsHighRiskShellSubcommand } = await import("../packages/core/src/security/shell-parse.ts");
+  assert.equal(containsHighRiskShellSubcommand("echo ok && rm -rf /"), true);
+  const { isValidCronExpression } = await import("../packages/core/src/scheduler/cron.ts");
+  assert.equal(isValidCronExpression("0 * * * *"), true);
 });
 
 test("§13 Phase K CLI & §17 Final Acceptance Criterion #1: Meta Llama 4 Maverick task run in an in-process daemon sandbox recovers from a 429 and a malformed tool call, fixes a failing Node test, passes verification and review, and creates a shadow-git checkpoint", async () => {

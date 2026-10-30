@@ -1,37 +1,41 @@
-# OpenHarness Sandbox Architecture (`docs/SANDBOX.md`)
+# OpenHarness Sandbox Architecture (`oh-sandboxd`, `srt-local`, `docker`, `modal`)
 
-OpenHarness enforces a defense-in-depth security boundary where every autonomous command, file edit, or network connection executes inside an isolated sandbox (`oh-sandboxd` + OS-enforced confinement), never relying solely on prompt instructions.
+OpenHarness enforces a strict fail-closed sandbox model across four runtime providers:
 
-## 1. Sandbox Runtimes (`packages/core/src/sandbox/`)
+| Provider | Isolation Mechanism | OS Enforced | Network Policy | Snapshots / Pause |
+|---|---|---|---|---|
+| `local` | Host workspace containment (`resolveInside` realpath checks). Refuses `task` and `long_task` modes unless `allowUnsandboxedAutonomy: true`. | `false` | `open` | No |
+| `srt-local` | Host child processes wrapped by Anthropic Sandbox Runtime (`srt --settings <srt.json> -- <argv>`) with scrubbed `BASE_ENV`. Fails closed (`503`) if `srt` is missing when `requireSrt: true`. | `true` (when `srt` installed) | `allowlist` / `none` | Local directory snapshot + shadow-git |
+| `docker` | Hardened rootless container (`--cap-drop ALL --security-opt no-new-privileges --read-only`) running `oh-sandboxd`. | `true` (when Docker daemon running) | `allowlist` / `none` | Container commit / directory snapshot + shadow-git |
+| `modal` | Modal cloud microVM (`ModalSandboxProvider`) running `/usr/local/bin/oh-sandboxd` with `srt` defense-in-depth, Modal `cidr_allowlist` / `block_network` egress rules, and short-lived `connectToken` HTTPS transport. | `true` | `allowlist` / `none` | `snapshotFilesystem` image snapshots + 23h rollover |
 
-| Runtime ID | Isolation Mechanism | Capabilities | Default Usage |
-| :--- | :--- | :--- | :--- |
-| `local` | Host process (unsandboxed) | Read-only & allowlisted local tools only; no `bash`, `processes`, or `browser`. | Offline demo (`chat`). Refuses `long_task` autonomy unless `allowUnsandboxedAutonomy: true`. |
-| `srt-local` | Host child process wrapped by Anthropic Sandbox Runtime (`srt`) | macOS Seatbelt / Linux `bubblewrap` + `seccomp`; persistent shell, processes, ports, Playwright browser, shadow-git checkpoints. | Local developer workstation autonomy. |
-| `docker` | One hardened container per session (`openharness/sandbox:<toolchain>`) | `--cap-drop ALL`, `--security-opt no-new-privileges`, non-root user (`1000:1000`), read-only rootfs, writable `/workspace`, `/tmp`, `/memories`, `srt` wrapping inside container, `docker pause`/`unpause`. | Standard local & CI autonomous `task` and `long_task` execution. |
-| `modal` | Hardware-isolated cloud microVM (`runtime="vm"`) | Dynamic outbound network switching, port tunnels, zero-cost filesystem hibernation (`snapshot_filesystem()` / `Image.from_id()`). | Cloud-scale parallel runs and long-horizon tasks. |
+## 1. Two-Phase Sandbox Provisioning (`setup` -> `agent`)
 
-## 2. In-Sandbox Agent Server (`oh-sandboxd`)
+1. **Setup Phase (`phase: "setup"`)**:
+   - Allowed domains include package registries (`registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `crates.io`, `proxy.golang.org`, `github.com`).
+   - Workspace files are materialized (`local` tar.gz stream, `git clone`, or restored `snapshot` image) and `setupCommands` execute.
+   - On Modal, the resulting filesystem is snapshotted (`snapshotFilesystem`) and cached in `SandboxRecordStore` by a SHA-256 key over `(baseImageId, workspaceHash, setupCommands)`.
+2. **Agent Phase (`phase: "agent"`)**:
+   - Boots from the cached setup image with network locked down (`blockNetwork: true` when `mode === "none"`, or `cidrAllowlist` resolved at launch when `mode === "allowlist"`).
+   - Starts `/usr/local/bin/oh-sandboxd` on port `8080` with a 64-hex random `OH_SESSION_KEY` (stored encrypted via AES-256-GCM in `SandboxRecordStore`, never exposed on `SandboxHandle`).
 
-`oh-sandboxd` (`packages/sandboxd/src/server.ts`) runs inside the sandbox and binds only to loopback or the sandbox private interface.
-- **Authentication**: Every route except `GET /health` requires `X-Session-Key` verified with constant-time comparison (`crypto.timingSafeEqual`).
-- **Process Wrapping**: Every spawned process runs through `srt --settings /oh/policy.json -- <argv>` (with `--` separating `srt` flags from the command).
-- **Persistent Shell Sessions (`/shell/:sid/exec|input|interrupt`)**: Preserves `cwd` and environment variables across calls; supports idle timeouts returning `status: "still_running"` so the agent can inspect partial output, send stdin, or interrupt (`Ctrl-C`).
-- **Linter-Gated File Operations (`/files/view|create|str_replace|insert|undo_edit|apply_patch`)**: Enforces unique match with whitespace-normalized fuzzy fallback and runs language-aware syntax checks after every edit.
-- **Shadow-Git Checkpoints (`/checkpoints/create|diff|restore`)**: Commits workspace snapshots to `GIT_DIR=/oh/.shadow-git` with `GIT_WORK_TREE=/workspace` so the user's `.git` history is never polluted.
-- **Telemetry**: Emits `sandbox.violation`, `process.output`, and `port.opened` events to the control plane.
+## 2. `oh-sandboxd` Confinement & Idempotency (`packages/sandboxd`)
 
-## 3. Immutable Policy & Two-Phase Network Egress (`packages/core/src/sandbox/policy.ts`)
+- **Process Confinement (`packages/sandboxd/src/config.ts`)**:
+  - Every child process (`execShell`, `startBackgroundProcess`, `runShadowGit`, `execIpython`, `runPostEditSyntaxCheck`) is spawned through `spawnConfined` in a detached process group (`detached: true`) so timeouts and `/processes/stop-all` kill the entire process tree (`process.kill(-pid, signal)`).
+  - Child environments are built from a minimal `BASE_ENV` (`PATH`, `HOME`, `LANG`, `TERM`) and scrubbed against `SECRETISH` (`/(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|BEARER|MODAL_|OPENAI_|ANTHROPIC_|AWS_|GITHUB_)/i`).
+- **`srt` Schema Translation (`toSrtSettings`)**:
+  - Translates OpenHarness `CompiledSandboxPolicy` into the exact schema expected by `@anthropic-ai/sandbox-runtime`:
+    - `filesystem.denyRead` (`~/.ssh`, `~/.aws`, `~/.config/gcloud`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`)
+    - `filesystem.allowWrite` (`/workspace`, `/tmp`, `/memories`)
+    - `filesystem.denyWrite` (`.git/hooks`, `.git/config`, `.bashrc`, `.profile`, `.env`, `.mcp.json`, `.vscode`, `.idea`, `.openharness/agents`, `.openharness/commands`, `.openharness/skills`, `/oh/policy.json`)
+    - `network.allowedDomains` / `network.deniedDomains`
+- **Request Idempotency (`HttpDaemonTransport`)**:
+  - `HttpDaemonTransport` attaches a UUID `x-oh-request-id` to every request, verifies the `x-oh-daemon: 1` response header, re-mints Modal connect tokens on edge `401` responses, and `oh-sandboxd` deduplicates identical `POST` request IDs for 10 minutes.
 
-Each run compiles an immutable `CompiledSandboxPolicy`:
-- **Filesystem Reads (Deny-then-Allow)**: Denies `~/.ssh`, `~/.aws`, `~/.config/gcloud`, `~/.kube`, the OpenHarness data directory, and `/oh/policy.json`.
-- **Filesystem Writes (Allow-Only)**: Permits writes strictly inside `/workspace`, `/tmp`, and `/memories`.
-- **Mandatory Denies (Applied Last, Never Overridable)**: Blocks `.git/hooks/**`, `.git/config` (unless explicitly enabled), `.bashrc`/`.zshrc`/`.profile`, `.env*` outside test fixtures, `.mcp.json`, `.vscode/**`, `.idea/**`, `.openharness/agents|commands|skills`, and `/oh/policy.json`.
-- **Two-Phase Network Policy**:
-  1. **Setup Phase (`setup`)**: Allows `package-registries` (npm, PyPI, crates, Go proxy, Maven Central) and `github-read` to clone repositories, install dependencies, and run `init.sh`.
-  2. **Agent Phase (`agent`)**: Switches to offline (`none`) or strict domain allowlist with HTTP method restrictions (`GET`, `HEAD`), recording a `sandbox.policy_switched` event.
-  3. **Mandatory CIDR Denies**: Always blocks cloud metadata (`169.254.169.254`, `metadata.google.internal`), loopback, link-local, and RFC1918 private networks.
+## 3. Lifecycle Management (`packages/core/src/sandbox/modal-lifecycle.ts`)
 
-## 4. Brokered Secrets (`HostSecretBroker`)
-
-Secrets never enter the sandbox environment or filesystem. Authenticated operations (`git_push`, `github_pr`) execute on the host via `HostSecretBroker` or inject headers at the egress proxy boundary for explicitly allowlisted domains, while `redactSecretsFromOutput` scrubs secret values from all tool outputs and logs.
+- **Pause / Hibernation**: Stops background processes (`/processes/stop-all`), creates a shadow-git checkpoint (`/checkpoints/create`), snapshots the microVM filesystem (`snapshotFilesystem`), and terminates the microVM while preserving the same `SandboxHandle.id`.
+- **Resume**: Boots a fresh microVM from `lastSnapshotImageId` under the same `handleId` so `RunState.sandboxHandleId` and all checkpoints remain valid.
+- **23-Hour Rollover (`rollover`)**: Snapshots and replaces sandboxes approaching Modal's 24-hour hard lifetime limit (`createdAt + 23h`).
+- **Orphan Reaper (`reapOrphanModalSandboxes`)**: Lists live Modal sandboxes tagged `oh=1` and terminates any sandbox without a matching `running`/`starting`/`setup` record.

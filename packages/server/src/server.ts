@@ -244,8 +244,29 @@ export class OpenHarnessServer {
       sandboxEnabled: Boolean(this.config.osEnforcedSandbox),
     });
 
+    let providerRef: ModelAgnosticProviderAdapter | null = null;
     const contextManager = new LayeredContextManager({
       workspaceRoot,
+      summarizer: async (transcriptText, state) => {
+        if (!providerRef || state.model.startsWith("mock/")) return "";
+        const res = await providerRef.generateTurn({
+          runId: state.runId,
+          sessionId: state.sessionId,
+          model: state.model,
+          systemPrompt:
+            "Summarize the transcript into concise bullet points preserving key decisions, modified files, errors, and next steps.",
+          messages: [
+            {
+              info: { id: "msg_summarize", role: "user", summary: true },
+              createdAt: Date.now(),
+              parts: [{ type: "text", text: transcriptText, synthetic: true }],
+            },
+          ],
+          tools: [],
+          maxOutputTokens: 2000,
+        });
+        return res.text;
+      },
     });
 
     const policyGate = new RiskPolicyGate({
@@ -259,7 +280,7 @@ export class OpenHarnessServer {
       defaultConfirmationPolicy: "risky",
     });
 
-    const provider = new ModelAgnosticProviderAdapter({
+    const provider = (providerRef = new ModelAgnosticProviderAdapter({
       onRetryEvent: async (ev) => {
         const env = await this.stateStore.appendEvent("default", ev.sessionId, {
           type: "run.retry",
@@ -302,7 +323,7 @@ export class OpenHarnessServer {
             ? mockTransport(payload)
             : httpTransport(payload, profile, opts);
       })(),
-    });
+    }));
 
     const emit = async (tenantId: string, sessionId: string, ev: OpenHarnessEvent) => {
       const env = await this.stateStore.appendEvent(tenantId, sessionId, ev);

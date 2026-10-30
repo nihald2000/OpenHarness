@@ -96,3 +96,11 @@ Plugins use `POST /v1/plugins` to attach an allowlisted plugin and `DELETE /v1/p
 - `sandbox.policy_switched`: `{ type: "sandbox.policy_switched", sessionId, runId, fromPhase: "setup", toPhase: "agent", policy }`
 - `process.output`: `{ type: "process.output", sessionId, processId, stream, data }`
 - `port.opened`: `{ type: "port.opened", sessionId, port, previewUrl, processId }`
+
+
+## Authentication, Admin Session Cookie & SSE Replay (`/v1/events`)
+
+- **`POST /v1/admin/session`**: Exchanges `{ "token": "<admin-token>" }` for an `HttpOnly; SameSite=Strict` session cookie (`oh_session`). Returns `403` when no admin token is configured or the token does not match.
+- **`GET /v1/admin/session`**: Returns `{ "admin": boolean, "authDisabled": boolean, "user": ... }`.
+- **`DELETE /v1/admin/session`**: Clears the `oh_session` cookie.
+- **`GET /v1/events?sessionId=<id>&after=<seq>`**: Server-Sent Events stream that replays historical events with `seq > after` (or `Last-Event-ID`), buffers live events during replay, and streams deduplicated live events in strict `seq` order.

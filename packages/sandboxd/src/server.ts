@@ -1,3 +1,4 @@
+import { resolveInside } from "../../core/src/util/safe-path.ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -76,6 +77,7 @@ export interface SandboxDaemonConfig {
   srtSettingsPath?: string;
   runAs?: { uid: number; gid: number };
   requireSrt?: boolean;
+  requirePlaywright?: boolean;
   policy: CompiledSandboxPolicy;
   secretValuesToRedact?: string[];
   onTelemetry?: (ev: SandboxTelemetryEvent) => void;
@@ -353,6 +355,15 @@ export class SandboxDaemon {
     }
 
     // --- Browser Routes ---
+    if (pathname.startsWith("/browser/") && (this.config.requirePlaywright || this.config.requireSrt)) {
+      return {
+        status: 503,
+        body: {
+          ok: false,
+          error: "Playwright browser worker unavailable in this environment (fail closed)",
+        },
+      };
+    }
     if (method === "POST" && pathname === "/browser/navigate") {
       return this.browserNavigate(payload);
     }
@@ -794,17 +805,34 @@ export class SandboxDaemon {
       op,
       this.config.workspacePath
     );
-    const resolvedPath = rawPath.startsWith("/memories")
-      ? path.join(this.config.memoriesPath, rawPath.replace(/^\/memories\/?/, ""))
+    const rootDir = rawPath.startsWith("/memories")
+      ? this.config.memoriesPath
       : rawPath.startsWith("/tmp")
-      ? path.join(this.config.tmpPath, rawPath.replace(/^\/tmp\/?/, ""))
-      : path.resolve(this.config.workspacePath, rawPath);
+      ? this.config.tmpPath
+      : this.config.workspacePath;
+    const relTarget = rawPath.startsWith("/memories")
+      ? rawPath.replace(/^\/memories\/?/, "") || "."
+      : rawPath.startsWith("/tmp")
+      ? rawPath.replace(/^\/tmp\/?/, "") || "."
+      : rawPath.startsWith(this.config.workspacePath)
+      ? path.relative(this.config.workspacePath, rawPath) || "."
+      : rawPath;
 
     if (!check.allowed) {
+      const fallbackPath = path.resolve(rootDir, relTarget);
       this.emitViolation(check.kind ?? (op === "read" ? "fs_read" : "fs_write"), rawPath, check.reason);
-      return { allowed: false, resolvedPath, error: check.reason };
+      return { allowed: false, resolvedPath: fallbackPath, error: check.reason };
     }
-    return { allowed: true, resolvedPath };
+
+    try {
+      const resolvedPath = resolveInside(rootDir, relTarget);
+      return { allowed: true, resolvedPath };
+    } catch (err) {
+      const fallbackPath = path.resolve(rootDir, relTarget);
+      const reason = (err as Error).message;
+      this.emitViolation(op === "read" ? "fs_read" : "fs_write", rawPath, reason);
+      return { allowed: false, resolvedPath: fallbackPath, error: reason };
+    }
   }
 
   private pushUndo(resolvedPath: string, previousContent: string): void {
