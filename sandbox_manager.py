@@ -62,6 +62,7 @@ class ExecutionResult:
             "exit_code": self.exit_code,
             "success": self.success,
             "truncated": self.truncated,
+            "status": "completed" if self.success else "failed",
         }
 
 
@@ -108,16 +109,24 @@ class _MockProcess:
         return self.returncode
 
 
+def _remap_mnt(path_str: str) -> str:
+    if path_str.startswith("/mnt") and not os.access("/mnt", os.W_OK):
+        return os.path.join(tempfile.gettempdir(), "openharness_mnt", path_str.lstrip("/"))
+    return path_str
+
+
 class _MockFilesystem:
     def copy_from_local(self, local_path: str, remote_path: str) -> None:
-        target = Path(remote_path)
+        mapped = _remap_mnt(remote_path)
+        target = Path(mapped)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(local_path, remote_path)
+        shutil.copy2(local_path, mapped)
 
     def copy_to_local(self, remote_path: str, local_path: str) -> None:
+        mapped = _remap_mnt(remote_path)
         target = Path(local_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(remote_path, local_path)
+        shutil.copy2(mapped, local_path)
 
 
 class _MockSnapshot:
@@ -132,12 +141,15 @@ class MockModalSandbox:
         self.object_id = f"sb-mock-{session_id}"
         self.filesystem = _MockFilesystem()
         self.tunnels_dict = {3000: type("Tunnel", (), {"url": "https://mock-tunnel-3000.modal.run"})()}
-        self._workdir = "/mnt/data" if os.path.exists("/mnt") else tempfile.gettempdir()
+        self._workdir = _remap_mnt("/mnt/data")
         os.makedirs(self._workdir, exist_ok=True)
 
     def exec(self, *args, **kwargs):
         cmd = args[2] if len(args) > 2 and args[0] == "bash" and args[1] == "-c" else " ".join(args)
-        workdir = kwargs.get("workdir", self._workdir)
+        if not os.access("/mnt", os.W_OK):
+            mnt_root = os.path.join(tempfile.gettempdir(), "openharness_mnt", "mnt")
+            cmd = cmd.replace("/mnt/", mnt_root + "/")
+        workdir = _remap_mnt(kwargs.get("workdir", self._workdir))
         if not os.path.exists(workdir):
             os.makedirs(workdir, exist_ok=True)
         # Strip srt wrapper if srt binary is not present
@@ -188,6 +200,14 @@ class ModalSandboxManager:
         self.sandbox: Optional[Any] = None
         self.network_mode: NetworkMode = "connected"
         self._bootstrap_completed = False
+
+    @property
+    def current_network_mode(self) -> NetworkMode:
+        return self.network_mode
+
+    @property
+    def active_sandbox(self) -> Optional[Any]:
+        return self.sandbox
 
     def _ensure_app(self):
         if not HAS_MODAL:
@@ -450,7 +470,7 @@ exit $__status
         tunnels = self.get_tunnels()
         return tunnels.get(port)
 
-    def hibernate_to_snapshot(self, ttl_days: int = 7) -> str:
+    def hibernate_to_snapshot(self, ttl_days: int = 7, ttl: Optional[int] = None) -> str:
         """Snapshots the filesystem before terminating the sandbox for zero-cost hibernation.
 
         Subsequent user turns can resurrect this state instantly via `create(snapshot_id=...)`.
@@ -461,7 +481,7 @@ exit $__status
         logger.info("Creating filesystem snapshot before hibernation...")
         snapshot_img = self.sandbox.snapshot_filesystem(
             timeout=55,
-            ttl=ttl_days * 24 * 3600,
+            ttl=ttl if ttl is not None else ttl_days * 24 * 3600,
         )
         snapshot_id = snapshot_img.object_id
         logger.info(f"Snapshot created successfully: {snapshot_id}")

@@ -67,3 +67,32 @@ When server/admin auth is configured, routes below require one of those bearer t
 | POST | `/v1/admin/mcp/:name/reconnect` | Reconnect one MCP server. |
 
 Plugins use `POST /v1/plugins` to attach an allowlisted plugin and `DELETE /v1/plugins/:name` to detach it. `PUT /v1/runtimes/default` selects the only currently supported runtime, `local`.
+
+
+## Long-Horizon Runs, Checkpoints, Rewind, Fork, and Schedules (Additive API)
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| POST | `/v1/sessions/:id/prompt` | Supports optional `"async": true` and `"mode": "chat" | "task" | "long_task"`, returning `{ "messageId", "runId" }` immediately. |
+| GET | `/v1/runs/:id` | Read durable run state, fine-grained `phase`, iteration count, usage, cost, and latest checkpoint SHA. |
+| POST | `/v1/runs/:id/pause` | Pause an active run; keeps the sandbox alive for `conversation_idle_ttl_seconds` before snapshotting. |
+| POST | `/v1/runs/:id/resume` | Resume a paused run; pass `{ "extend": true }` to double the iteration/duration/cost budget allotment. |
+| POST | `/v1/runs/:id/cancel` | Cancel an active or waiting run. |
+| GET | `/v1/sessions/:id/checkpoints` | List automatic and manual shadow-git checkpoints for the session. |
+| POST | `/v1/sessions/:id/rewind` | Rewind with `{ "checkpoint": "<sha>", "files": true, "conversation": false }`; restores workspace files only by default, or truncates conversation when `conversation: true`. |
+| POST | `/v1/sessions/:id/fork` | Fork a new session sharing history up to `{ "atMessageId" | "checkpoint" }` and restoring the checkpoint. |
+| GET, POST | `/v1/schedules` | List or create cron/webhook scheduled tasks (`mode`, `agent`, `prompt`, `concurrency`). |
+| GET, PATCH, DELETE | `/v1/schedules/:id` | Read, update, or delete a schedule. |
+| POST | `/v1/schedules/:id/trigger` | Trigger a scheduled run (enforces concurrency 1 and workspace locking). |
+
+### Additive SSE Event Types
+- `run.phase`: `{ type: "run.phase", sessionId, runId, phase, previousPhase, featureId }`
+- `run.retry`: `{ type: "run.retry", sessionId, runId, attempt, delayMs, reason }`
+- `run.stuck`: `{ type: "run.stuck", sessionId, runId, detector, count, message, action }`
+- `budget.warning`: `{ type: "budget.warning", sessionId, runId, resource, used, limit, ratio }`
+- `checkpoint.created`: `{ type: "checkpoint.created", sessionId, runId, checkpoint }`
+- `context.hard_reset`: `{ type: "context.hard_reset", sessionId, runId, attempts, tokensBefore, tokensAfter }`
+- `sandbox.violation`: `{ type: "sandbox.violation", sessionId, runId, kind, target, detail, timestamp }`
+- `sandbox.policy_switched`: `{ type: "sandbox.policy_switched", sessionId, runId, fromPhase: "setup", toPhase: "agent", policy }`
+- `process.output`: `{ type: "process.output", sessionId, processId, stream, data }`
+- `port.opened`: `{ type: "port.opened", sessionId, port, previewUrl, processId }`

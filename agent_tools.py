@@ -121,6 +121,10 @@ class AgentToolExecutor:
     def __init__(self, sandbox_manager: ModalSandboxManager):
         self.sandbox_manager = sandbox_manager
 
+    def bootstrap_sandbox(self) -> None:
+        if hasattr(self.sandbox_manager, "_bootstrap_in_sandbox_mcp"):
+            self.sandbox_manager._bootstrap_in_sandbox_mcp()
+
     def discover_mcp_modules(self, module_name: Optional[str] = None) -> Dict[str, Any]:
         """Returns metadata for all or a specific in-sandbox MCP module."""
         metadata = get_available_mcp_modules_metadata()

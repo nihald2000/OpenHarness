@@ -8,6 +8,25 @@ export type RunStatus =
   | "failed"
   | "cancelled";
 
+export type RunPhase =
+  | "planning"
+  | "building"
+  | "testing"
+  | "fixing"
+  | "reviewing"
+  | "awaiting_permission"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "stuck";
+
+export type RunMode = "chat" | "task" | "long_task";
+
+export type RiskLevel = "low" | "medium" | "high" | "unknown";
+
+export type ConfirmationPolicy = "always" | "risky" | "never";
+
 export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = [
   "queued",
   "running",
@@ -24,6 +43,38 @@ export interface TokenUsage {
   output: number;
   reasoning?: number;
   cacheRead?: number;
+  estimated?: boolean;
+}
+
+export interface CheckpointInfo {
+  sha: string;
+  message: string;
+  createdAt: number | string;
+  sessionId?: string;
+  runId?: string;
+  featureId?: string;
+  step?: number;
+  automatic?: boolean;
+  paths?: string[];
+}
+
+export interface FeatureItem {
+  id: string;
+  title: string;
+  description: string;
+  acceptance: string[];
+  verification: string[];
+  status: "pending" | "in_progress" | "passing" | "blocked";
+  attempts: number;
+  lastCheckpoint?: string;
+  blockedReason?: string;
+}
+
+export interface TodoItem {
+  id: string;
+  content: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled";
+  priority?: "low" | "medium" | "high";
 }
 
 export interface Session {
@@ -34,16 +85,63 @@ export interface Session {
   model?: string;
   runtime?: string | null;
   status: RunStatus;
+  phase?: RunPhase;
+  mode?: RunMode;
+  runId?: string;
+  featureId?: string;
+  lastCheckpoint?: string;
+  tainted?: boolean;
+  sandboxPolicy?: Record<string, unknown>;
   error?: string;
   usage?: TokenUsage;
   cost?: number;
   updatedAt: number | string;
 }
 
+export interface RunRecord {
+  id: string;
+  sessionId: string;
+  tenantId?: string;
+  mode: RunMode;
+  status: RunStatus;
+  phase: RunPhase;
+  iteration: number;
+  maxIterations: number;
+  startedAt: number;
+  updatedAt: number;
+  completedAt?: number;
+  pauseReason?: string;
+  error?: string;
+  featureId?: string;
+  lastCheckpoint?: string;
+  sandboxHandleId?: string;
+  usage?: TokenUsage;
+  cost?: number;
+}
+
+export interface ScheduleInfo {
+  id: string;
+  name: string;
+  cron?: string;
+  webhookSecret?: string;
+  enabled: boolean;
+  mode: RunMode;
+  agent: string;
+  prompt: string;
+  sandboxSpec?: Record<string, unknown>;
+  budget?: Record<string, unknown>;
+  concurrency: number;
+  lastRunAt?: number;
+  nextRunAt?: number;
+  history?: Array<{ runId: string; sessionId: string; startedAt: number; status: string }>;
+}
+
 export interface TextPart {
   type: "text";
   text: string;
   synthetic?: boolean;
+  untrusted?: boolean;
+  provenance?: string;
 }
 
 export interface ReasoningPart {
@@ -55,11 +153,12 @@ export interface ToolPart {
   type: "tool";
   tool: string;
   callId: string;
-  state: "pending" | "running" | "completed" | "error" | "denied";
+  state: "pending" | "running" | "completed" | "error" | "denied" | "interrupted";
   input: unknown;
   output?: unknown;
   error?: string;
   title?: string;
+  risk?: RiskLevel;
   metadata?: Record<string, unknown>;
   startedAt?: number;
   endedAt?: number;
@@ -102,6 +201,22 @@ export interface StepPart {
   cost?: number;
 }
 
+export interface DelegatedTaskPart {
+  type: "task";
+  taskId: string;
+  agent: string;
+  prompt: string;
+  status: "pending" | "running" | "completed" | "failed";
+  background?: boolean;
+  worktreeBranch?: string;
+  summary?: string;
+}
+
+export interface PlanPart {
+  type: "plan";
+  plan: PlanData;
+}
+
 export type Part =
   | TextPart
   | ReasoningPart
@@ -109,7 +224,9 @@ export type Part =
   | SkillPart
   | CompactionPart
   | VerifyPart
-  | StepPart;
+  | StepPart
+  | DelegatedTaskPart
+  | PlanPart;
 
 export interface MessageInfo {
   id: string;
@@ -136,9 +253,12 @@ export interface PermissionRequest {
   permission: string;
   title?: string;
   pattern?: string;
+  risk?: RiskLevel;
   metadata?: {
     input?: unknown;
     childSessionId?: string;
+    risk?: RiskLevel;
+    tainted?: boolean;
   };
   createdAt: number | string;
 }
@@ -187,6 +307,7 @@ export interface SkillInfo {
   name: string;
   description?: string;
   triggers?: string[];
+  content?: string;
 }
 
 export interface McpServerInfo {
@@ -221,13 +342,6 @@ export interface McpPreset {
   requiredSecrets?: Array<{ name: string; stored?: boolean }>;
 }
 
-export interface SkillInfo {
-  name: string;
-  description?: string;
-  triggers?: string[];
-  content?: string;
-}
-
 export interface ToolInfo {
   name: string;
   description?: string;
@@ -235,6 +349,8 @@ export interface ToolInfo {
   plugin?: string;
   source?: string;
   codeOnly?: boolean;
+  idempotent?: boolean;
+  masked?: boolean;
 }
 
 export interface PluginInfo {
@@ -264,6 +380,14 @@ export interface RuntimeInfo {
   isDefault?: boolean;
   active?: boolean;
   plugin?: string;
+  capabilities?: {
+    osEnforced: boolean;
+    network: "none" | "allowlist" | "open";
+    snapshots: boolean;
+    ports: boolean;
+    browser: boolean;
+    persistentShell: boolean;
+  };
 }
 
 export interface SettingsPreviewResponse {
@@ -291,6 +415,8 @@ export interface PlanData {
   title: string;
   explanation?: string;
   steps: PlanStep[];
+  acceptance?: string[];
+  verification?: string[];
 }
 
 export interface FixStatusEvent {
@@ -307,6 +433,16 @@ export type OpenHarnessEvent =
   | { type: "session.deleted"; sessionId: string }
   | { type: "runtime.reloaded"; at: number }
   | { type: "run.status"; sessionId: string; status: RunStatus; error?: string }
+  | { type: "run.phase"; sessionId: string; runId?: string; phase: RunPhase; previousPhase?: RunPhase; featureId?: string }
+  | { type: "run.retry"; sessionId: string; runId?: string; attempt: number; delayMs: number; reason: string }
+  | { type: "run.stuck"; sessionId: string; runId?: string; detector: string; count: number; message: string; action: "warn" | "blocked" | "paused" }
+  | { type: "budget.warning"; sessionId: string; runId?: string; resource: "iterations" | "duration" | "tokens" | "cost"; used: number; limit: number; ratio: number }
+  | { type: "checkpoint.created"; sessionId: string; runId?: string; checkpoint: CheckpointInfo }
+  | { type: "context.hard_reset"; sessionId: string; runId?: string; attempts: number; tokensBefore: number; tokensAfter: number }
+  | { type: "sandbox.violation"; sessionId: string; runId?: string; kind: "fs_read" | "fs_write" | "network" | "mandatory_deny"; target: string; detail?: string; timestamp: number }
+  | { type: "sandbox.policy_switched"; sessionId: string; runId?: string; fromPhase: "setup"; toPhase: "agent"; policy: Record<string, unknown> }
+  | { type: "process.output"; sessionId: string; processId: string; stream: "stdout" | "stderr"; data: string }
+  | { type: "port.opened"; sessionId: string; port: number; previewUrl?: string; processId?: string }
   | FixStatusEvent
   | { type: "verification.started"; sessionId: string; command: string; iteration: number; maxIterations: number }
   | { type: "verification.completed"; sessionId: string; result: { command?: string; passed?: boolean; exitCode?: number | null; timedOut?: boolean; stdout?: string; stderr?: string; truncated?: boolean }; iteration: number; maxIterations: number }
@@ -381,6 +517,9 @@ export function latestPlan(messages: Message[]): {
           latest = metaPlan;
           lastPlanMsgIdx = mIdx;
         }
+      } else if (p.type === "plan" && p.plan && Array.isArray(p.plan.steps)) {
+        latest = p.plan;
+        lastPlanMsgIdx = mIdx;
       }
     }
   });

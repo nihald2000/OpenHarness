@@ -68,3 +68,13 @@ The settings endpoint accepts JSON objects for `model`, `smallModel`, `defaultAg
 See [the JSON schema](config.schema.json) and [API route reference](API.md) for the current contract.
 
 Server errors are emitted as JSON records. Secret-like fields and common bearer/API key strings are redacted before output; logs avoid request bodies, prompts, and full provider payloads.
+
+
+## Long-Horizon Environment Variables & CLI Commands
+
+- `LLAMA_API_KEY`: API key for Meta Llama API (`https://api.llama.com/compat/v1`).
+- `GROQ_API_KEY`, `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `ANTHROPIC_API_KEY`: Provider API credentials.
+- `oh model probe <id> [--json]`: Empirically probes a model for tool calling, `max_completion_tokens`, streaming tool calls, and usage reporting, and stores the measured `ModelProfile`.
+- `oh session checkpoints <session-id> [--json]`: Lists shadow-git checkpoints for a session.
+- `oh session rewind <session-id> --checkpoint <sha> [--files] [--conversation] [--json]`: Rewinds workspace files (and optionally conversation transcript) to a checkpoint.
+- `oh session fork <session-id> [--checkpoint <sha>] [--at-message <msg-id>] [--json]`: Forks a session from a message or checkpoint.

@@ -16,6 +16,7 @@ import type { FixLoopState } from "@/lib/use-session";
 import { SelectMenu, type SelectOption } from "./select-menu";
 import { Badge, ConnectionIndicator, IconButton } from "./ui";
 import { UsagePopover } from "./usage-popover";
+import { CheckpointsPopover } from "./checkpoints-popover";
 
 export function ChatHeader({
   session,
@@ -298,6 +299,8 @@ export function ChatHeader({
             Runtime {sessionExplicitRuntime} detached
           </Badge>
         )}
+
+        {session && <CheckpointsPopover session={session} />}
 
         {session && (
           <UsagePopover

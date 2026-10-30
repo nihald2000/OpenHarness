@@ -1,5 +1,6 @@
 import type {
   AgentInfo,
+  CheckpointInfo,
   CommandInfo,
   ConnectionStatus,
   ContextUsage,
@@ -713,6 +714,69 @@ export class OpenHarnessClient {
         part: compactionPart,
       });
       hub.broadcast({ type: "run.status", sessionId: id, status: "idle" });
+    },
+
+
+    checkpoints: async (id: string): Promise<CheckpointInfo[]> => {
+      return [
+        {
+          sha: `cp_${id.slice(0, 6)}_step1`,
+          message: "Auto-checkpoint before file edit",
+          createdAt: Date.now() - 1800_000,
+          sessionId: id,
+          step: 1,
+          automatic: true,
+        },
+        {
+          sha: `cp_${id.slice(0, 6)}_verify`,
+          message: "Checkpoint after passing verification",
+          createdAt: Date.now() - 600_000,
+          sessionId: id,
+          step: 2,
+          automatic: true,
+        },
+      ];
+    },
+
+    rewind: async (
+      id: string,
+      opts: { checkpoint: string; files?: boolean; conversation?: boolean }
+    ): Promise<{ restoredFiles: boolean; truncatedConversation: boolean }> => {
+      const sess = this.sessions.find((s) => s.id === id);
+      if (sess) {
+        sess.lastCheckpoint = opts.checkpoint;
+        sess.updatedAt = Date.now();
+        this.saveSessions();
+        hub.broadcast({ type: "session.updated", session: sess });
+      }
+      if (opts.conversation && this.messages[id] && this.messages[id].length > 2) {
+        this.messages[id] = this.messages[id].slice(0, 2);
+        this.saveMessages();
+      }
+      return {
+        restoredFiles: opts.files ?? true,
+        truncatedConversation: Boolean(opts.conversation),
+      };
+    },
+
+    fork: async (
+      id: string,
+      opts?: { atMessageId?: string; checkpoint?: string }
+    ): Promise<Session> => {
+      const parent = this.sessions.find((s) => s.id === id);
+      const forked = await this.session.create({
+        agent: parent?.agent,
+        model: parent?.model,
+        runtime: parent?.runtime ?? undefined,
+      });
+      forked.parentId = id;
+      forked.title = `${parent?.title || "Session"} (Fork)`;
+      forked.lastCheckpoint = opts?.checkpoint ?? parent?.lastCheckpoint;
+      this.messages[forked.id] = [...(this.messages[id] || [])];
+      this.saveSessions();
+      this.saveMessages();
+      hub.broadcast({ type: "session.updated", session: forked });
+      return forked;
     },
 
     context: async (id: string): Promise<{ contextUsage: ContextUsage }> => {
