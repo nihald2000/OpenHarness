@@ -195,8 +195,10 @@ with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     page = browser.new_page()
     page.goto("https://example.com", timeout=30000)
+    body = page.locator("body").inner_text()
     print("title:", page.title())
-    print("h1:", page.locator("h1").inner_text())
+    print("body:", body[:160].replace("\\n", " "))
+    assert "documentation examples" in body, body[:200]
     browser.close()
 PY
 """,
