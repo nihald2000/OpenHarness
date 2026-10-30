@@ -21,3 +21,5 @@ export * from "./eval/index.ts";
 export * from "./config/index.ts";
 
 export * from "./util/safe-path.ts";
+
+export * from "./util/atomic-write.ts";

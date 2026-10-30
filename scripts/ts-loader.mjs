@@ -1,3 +1,11 @@
+import { createRequire } from "node:module";
+const _require = createRequire(import.meta.url);
+let _babel = null;
+let _presetTs = null;
+try {
+  _babel = _require("/usr/share/nodejs/@babel/core");
+  _presetTs = _require("/usr/share/nodejs/@babel/preset-typescript");
+} catch {}
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -92,6 +100,16 @@ export async function load(url, context, nextLoad) {
 }
 
 export function transpileTypeScript(source) {
+  if (_babel && _presetTs) {
+    const res = _babel.transformSync(source, {
+      filename: "module.tsx",
+      configFile: false,
+      babelrc: false,
+      presets: [[_presetTs, { isTSX: true, allExtensions: true }]],
+      retainLines: true,
+    });
+    return res.code;
+  }
   let code = source;
 
   // 1. Remove `import type ... from ...;` and `export type { ... } ...;`

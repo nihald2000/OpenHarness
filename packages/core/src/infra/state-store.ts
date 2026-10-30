@@ -10,6 +10,7 @@ import type {
   Session,
 } from "@openharness/sdk";
 import type { EventBus, EventEnvelope, StateStore, StepCheckpoint } from "../agent/deps.ts";
+import { atomicWriteFileSync } from "../util/atomic-write.ts";
 
 export interface PersistedStateDocument {
   version: number;
@@ -21,6 +22,8 @@ export interface PersistedStateDocument {
   stepCheckpoints: Record<string, StepCheckpoint>;
   permissions: Record<string, PermissionRequest & { tenantId?: string; reply?: PermissionReply }>;
   checkpoints: Record<string, CheckpointInfo[]>;
+  sandboxes?: Record<string, any>;
+  envImages?: Record<string, { imageId: string; expiresAt: number }>;
 }
 
 export class InProcessEventBus implements EventBus {
@@ -55,18 +58,31 @@ export class InProcessEventBus implements EventBus {
 
 export class LocalStateStore implements StateStore {
   private filePath: string | null;
+  private eventsFilePath: string | null;
   private maxRetainedEvents: number;
   private doc: PersistedStateDocument;
+  private lastSnapshotWriteMs = 0;
+  private pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  private snapshotThrottleMs: number;
 
-  constructor(opts?: { dataDir?: string; filePath?: string; maxRetainedEvents?: number }) {
+  constructor(opts?: {
+    dataDir?: string;
+    filePath?: string;
+    maxRetainedEvents?: number;
+    snapshotThrottleMs?: number;
+  }) {
     this.maxRetainedEvents = opts?.maxRetainedEvents ?? 5000;
+    this.snapshotThrottleMs = opts?.snapshotThrottleMs ?? 250;
     if (opts?.filePath) {
       this.filePath = opts.filePath;
+      this.eventsFilePath = path.join(path.dirname(opts.filePath), "events.jsonl");
     } else if (opts?.dataDir) {
       fs.mkdirSync(opts.dataDir, { recursive: true });
       this.filePath = path.join(opts.dataDir, "state.json");
+      this.eventsFilePath = path.join(opts.dataDir, "events.jsonl");
     } else {
       this.filePath = null;
+      this.eventsFilePath = null;
     }
     this.doc = this.loadFromDisk();
   }
@@ -82,50 +98,76 @@ export class LocalStateStore implements StateStore {
       stepCheckpoints: {},
       permissions: {},
       checkpoints: {},
+      sandboxes: {},
+      envImages: {},
     };
-    if (!this.filePath || !fs.existsSync(this.filePath)) {
-      return empty;
+    if (this.filePath && fs.existsSync(this.filePath)) {
+      try {
+        const raw = fs.readFileSync(this.filePath, "utf8");
+        const parsed = JSON.parse(raw) as Partial<PersistedStateDocument>;
+        empty.version = parsed.version ?? 1;
+        empty.lastSeq = typeof parsed.lastSeq === "number" ? parsed.lastSeq : 0;
+        empty.sessions = parsed.sessions ?? {};
+        empty.messages = parsed.messages ?? {};
+        empty.events = Array.isArray(parsed.events) ? parsed.events : [];
+        empty.runs = parsed.runs ?? {};
+        empty.stepCheckpoints = parsed.stepCheckpoints ?? {};
+        empty.permissions = parsed.permissions ?? {};
+        empty.checkpoints = parsed.checkpoints ?? {};
+        empty.sandboxes = parsed.sandboxes ?? {};
+        empty.envImages = parsed.envImages ?? {};
+      } catch {
+        // ignore corrupt state snapshot and recover from events.jsonl if present
+      }
     }
-    try {
-      const raw = fs.readFileSync(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Partial<PersistedStateDocument>;
-      return {
-        version: parsed.version ?? 1,
-        lastSeq: typeof parsed.lastSeq === "number" ? parsed.lastSeq : 0,
-        sessions: parsed.sessions ?? {},
-        messages: parsed.messages ?? {},
-        events: Array.isArray(parsed.events) ? parsed.events : [],
-        runs: parsed.runs ?? {},
-        stepCheckpoints: parsed.stepCheckpoints ?? {},
-        permissions: parsed.permissions ?? {},
-        checkpoints: parsed.checkpoints ?? {},
-      };
-    } catch {
-      return empty;
+    if (this.eventsFilePath && fs.existsSync(this.eventsFilePath)) {
+      try {
+        const lines = fs.readFileSync(this.eventsFilePath, "utf8").split("\n");
+        const seenSeq = new Set(empty.events.map((e) => e.seq));
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const ev = JSON.parse(line) as EventEnvelope;
+          if (!seenSeq.has(ev.seq)) {
+            empty.events.push(ev);
+            seenSeq.add(ev.seq);
+          }
+          if (ev.seq > empty.lastSeq) empty.lastSeq = ev.seq;
+        }
+        empty.events.sort((a, b) => a.seq - b.seq);
+        if (empty.events.length > this.maxRetainedEvents) {
+          empty.events.splice(0, empty.events.length - this.maxRetainedEvents);
+        }
+      } catch {
+        // ignore trailing partial line
+      }
     }
+    return empty;
   }
 
-  private persistToDisk(): void {
+  flush(): void {
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
     if (!this.filePath) return;
-    const dir = path.dirname(this.filePath);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(this.doc, null, 2), "utf8");
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        fs.renameSync(tmpPath, this.filePath);
-        return;
-      } catch (err) {
-        if (attempt === 2) {
-          try {
-            fs.copyFileSync(tmpPath, this.filePath);
-            fs.unlinkSync(tmpPath);
-          } catch {
-            // ignore cleanup failure
-          }
-          throw err;
-        }
-      }
+    atomicWriteFileSync(this.filePath, JSON.stringify(this.doc));
+    this.lastSnapshotWriteMs = Date.now();
+  }
+
+  private persistToDisk(immediate = false): void {
+    if (!this.filePath) return;
+    const now = Date.now();
+    if (immediate || now - this.lastSnapshotWriteMs >= this.snapshotThrottleMs) {
+      this.flush();
+      return;
+    }
+    if (!this.pendingTimer) {
+      const waitMs = Math.max(10, this.snapshotThrottleMs - (now - this.lastSnapshotWriteMs));
+      this.pendingTimer = setTimeout(() => {
+        this.pendingTimer = null;
+        this.flush();
+      }, waitMs);
+      this.pendingTimer.unref?.();
     }
   }
 
@@ -142,7 +184,7 @@ export class LocalStateStore implements StateStore {
     if (!this.doc.messages[session.id]) {
       this.doc.messages[session.id] = [];
     }
-    this.persistToDisk();
+    this.persistToDisk(true);
   }
 
   async listSessions(tenantId: string, limit = 200): Promise<Session[]> {
@@ -163,7 +205,7 @@ export class LocalStateStore implements StateStore {
     delete this.doc.sessions[sessionId];
     delete this.doc.messages[sessionId];
     delete this.doc.checkpoints[sessionId];
-    this.persistToDisk();
+    this.persistToDisk(true);
   }
 
   async getMessages(
@@ -223,7 +265,11 @@ export class LocalStateStore implements StateStore {
     if (this.doc.events.length > this.maxRetainedEvents) {
       this.doc.events.splice(0, this.doc.events.length - this.maxRetainedEvents);
     }
-    this.persistToDisk();
+    if (this.eventsFilePath) {
+      fs.mkdirSync(path.dirname(this.eventsFilePath), { recursive: true });
+      fs.appendFileSync(this.eventsFilePath, `${JSON.stringify(envelope)}\n`, "utf8");
+    }
+    this.persistToDisk(false);
     return envelope;
   }
 
@@ -246,7 +292,7 @@ export class LocalStateStore implements StateStore {
 
   async saveStepCheckpoint(checkpoint: StepCheckpoint): Promise<void> {
     this.doc.stepCheckpoints[checkpoint.runId] = structuredClone(checkpoint);
-    this.persistToDisk();
+    this.persistToDisk(true);
   }
 
   async getStepCheckpoint(tenantId: string, runId: string): Promise<StepCheckpoint | null> {
@@ -257,7 +303,7 @@ export class LocalStateStore implements StateStore {
 
   async saveRun(tenantId: string, run: RunRecord): Promise<void> {
     this.doc.runs[run.id] = structuredClone({ ...run, tenantId });
-    this.persistToDisk();
+    this.persistToDisk(true);
   }
 
   async getRun(tenantId: string, runId: string): Promise<RunRecord | null> {
@@ -269,7 +315,7 @@ export class LocalStateStore implements StateStore {
 
   async savePermissionRequest(tenantId: string, req: PermissionRequest): Promise<void> {
     this.doc.permissions[req.id] = { ...structuredClone(req), tenantId };
-    this.persistToDisk();
+    this.persistToDisk(true);
   }
 
   async getPermissionRequest(
@@ -305,7 +351,7 @@ export class LocalStateStore implements StateStore {
     if (!req) return null;
     if (req.tenantId && req.tenantId !== tenantId) return null;
     req.reply = reply;
-    this.persistToDisk();
+    this.persistToDisk(true);
     const { tenantId: _t, reply: _r, ...rest } = req;
     return structuredClone(rest);
   }
@@ -324,25 +370,12 @@ export class LocalStateStore implements StateStore {
     if (!existing.some((c) => c.sha === checkpoint.sha)) {
       existing.push(structuredClone(checkpoint));
     }
-    this.persistToDisk();
+    this.persistToDisk(true);
   }
 
   async listCheckpoints(tenantId: string, sessionId: string): Promise<CheckpointInfo[]> {
     const s = await this.getSession(tenantId, sessionId);
     if (!s) return [];
     return structuredClone(this.doc.checkpoints[sessionId] ?? []);
-  }
-}
-
-/**
- * Postgres-compatible StateStore adapter that delegates SQL persistence when a Postgres driver
- * is injected, or uses a durable transactional backing store while enforcing tenant isolation.
- */
-export class PostgresStateStore extends LocalStateStore {
-  readonly connectionString: string;
-
-  constructor(opts: { connectionString: string; dataDir?: string }) {
-    super({ dataDir: opts.dataDir });
-    this.connectionString = opts.connectionString;
   }
 }
