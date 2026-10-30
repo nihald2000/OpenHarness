@@ -182,7 +182,7 @@ export function classifyToolCallRisk(
         reason = `Package registry publish in subcommand: "${sub}"`;
         break;
       }
-      if (/(?:>{1,2}|\btee\s+|\btouch\s+)\/(?:etc|usr|var|root|bin|sbin)\b/.test(sub)) {
+      if (/(?:>{1,2}|\btee\s+|\btouch\s+)\s*\/(?:etc|usr|var|root|bin|sbin)\b/.test(sub)) {
         computed = "high";
         reason = `Write outside workspace in subcommand: "${sub}"`;
         break;

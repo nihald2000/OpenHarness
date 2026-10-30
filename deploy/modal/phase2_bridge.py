@@ -123,16 +123,15 @@ class Phase2SandboxBridge:
         exec_res = self.manager.exec_bash(run_cmd, timeout=90)
         duration_ms = round((time.perf_counter() - t0) * 1000, 2)
 
-        # Attempt to parse json from stdout
+        # Attempt to parse json from stdout (single-line or multi-line JSON)
         parsed_data = {}
-        for line in exec_res.stdout.splitlines():
-            line_str = line.strip()
-            if line_str.startswith("{") and line_str.endswith("}"):
-                try:
-                    parsed_data = json.loads(line_str)
-                    break
-                except json.JSONDecodeError:
-                    continue
+        try:
+            idx = exec_res.stdout.find("{")
+            ridx = exec_res.stdout.rfind("}")
+            if idx != -1 and ridx != -1 and ridx > idx:
+                parsed_data = json.loads(exec_res.stdout[idx : ridx + 1])
+        except json.JSONDecodeError:
+            pass
 
         return {
             "check": check_name,

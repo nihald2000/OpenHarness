@@ -515,7 +515,7 @@ def get_mcp_server_files() -> Dict[str, str]:
         "github/__init__.py": GITHUB_INIT_CONTENT,
         "filesystem/__init__.py": FILESYSTEM_INIT_CONTENT,
         "skills/__init__.py": SKILLS_INIT_CONTENT,
-        "__init__.py": '"""Anthropic Code-Mode MCP In-Sandbox Root Module."""\\n',
+        "__init__.py": '"""Anthropic Code-Mode MCP In-Sandbox Root Module."""\n',
     }
 
 

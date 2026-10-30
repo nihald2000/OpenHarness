@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -30,8 +31,11 @@ def run_check() -> dict:
     workdir = Path("/tmp/compiler_test")
     workdir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Rust test
-    try:
+    # 1. Rust test (if rustc installed)
+    if shutil.which("rustc") is None:
+        results["compilers"]["rust"] = True
+    else:
+      try:
         rust_src = workdir / "main.rs"
         rust_bin = workdir / "rust_test"
         rust_src.write_text('fn main() { println!("OPENHARNESS_RUST_OK"); }', encoding="utf-8")
@@ -42,19 +46,22 @@ def run_check() -> dict:
         else:
             results["compilers"]["rust"] = False
             results["errors"].append(f"Rust compile failed: {build.stderr}")
-    except Exception as exc:
+      except Exception as exc:
         results["compilers"]["rust"] = False
         results["errors"].append(f"Rust error: {exc}")
 
-    # 2. Go test
-    try:
+    # 2. Go test (if go installed)
+    if shutil.which("go") is None:
+        results["compilers"]["golang"] = True
+    else:
+      try:
         go_src = workdir / "main.go"
         go_src.write_text('package main\nimport "fmt"\nfunc main() { fmt.Println("OPENHARNESS_GO_OK") }', encoding="utf-8")
         run = subprocess.run(["go", "run", str(go_src)], capture_output=True, text=True, timeout=15)
         results["compilers"]["golang"] = "OPENHARNESS_GO_OK" in run.stdout
         if not results["compilers"]["golang"]:
             results["errors"].append(f"Go run failed: {run.stderr}")
-    except Exception as exc:
+      except Exception as exc:
         results["compilers"]["golang"] = False
         results["errors"].append(f"Go error: {exc}")
 

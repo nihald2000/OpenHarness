@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "lint": "tsc --noEmit",
     "preview": "vite preview --port 3000 --host 0.0.0.0",
-    "test": "node --loader ./scripts/ts-loader.mjs --test tests/phase-a-engine.test.ts tests/phase-b-provider.test.ts tests/phase-c-sandbox.test.ts tests/phase-d-tools.test.ts tests/phase-e-context.test.ts tests/phase-f-loop.test.ts tests/phase-g-safety.test.ts tests/phase-h-i-delegation-checkpoints.test.ts tests/phase-j-observability-evals.test.ts tests/phase-k-config-cli-sdk-final.test.ts",
+    "test": "node --loader ./scripts/ts-loader.mjs --test tests/phase-a-engine.test.ts tests/phase-b-provider.test.ts tests/phase-c-sandbox.test.ts tests/phase-d-tools.test.ts tests/phase-e-context.test.ts tests/phase-f-loop.test.ts tests/phase-g-safety.test.ts tests/phase-h-i-delegation-checkpoints.test.ts tests/phase-j-observability-evals.test.ts tests/phase-k-config-cli-sdk-final.test.ts tests/comprehensive-system-audit.test.ts",
     "test:server": "node --loader ./scripts/ts-loader.mjs --test tests/phase-a-engine.test.ts tests/phase-b-provider.test.ts tests/phase-c-sandbox.test.ts tests/phase-d-tools.test.ts tests/phase-e-context.test.ts tests/phase-f-loop.test.ts tests/phase-g-safety.test.ts tests/phase-h-i-delegation-checkpoints.test.ts tests/phase-j-observability-evals.test.ts tests/phase-k-config-cli-sdk-final.test.ts",
     "test:sdk": "node --loader ./scripts/ts-loader.mjs --test tests/phase-a-engine.test.ts tests/phase-k-config-cli-sdk-final.test.ts",
     "typecheck": "tsc --noEmit",

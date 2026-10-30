@@ -148,7 +148,7 @@ class MockModalSandbox:
         cmd = args[2] if len(args) > 2 and args[0] == "bash" and args[1] == "-c" else " ".join(args)
         if not os.access("/mnt", os.W_OK):
             mnt_root = os.path.join(tempfile.gettempdir(), "openharness_mnt", "mnt")
-            cmd = cmd.replace("/mnt/", mnt_root + "/")
+            cmd = cmd.replace("/mnt", mnt_root)
         workdir = _remap_mnt(kwargs.get("workdir", self._workdir))
         if not os.path.exists(workdir):
             os.makedirs(workdir, exist_ok=True)
@@ -157,7 +157,10 @@ class MockModalSandbox:
             idx = cmd.find("bash -c")
             if idx != -1:
                 cmd = cmd[idx:]
-        proc = subprocess.run(cmd, shell=True, cwd=workdir, capture_output=True, text=True)
+        env = os.environ.copy()
+        mnt_dir = _remap_mnt("/mnt")
+        env["PYTHONPATH"] = f"{mnt_dir}:{env.get('PYTHONPATH', '')}"
+        proc = subprocess.run(cmd, shell=True, cwd=workdir, env=env, capture_output=True, text=True)
         return _MockProcess(proc.stdout, proc.stderr, proc.returncode)
 
     def tunnels(self):
@@ -429,6 +432,9 @@ exit $__status
             truncated = True
 
         return ExecutionResult(stdout=stdout_str, stderr=stderr_str, exit_code=exit_code, truncated=truncated)
+
+    def exec_bash(self, command: str, timeout: int = DEFAULT_COMMAND_TIMEOUT, **kwargs) -> ExecutionResult:
+        return self.exec(command, timeout=timeout, **kwargs)
 
     def exec_python(
         self,
