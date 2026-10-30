@@ -19,3 +19,5 @@ export * from "./checkpoint/index.ts";
 export * from "./observability/index.ts";
 export * from "./eval/index.ts";
 export * from "./config/index.ts";
+
+export * from "./util/safe-path.ts";

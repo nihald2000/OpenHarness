@@ -11,6 +11,7 @@ import type {
 } from "../agent/deps.ts";
 import { getActiveSandboxDaemon } from "../sandbox/providers.ts";
 import { enforceToolOutputLimit } from "./output-limit.ts";
+import { resolveInside, PathEscapeError } from "../util/safe-path.ts";
 
 export interface SandboxToolRouterOptions {
   workspaceRoot: string;
@@ -68,6 +69,15 @@ export class StandardToolRouter implements ToolRouter {
     return this.tools.get(name);
   }
 
+  async execute(
+    name: string,
+    input: Record<string, unknown>,
+    callId: string,
+    ctx: ToolExecutionContext
+  ): Promise<ToolExecutionResult> {
+    return this.executeTool(callId, name, input, ctx);
+  }
+
   async executeTool(
     callId: string,
     name: string,
@@ -120,8 +130,12 @@ export class StandardToolRouter implements ToolRouter {
         execute: async (input, ctx) => {
           let text = typeof input.text === "string" ? input.text : "";
           if (!text && typeof input.path === "string") {
-            const p = path.resolve(ctx.workspaceRoot, input.path);
-            text = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
+            try {
+              const p = resolveInside(ctx.workspaceRoot, input.path);
+              text = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
+            } catch (err) {
+              return { output: null, error: (err as Error).message };
+            }
           }
           const words = text.trim() ? text.trim().split(/\s+/).length : 0;
           const lines = text ? text.split("\n").length : 0;
@@ -157,9 +171,11 @@ export class StandardToolRouter implements ToolRouter {
               truncated: Boolean(res.body.truncated),
             };
           }
-          const target = path.resolve(ctx.workspaceRoot, String(input.path ?? "."));
-          if (!target.startsWith(path.resolve(ctx.workspaceRoot))) {
-            return { output: null, error: "Path escapes workspace root" };
+          let target: string;
+          try {
+            target = resolveInside(ctx.workspaceRoot, String(input.path ?? "."));
+          } catch (err) {
+            return { output: null, error: (err as Error).message };
           }
           if (!fs.existsSync(target)) {
             return { output: null, error: `File not found: ${String(input.path)}` };
@@ -202,9 +218,11 @@ export class StandardToolRouter implements ToolRouter {
             }
             return { output: res.body };
           }
-          const target = path.resolve(ctx.workspaceRoot, String(input.path ?? ""));
-          if (!target.startsWith(path.resolve(ctx.workspaceRoot))) {
-            return { output: null, error: "Path escapes workspace root" };
+          let target: string;
+          try {
+            target = resolveInside(ctx.workspaceRoot, String(input.path ?? ""));
+          } catch (err) {
+            return { output: null, error: (err as Error).message };
           }
           fs.mkdirSync(path.dirname(target), { recursive: true });
           fs.writeFileSync(target, String(input.content ?? ""), "utf8");
@@ -246,7 +264,12 @@ export class StandardToolRouter implements ToolRouter {
             return { output: res.body };
           }
           // Fallback local edit
-          const target = path.resolve(ctx.workspaceRoot, String(input.path ?? ""));
+          let target: string;
+          try {
+            target = resolveInside(ctx.workspaceRoot, String(input.path ?? ""));
+          } catch (err) {
+            return { output: null, error: (err as Error).message };
+          }
           if (!fs.existsSync(target)) {
             return { output: null, error: `File not found: ${String(input.path)}` };
           }
@@ -311,7 +334,13 @@ export class StandardToolRouter implements ToolRouter {
             }
             return { output: res.body.entries ?? res.body.content };
           }
-          const entries = fs.readdirSync(path.resolve(ctx.workspaceRoot, String(input.path ?? ".")));
+          let targetDir: string;
+          try {
+            targetDir = resolveInside(ctx.workspaceRoot, String(input.path ?? "."));
+          } catch (err) {
+            return { output: null, error: (err as Error).message };
+          }
+          const entries = fs.readdirSync(targetDir);
           return { output: entries };
         },
       },
@@ -871,7 +900,12 @@ export class StandardToolRouter implements ToolRouter {
         },
         execute: async (input, ctx) => {
           const taskId = String(input.taskId ?? "default");
-          const file = path.join(ctx.workspaceRoot, ".openharness", "task", taskId, "feature_list.json");
+          let file: string;
+          try {
+            file = resolveInside(ctx.workspaceRoot, path.join(".openharness", "task", taskId, "feature_list.json"));
+          } catch (err) {
+            return { output: null, error: (err as Error).message };
+          }
           const features: FeatureItem[] = fs.existsSync(file)
             ? (JSON.parse(fs.readFileSync(file, "utf8")) as FeatureItem[])
             : ctx.state.features;
@@ -914,9 +948,15 @@ export class StandardToolRouter implements ToolRouter {
         },
         execute: async (input, ctx) => {
           const taskId = String(input.taskId ?? "default");
-          const dir = path.join(ctx.workspaceRoot, ".openharness", "task", taskId);
-          fs.mkdirSync(dir, { recursive: true });
-          const file = path.join(dir, "progress.md");
+          let dir: string;
+          let file: string;
+          try {
+            dir = resolveInside(ctx.workspaceRoot, path.join(".openharness", "task", taskId));
+            fs.mkdirSync(dir, { recursive: true });
+            file = resolveInside(ctx.workspaceRoot, path.join(".openharness", "task", taskId, "progress.md"));
+          } catch (err) {
+            return { output: null, error: (err as Error).message };
+          }
           const entry = `\n### [${new Date().toISOString()}] (run: ${ctx.runId})\n${String(input.note ?? "")}\n`;
           fs.appendFileSync(file, entry, "utf8");
           return { output: { appended: true, path: `.openharness/task/${taskId}/progress.md` } };
@@ -944,8 +984,10 @@ export class StandardToolRouter implements ToolRouter {
           const memDir = path.join(ctx.workspaceRoot, ".openharness", "memories");
           fs.mkdirSync(memDir, { recursive: true });
           const rel = String(input.path ?? "").replace(/^\/?memories\/?/, "");
-          const target = path.resolve(memDir, rel);
-          if (!target.startsWith(memDir)) {
+          let target: string;
+          try {
+            target = resolveInside(memDir, rel || ".");
+          } catch (err) {
             return { output: null, error: "Memory path escapes /memories root" };
           }
           const cmd = String(input.command ?? "view");
@@ -1109,3 +1151,5 @@ export class StandardToolRouter implements ToolRouter {
     ];
   }
 }
+
+export const SandboxToolRouter = StandardToolRouter;

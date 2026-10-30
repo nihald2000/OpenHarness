@@ -4,5 +4,5 @@ import { classifyToolCallRisk } from "../packages/core/src/security/risk.ts";
 
 test("legacy safety: high-risk destructive commands are classified high", () => {
   assert.equal(classifyToolCallRisk("bash", { command: "rm -rf /" }).risk, "high");
-  assert.equal(classifyToolCallRisk("read_file", { path: "README.md" }).risk, "low");
+  assert.equal(classifyToolCallRisk("read_file", { path: "README.md" }, { readOnly: true }).risk, "low");
 });
