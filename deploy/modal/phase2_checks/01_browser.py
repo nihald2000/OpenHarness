@@ -74,6 +74,8 @@ def main() -> int:
             "violation_count": audit.get("violation_count"),
             "ids": [violation["id"] for violation in audit.get("violations") or []],
             "url": audit.get("url"),
+            "error": audit.get("error"),
+            "raw": audit.get("raw"),
         }
     finally:
         server.terminate()

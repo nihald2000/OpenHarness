@@ -74,6 +74,9 @@ _ROLE_RE = re.compile(r"^([A-Za-z_][\w-]*)")
 _REF_RE = re.compile(r"\[ref=([^\]]+)\]")
 _ATTR_RE = re.compile(r"\[([A-Za-z][\w-]*)(?:=([^\]]*))?\]")
 _HEADER_RE = re.compile(r"^-\s*Page (URL|Title):\s*(.*)$")
+# Playwright MCP prefixes the YAML with list-shaped metadata that is not part
+# of the accessibility tree.
+_META_RE = re.compile(r"^-\s*(Page URL|Page Title|Page Snapshot|Console|Errors|Warnings)\s*:")
 _NODE_RE = re.compile(r"^(\s*)-\s?(.*)$")
 
 
@@ -189,6 +192,9 @@ def parse_snapshot(text: str) -> dict[str, Any]:
                 url = header.group(2).strip()
             else:
                 title = header.group(2).strip()
+            continue
+
+        if _META_RE.match(raw_line.strip()):
             continue
 
         match = _NODE_RE.match(raw_line)
