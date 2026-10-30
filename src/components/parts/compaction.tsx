@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { Archive, ChevronDown } from "lucide-react";
-import type { CompactionPart } from "@/types/sdk";
+import type { CompactionPart } from "@openharness/sdk";
 import { formatTokens } from "@/lib/format";
 import { Markdown } from "../markdown";
 import { Badge } from "../ui";

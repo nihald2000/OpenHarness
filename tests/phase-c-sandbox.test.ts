@@ -10,7 +10,7 @@ import {
   ManagedDaemonSandboxProvider,
 } from "../packages/core/src/sandbox/index.ts";
 
-test("Phase C Acceptance: on docker and srt-local, agent cannot read ~/.ssh, cannot write outside /workspace, /tmp, /memories, cannot modify .git/hooks, and cannot reach non-allowlisted domains or 169.254.169.254; each yields sandbox.violation and tool error; processes publish preview URLs; pause/resume preserves files and shell state", async () => {
+test("Phase C Acceptance: on in-process daemon (docker/srt-local profiles), agent cannot read ~/.ssh, cannot write outside /workspace, /tmp, /memories, cannot modify .git/hooks, and cannot reach non-allowlisted domains or 169.254.169.254; each yields sandbox.violation and tool error; processes publish preview URLs; pause/resume preserves files and shell state", async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "oh-phase-c-ws-"));
 
   // 1. Verify `local` provider fails closed when autonomous mode is requested without allowUnsandboxedAutonomy

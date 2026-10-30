@@ -13,7 +13,7 @@ import {
   StandardToolRouter,
 } from "../packages/core/src/tools/index.ts";
 
-test("Phase D Acceptance: in a Docker sandbox, agent sets up a Node and Python sample repo, edits files with edit/apply_patch, runs project test suites, starts dev server, takes browser screenshot, and spills >2000-line output to disk", async () => {
+test("Phase D Acceptance: in an in-process daemon sandbox, agent sets up a Node and Python sample repo, edits files with edit/apply_patch, runs project test suites, starts dev server, takes browser screenshot, and spills >2000-line output to disk", async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "oh-phase-d-ws-"));
   const dockerProvider = new ManagedDaemonSandboxProvider("docker");
   const policy = compileSandboxPolicy({

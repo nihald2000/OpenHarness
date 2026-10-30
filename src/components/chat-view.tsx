@@ -6,7 +6,7 @@ import {
   planProgress,
   type ContextUsage,
   type OpenHarnessEvent,
-} from "@/types/sdk";
+} from "@openharness/sdk";
 import { client } from "@/lib/client";
 import { errorMessage, isActive, stringify } from "@/lib/format";
 import { useApp, useCatalog, usePermissions } from "@/lib/hooks";

@@ -24,8 +24,8 @@ import type {
   SettingsPreviewResponse,
   SkillInfo,
   ToolInfo,
-} from "@/types/sdk";
-import { OpenHarnessError } from "@/types/sdk";
+} from "@openharness/sdk";
+import { OpenHarnessError } from "@openharness/sdk";
 
 const STORAGE_KEY_SESSIONS = "oh_sessions_v1";
 const STORAGE_KEY_MESSAGES = "oh_messages_v1";

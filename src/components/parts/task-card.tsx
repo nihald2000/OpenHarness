@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { Bot, ChevronDown, ExternalLink } from "lucide-react";
-import type { ToolPart } from "@/types/sdk";
+import type { ToolPart } from "@openharness/sdk";
 import { Link } from "@/lib/router";
 import { useCatalog } from "@/lib/hooks";
 import { useSession } from "@/lib/use-session";

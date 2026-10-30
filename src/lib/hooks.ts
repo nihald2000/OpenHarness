@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { PermissionRequest, ToolInfo } from "@/types/sdk";
+import type { PermissionRequest, ToolInfo } from "@openharness/sdk";
 import { useApp } from "./app-context";
 import { client } from "./client";
 import { errorMessage } from "./format";

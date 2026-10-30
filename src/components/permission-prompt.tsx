@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ShieldAlert } from "lucide-react";
-import type { PermissionReply, PermissionRequest } from "@/types/sdk";
+import type { PermissionReply, PermissionRequest } from "@openharness/sdk";
 import { stringify } from "@/lib/format";
 import { Badge, Spinner } from "./ui";
 

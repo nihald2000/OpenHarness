@@ -10,8 +10,10 @@ const presetReact = require("/usr/share/nodejs/@babel/preset-react");
 const ROOT = process.cwd();
 const SRC_DIR = path.join(ROOT, "src");
 const DIST_DIR = path.join(ROOT, "dist");
+const isServer = process.argv.includes("--server");
 
 function collectFiles(dir, out = []) {
+  if (!fs.existsSync(dir)) return out;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) collectFiles(full, out);
@@ -24,12 +26,18 @@ function resolveImport(fromFile, spec) {
   let base;
   if (spec.startsWith("@/")) {
     base = path.join(SRC_DIR, spec.slice(2));
+  } else if (spec.startsWith("@openharness/") || spec.startsWith("openharness/")) {
+    const pkg = spec.split("/")[1];
+    const rest = spec.split("/").slice(2).join("/");
+    base = rest
+      ? path.join(ROOT, "packages", pkg, "src", rest)
+      : path.join(ROOT, "packages", pkg, "src", "index.ts");
   } else if (spec.startsWith("./") || spec.startsWith("../")) {
     base = path.resolve(path.dirname(fromFile), spec);
   } else {
     return true;
   }
-  for (const ext of ["", ".ts", ".tsx", "/index.ts", "/index.tsx"]) {
+  for (const ext of ["", ".ts", ".tsx", "/index.ts", "/index.tsx", ".mjs", ".js"]) {
     if (fs.existsSync(base + ext) && fs.statSync(base + ext).isFile()) {
       return base + ext;
     }
@@ -37,7 +45,14 @@ function resolveImport(fromFile, spec) {
   return null;
 }
 
-const files = collectFiles(SRC_DIR);
+const files = isServer
+  ? [
+      ...collectFiles(path.join(ROOT, "packages")),
+      ...collectFiles(path.join(ROOT, "tests")),
+      ...collectFiles(path.join(ROOT, "scripts")),
+    ]
+  : collectFiles(SRC_DIR);
+
 let errors = 0;
 const compiledMap = new Map();
 
@@ -51,7 +66,7 @@ for (const file of files) {
       babelrc: false,
       presets: [
         [presetTs, { isTSX: file.endsWith(".tsx"), allExtensions: true }],
-        [presetReact, { runtime: "automatic" }],
+        ...(file.endsWith(".tsx") ? [[presetReact, { runtime: "automatic" }]] : []),
       ],
       ast: true,
     });
@@ -95,5 +110,5 @@ if (process.argv.includes("--build")) {
   fs.writeFileSync(path.join(DIST_DIR, "assets", "index.js"), bundleJs, "utf8");
   console.log(`[BUILD] Compiled ${files.length} TS/TSX modules -> dist/assets/index.js (${(bundleJs.length / 1024).toFixed(1)} kB) & dist/assets/index.css (${(css.length / 1024).toFixed(1)} kB)`);
 } else {
-  console.log(`[TYPECHECK] Checked ${files.length} TS/TSX files with 0 errors.`);
+  console.log(`[TYPECHECK${isServer ? ":SERVER" : ""}] Checked ${files.length} TS/TSX files with 0 errors.`);
 }

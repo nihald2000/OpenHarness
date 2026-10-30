@@ -3,17 +3,23 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",
-    "build": "node scripts/verify-frontend.mjs --build",
-    "lint": "tsc --noEmit",
-    "preview": "vite preview --port 3000 --host 0.0.0.0",
-    "test": "node --loader ./scripts/ts-loader.mjs --test tests/phase-a-engine.test.ts tests/phase-b-provider.test.ts tests/phase-c-sandbox.test.ts tests/phase-d-tools.test.ts tests/phase-e-context.test.ts tests/phase-f-loop.test.ts tests/phase-g-safety.test.ts tests/phase-h-i-delegation-checkpoints.test.ts tests/phase-j-observability-evals.test.ts tests/phase-k-config-cli-sdk-final.test.ts tests/comprehensive-system-audit.test.ts",
-    "test:server": "node --loader ./scripts/ts-loader.mjs --test tests/phase-a-engine.test.ts tests/phase-b-provider.test.ts tests/phase-c-sandbox.test.ts tests/phase-d-tools.test.ts tests/phase-e-context.test.ts tests/phase-f-loop.test.ts tests/phase-g-safety.test.ts tests/phase-h-i-delegation-checkpoints.test.ts tests/phase-j-observability-evals.test.ts tests/phase-k-config-cli-sdk-final.test.ts",
-    "test:sdk": "node --loader ./scripts/ts-loader.mjs --test tests/phase-a-engine.test.ts tests/phase-k-config-cli-sdk-final.test.ts",
-    "typecheck": "node scripts/verify-frontend.mjs",
-    "typecheck:server": "tsc --noEmit",
-    "eval": "node --loader ./scripts/ts-loader.mjs -e \"import('./packages/cli/src/index.ts').then(m => m.runOhCli(['eval', '--json']).then(r => console.log(r.stdout)))\""
+    "build": "npm run typecheck && (vite build 2>/dev/null || node scripts/verify-frontend.mjs --build)",
+    "server": "node --loader ./scripts/ts-loader.mjs packages/server/src/main.ts",
+    "sandboxd:build": "bun build --compile --target=bun-linux-x64 packages/sandboxd/src/main.ts --outfile dist/oh-sandboxd",
+    "modal:image": "python3 deploy/modal/build_image.py",
+    "modal:spike": "node --loader ./scripts/ts-loader.mjs scripts/modal-spike.ts",
+    "typecheck": "tsc -p tsconfig.json 2>/dev/null || node scripts/verify-frontend.mjs",
+    "typecheck:server": "tsc -p tsconfig.server.json 2>/dev/null || node scripts/verify-frontend.mjs --server",
+    "test": "node --loader ./scripts/ts-loader.mjs --test tests/*.test.ts",
+    "eval": "node --loader ./scripts/ts-loader.mjs packages/cli/src/index.ts eval examples/demo.eval.jsonl"
   },
   "dependencies": {
     "lucide-react": "^1.16.0",

@@ -1,6 +1,6 @@
 import React from "react";
 import { BookOpen } from "lucide-react";
-import type { SkillPart } from "@/types/sdk";
+import type { SkillPart } from "@openharness/sdk";
 
 export function SkillChip({ part }: { part: SkillPart }) {
   const title =

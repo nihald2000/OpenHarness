@@ -1,0 +1,2 @@
+{"id":"demo_01","suite":"smoke-20","prompt":"Fix failing math helper","verifyCommand":"npm test"}
+{"id":"demo_02","suite":"smoke-20","prompt":"Add input validation","verifyCommand":"npm test"}

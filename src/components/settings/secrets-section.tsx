@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import type { SecretItem } from "@/types/sdk";
+import type { SecretItem } from "@openharness/sdk";
 import { client } from "@/lib/client";
 import { relativeTime } from "@/lib/format";
 import { useApp } from "@/lib/hooks";

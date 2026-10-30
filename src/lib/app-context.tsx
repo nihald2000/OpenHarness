@@ -21,7 +21,7 @@ import type {
   ServerInfo,
   Session,
   SkillInfo,
-} from "@/types/sdk";
+} from "@openharness/sdk";
 import { client } from "./client";
 import { errorMessage, isStatus } from "./format";
 

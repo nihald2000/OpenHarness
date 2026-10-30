@@ -1,1 +1,1 @@
-export * from "../../../src/types/sdk.ts";
+export * from "./types.ts";

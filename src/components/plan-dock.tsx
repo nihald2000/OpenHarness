@@ -6,7 +6,7 @@ import {
   PencilLine,
   Play,
 } from "lucide-react";
-import { planProgress, type PlanData } from "@/types/sdk";
+import { planProgress, type PlanData } from "@openharness/sdk";
 import { PlanProgressBar, PlanSteps } from "./parts/plan-card";
 import { Spinner } from "./ui";
 

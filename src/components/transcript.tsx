@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, ArrowDown } from "lucide-react";
-import type { Message, PermissionRequest, RunStatus } from "@/types/sdk";
+import type { Message, PermissionRequest, RunStatus } from "@openharness/sdk";
 import { activityLabel, isActive } from "@/lib/format";
 import { MessageList, WorkingIndicator } from "./message-row";
 

@@ -13,7 +13,7 @@ import {
   TerminalSquare,
   Wrench,
 } from "lucide-react";
-import type { ToolPart } from "@/types/sdk";
+import type { ToolPart } from "@openharness/sdk";
 import { formatDuration, stringify } from "@/lib/format";
 import { CopyButton } from "../copy-button";
 import { Badge, Spinner } from "../ui";

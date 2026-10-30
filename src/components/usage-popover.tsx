@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Coins } from "lucide-react";
-import type { ContextUsage, Session } from "@/types/sdk";
+import type { ContextUsage, Session } from "@openharness/sdk";
 import {
   formatCost,
   formatTokens,

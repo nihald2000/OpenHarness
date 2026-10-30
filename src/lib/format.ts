@@ -1,4 +1,4 @@
-import { ACTIVE_RUN_STATUSES, OpenHarnessError, type RunStatus } from "@/types/sdk";
+import { ACTIVE_RUN_STATUSES, OpenHarnessError, type RunStatus } from "@openharness/sdk";
 
 export function isActive(status?: RunStatus | null): boolean {
   if (!status) return false;

@@ -154,7 +154,7 @@ test("§14 & §15 Acceptance: fail-closed configuration validation rejects unkno
   }
 });
 
-test("§13 Phase K CLI & §17 Final Acceptance Criterion #1: Meta Llama 4 Maverick task run in a Docker sandbox recovers from a 429 and a malformed tool call, fixes a failing Node test, passes verification and review, and creates a shadow-git checkpoint", async () => {
+test("§13 Phase K CLI & §17 Final Acceptance Criterion #1: Meta Llama 4 Maverick task run in an in-process daemon sandbox recovers from a 429 and a malformed tool call, fixes a failing Node test, passes verification and review, and creates a shadow-git checkpoint", async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "oh-final-llama-ws-"));
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "oh-final-llama-data-"));
 

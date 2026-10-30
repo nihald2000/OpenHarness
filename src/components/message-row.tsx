@@ -8,7 +8,7 @@ import type {
   SkillPart,
   ToolPart,
   VerifyPart,
-} from "@/types/sdk";
+} from "@openharness/sdk";
 import { useCatalog } from "@/lib/hooks";
 import { Markdown } from "./markdown";
 import { CompactionDivider } from "./parts/compaction";

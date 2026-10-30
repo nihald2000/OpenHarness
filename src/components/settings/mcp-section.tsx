@@ -8,7 +8,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { McpPreset, McpServerAdminInfo } from "@/types/sdk";
+import type { McpPreset, McpServerAdminInfo } from "@openharness/sdk";
 import { client } from "@/lib/client";
 import { useApp, useCatalog } from "@/lib/hooks";
 import { ConfirmDialog } from "../plugins-tab";

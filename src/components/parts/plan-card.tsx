@@ -10,7 +10,7 @@ import {
   type PlanData,
   type PlanStep,
   type ToolPart,
-} from "@/types/sdk";
+} from "@openharness/sdk";
 import { Badge, Spinner } from "../ui";
 
 export function extractPlanFromTool(part: ToolPart): PlanData | null {

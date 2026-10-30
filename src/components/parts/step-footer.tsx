@@ -1,5 +1,5 @@
 import React from "react";
-import type { Message } from "@/types/sdk";
+import type { Message } from "@openharness/sdk";
 import { formatCost, formatDuration, formatTokens } from "@/lib/format";
 
 export function StepFooter({ messages }: { messages: Message[] }) {

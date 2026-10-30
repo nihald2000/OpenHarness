@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { GitCommit, RotateCcw, GitFork, Eye } from "lucide-react";
-import type { CheckpointInfo, Session } from "@/types/sdk";
+import type { CheckpointInfo, Session } from "@openharness/sdk";
 import { client } from "@/lib/client";
 import { Badge } from "./ui";
 

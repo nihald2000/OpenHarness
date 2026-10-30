@@ -8,7 +8,7 @@ import React, {
   useState,
 } from "react";
 import { ArrowUp, Square, TerminalSquare, Wrench, X } from "lucide-react";
-import type { CommandInfo } from "@/types/sdk";
+import type { CommandInfo } from "@openharness/sdk";
 import { Spinner } from "./ui";
 
 export interface ComposerHandle {

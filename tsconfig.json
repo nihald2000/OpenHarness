@@ -15,7 +15,8 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@openharness/sdk": ["./packages/sdk/src/index.ts"]
     }
   },
   "include": ["src"]

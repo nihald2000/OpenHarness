@@ -10,6 +10,11 @@ const WORKSPACE_MAP = {
   "@openharness/server": path.join(ROOT_DIR, "packages/server/src/index.ts"),
   "@openharness/sandboxd": path.join(ROOT_DIR, "packages/sandboxd/src/index.ts"),
   "@openharness/cli": path.join(ROOT_DIR, "packages/cli/src/index.ts"),
+  "openharness/sdk": path.join(ROOT_DIR, "packages/sdk/src/index.ts"),
+  "openharness/core": path.join(ROOT_DIR, "packages/core/src/index.ts"),
+  "openharness/server": path.join(ROOT_DIR, "packages/server/src/index.ts"),
+  "openharness/sandboxd": path.join(ROOT_DIR, "packages/sandboxd/src/index.ts"),
+  "openharness/cli": path.join(ROOT_DIR, "packages/cli/src/index.ts"),
 };
 
 export async function resolve(specifier, context, nextResolve) {

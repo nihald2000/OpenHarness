@@ -10,7 +10,7 @@ import {
   XCircle,
   Clock,
 } from "lucide-react";
-import type { CheckpointInfo, FeatureItem, Session } from "@/types/sdk";
+import type { CheckpointInfo, FeatureItem, Session } from "@openharness/sdk";
 import { Badge } from "./ui";
 
 export interface TimelineEntry {

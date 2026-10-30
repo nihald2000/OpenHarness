@@ -1,6 +1,6 @@
 import React from "react";
 import { Loader2 } from "lucide-react";
-import type { ConnectionStatus, RunStatus } from "@/types/sdk";
+import type { ConnectionStatus, RunStatus } from "@openharness/sdk";
 
 export function Spinner({ className = "size-4" }: { className?: string }) {
   return <Loader2 className={`${className} animate-spin`} aria-hidden="true" />;

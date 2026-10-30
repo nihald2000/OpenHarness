@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { CheckCircle2, ChevronDown, Wrench, XCircle } from "lucide-react";
-import type { VerifyPart } from "@/types/sdk";
+import type { VerifyPart } from "@openharness/sdk";
 import { formatDuration } from "@/lib/format";
 import { CopyButton } from "../copy-button";
 import { Badge } from "../ui";

@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@openharness/sdk": path.resolve(__dirname, "./packages/sdk/src/index.ts"),
     },
   },
   server: {

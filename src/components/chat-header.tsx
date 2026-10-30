@@ -9,7 +9,7 @@ import {
   Server,
   Wrench,
 } from "lucide-react";
-import type { ContextUsage, Session } from "@/types/sdk";
+import type { ContextUsage, Session } from "@openharness/sdk";
 import { isActive } from "@/lib/format";
 import { useApp, useCatalog } from "@/lib/hooks";
 import type { FixLoopState } from "@/lib/use-session";

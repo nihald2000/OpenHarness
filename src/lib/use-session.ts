@@ -6,7 +6,7 @@ import {
   type Message,
   type OpenHarnessEvent,
   type Session,
-} from "@/types/sdk";
+} from "@openharness/sdk";
 import { client } from "./client";
 import { errorMessage, isStatus } from "./format";
 

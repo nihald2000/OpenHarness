@@ -16,7 +16,7 @@ import {
   Save,
   X,
 } from "lucide-react";
-import type { SettingsPreviewResponse } from "@/types/sdk";
+import type { SettingsPreviewResponse } from "@openharness/sdk";
 import { client } from "@/lib/client";
 import { errorMessage, isStatus } from "@/lib/format";
 import { useApp, useCatalog } from "@/lib/hooks";

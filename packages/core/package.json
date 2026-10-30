@@ -4,5 +4,10 @@
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
-  "types": "./src/index.ts"
+  "types": "./src/index.ts",
+  "dependencies": {
+    "modal": "^0.11.1",
+    "pg": "^8.13.0",
+    "ioredis": "^5.4.1"
+  }
 }
