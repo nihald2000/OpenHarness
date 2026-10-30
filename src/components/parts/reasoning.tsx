@@ -20,10 +20,12 @@ export function ReasoningView({
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-controls={contentId}
-        className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-muted transition-colors hover:bg-hover hover:text-fg"
+        className="touch-target inline-flex items-center gap-2 rounded-lg px-2 py-1 text-xs font-medium text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg"
       >
         <ChevronRight
-          className={`size-3.5 transition-transform ${open ? "rotate-90" : ""}`}
+          className={`size-3.5 transition-transform duration-150 ease-out ${
+            open ? "rotate-90" : ""
+          }`}
           aria-hidden="true"
         />
         <Brain
@@ -35,7 +37,7 @@ export function ReasoningView({
       {open && (
         <div
           id={contentId}
-          className="mt-1.5 ml-3 border-l-2 border-border pl-3 text-xs italic leading-relaxed text-muted whitespace-pre-wrap"
+          className="mt-2 ml-3 border-l-2 border-border pl-3 text-xs leading-normal text-muted whitespace-pre-wrap"
         >
           {text}
         </div>

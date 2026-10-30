@@ -8,9 +8,9 @@ import { Badge } from "../ui";
 function reasonLabel(reason?: string): string {
   switch (reason) {
     case "tokens":
-      return "auto - context limit";
+      return "auto · context limit";
     case "messages":
-      return "auto - message limit";
+      return "auto · message limit";
     case "manual":
       return "manual";
     case "overflow":
@@ -40,18 +40,18 @@ export function CompactionDivider({ part }: { part: CompactionPart }) {
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
           aria-controls={panelId}
-          className="relative z-10 inline-flex flex-wrap items-center gap-2 rounded-full border border-border bg-elev px-3 py-1 text-xs text-fg transition-colors hover:bg-hover"
+          className="touch-target relative z-10 inline-flex flex-wrap items-center gap-2 rounded-full border border-border bg-elev px-3 py-1 text-xs text-fg transition-colors duration-150 ease-out hover:bg-hover"
         >
           <Archive className="size-3.5 text-accent" aria-hidden="true" />
           <span>Context compacted: {part.compactedMessages} messages</span>
           <Badge tone="neutral">{reasonLabel(part.reason)}</Badge>
           {savedTokens !== null && (
-            <span className="font-mono text-[11px] font-medium text-success">
+            <span className="font-mono text-xs font-medium text-success">
               -{formatTokens(savedTokens)} tokens saved
             </span>
           )}
           <ChevronDown
-            className={`size-3.5 text-muted transition-transform ${
+            className={`size-3.5 text-muted transition-transform duration-150 ease-out ${
               open ? "rotate-180" : ""
             }`}
             aria-hidden="true"
@@ -62,10 +62,10 @@ export function CompactionDivider({ part }: { part: CompactionPart }) {
       {open && (
         <div
           id={panelId}
-          className="mt-2.5 rounded-xl border border-border bg-elev p-3.5 text-xs animate-fade-in"
+          className="mt-2 rounded-xl border border-border bg-elev p-4 text-xs animate-fade-in"
         >
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted">
-            <span className="font-medium uppercase tracking-wide">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
+            <span className="font-medium">
               Summary the agent sees in place of older messages
             </span>
             {(part.tokensBefore !== undefined ||
@@ -80,7 +80,7 @@ export function CompactionDivider({ part }: { part: CompactionPart }) {
             )}
           </div>
           {part.summary ? (
-            <Markdown className="text-xs">{part.summary}</Markdown>
+            <Markdown className="text-sm">{part.summary}</Markdown>
           ) : (
             <p className="italic text-muted">No summary text recorded.</p>
           )}

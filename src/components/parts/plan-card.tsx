@@ -70,10 +70,10 @@ export function PlanProgressBar({
       aria-valuemin={decorative ? undefined : 0}
       aria-valuemax={decorative ? undefined : total}
       aria-label={decorative ? undefined : "Plan progress"}
-      className={`h-1.5 w-full overflow-hidden rounded-full bg-subtle ${className}`}
+      className={`h-1 w-full overflow-hidden rounded-full bg-hover ${className}`}
     >
       <div
-        className="h-full rounded-full bg-accent transition-all"
+        className="h-full rounded-full bg-accent transition-all duration-200 ease-out"
         style={{ width: `${pct}%` }}
       />
     </div>
@@ -95,7 +95,7 @@ export function PlanSteps({
         const isBlocked = step.status === "blocked";
 
         return (
-          <li key={step.id || i} className="flex items-start gap-2.5 text-xs">
+          <li key={step.id || i} className="flex items-start gap-2 text-xs">
             <span className="mt-0.5 shrink-0">
               {isCompleted ? (
                 <CheckCircle2
@@ -121,7 +121,7 @@ export function PlanSteps({
               )}
             </span>
             <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-2">
                 <span
                   className={
                     isCompleted
@@ -136,7 +136,7 @@ export function PlanSteps({
                 <span className="sr-only">({step.status})</span>
               </div>
               {step.detail && (
-                <p className="mt-0.5 text-[11px] text-muted">{step.detail}</p>
+                <p className="mt-1 text-xs text-muted">{step.detail}</p>
               )}
             </div>
           </li>
@@ -168,8 +168,8 @@ export function PlanCard({
   const prog = planProgress(plan);
 
   return (
-    <div className="my-2.5 rounded-xl border border-border bg-elev p-3.5 text-xs">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="my-2 overflow-hidden rounded-xl border border-border bg-elev text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
         <div className="flex items-center gap-2">
           {isRunning ? (
             <Spinner className="size-4 text-accent" />
@@ -178,7 +178,7 @@ export function PlanCard({
           )}
           <span className="font-semibold text-fg">{plan.title || "Plan"}</span>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <Badge tone={prog.done ? "success" : "accent"}>
             {prog.completed}/{prog.total} Done
             {prog.blocked > 0 ? ` · ${prog.blocked} blocked` : ""}
@@ -187,16 +187,16 @@ export function PlanCard({
       </div>
 
       {plan.explanation && (
-        <p className="mt-1.5 text-xs text-muted">{plan.explanation}</p>
+        <p className="px-4 pb-3 text-xs text-muted">{plan.explanation}</p>
       )}
 
-      <PlanProgressBar
-        completed={prog.completed}
-        total={prog.total}
-        className="my-3"
-      />
+      <div className="px-4 pb-3">
+        <PlanProgressBar completed={prog.completed} total={prog.total} />
+      </div>
 
-      <PlanSteps steps={plan.steps} live={live || isRunning} />
+      <div className="border-t border-border bg-bg px-4 py-3">
+        <PlanSteps steps={plan.steps} live={live || isRunning} />
+      </div>
     </div>
   );
 }

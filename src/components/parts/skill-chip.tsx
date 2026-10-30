@@ -1,5 +1,5 @@
 import React from "react";
-import { Sparkles } from "lucide-react";
+import { BookOpen } from "lucide-react";
 import type { SkillPart } from "@/types/sdk";
 
 export function SkillChip({ part }: { part: SkillPart }) {
@@ -10,9 +10,9 @@ export function SkillChip({ part }: { part: SkillPart }) {
   return (
     <div
       title={title}
-      className="inline-flex items-center gap-1.5 rounded-full border border-accent/35 bg-accent/10 px-2.5 py-0.5 text-xs font-medium text-accent"
+      className="inline-flex items-center gap-2 rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent"
     >
-      <Sparkles className="size-3" aria-hidden="true" />
+      <BookOpen className="size-3" aria-hidden="true" />
       <span>skill loaded: {part.name}</span>
     </div>
   );

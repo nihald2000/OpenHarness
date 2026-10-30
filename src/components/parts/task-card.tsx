@@ -22,17 +22,17 @@ function SubagentInlineTranscript({
   const { session, messages, loading } = useSession(childSessionId);
 
   return (
-    <div className="mt-2.5 overflow-hidden rounded-xl border border-border bg-bg">
-      <div className="flex items-center justify-between border-b border-border bg-subtle/60 px-3 py-1.5 text-[11px]">
+    <div className="border-t border-border bg-bg">
+      <div className="flex items-center justify-between border-b border-border bg-elev/60 px-3 py-2 text-xs">
         <div className="flex items-center gap-2 min-w-0">
           <StatusDot status={session?.status ?? "idle"} />
           <span className="truncate font-medium text-fg">
             {session?.title || "Subagent session"}
           </span>
         </div>
-        <span className="font-mono text-[10px] text-muted">{childSessionId}</span>
+        <span className="font-mono text-xs text-muted">{childSessionId}</span>
       </div>
-      <div className="max-h-[35rem] overflow-y-auto p-3">
+      <div className="max-h-[32rem] overflow-y-auto p-3">
         {loading ? (
           <div className="flex items-center gap-2 py-4 text-xs text-muted">
             <Spinner />
@@ -99,10 +99,10 @@ export function TaskCard({
     typeof part.output === "string" ? stripTaskMetadata(part.output) : "";
 
   return (
-    <div className="my-2 rounded-xl border border-border bg-elev p-3 text-xs">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="my-2 overflow-hidden rounded-xl border border-border bg-elev text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-subtle px-2 py-0.5 text-[11px] font-medium text-fg">
+          <span className="inline-flex items-center gap-1 rounded-full border border-border bg-bg px-2 py-0.5 text-xs font-medium text-fg">
             <span
               className="size-2 rounded-full"
               style={{ backgroundColor: dotColor }}
@@ -114,7 +114,7 @@ export function TaskCard({
           <span className="truncate font-medium text-fg">{description}</span>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           {isRunning ? (
             <Badge tone="accent">
               <Spinner className="size-3" />
@@ -131,35 +131,35 @@ export function TaskCard({
       </div>
 
       {promptText && (
-        <p className="mt-1.5 text-[11px] text-muted line-clamp-2">
+        <p className="border-t border-border px-3 py-2 text-xs text-muted line-clamp-2">
           {promptText}
         </p>
       )}
 
       {cleanOutput && part.state === "completed" && (
-        <div className="mt-2.5 rounded-lg border border-border bg-bg p-2.5">
-          <Markdown className="text-xs">{cleanOutput}</Markdown>
+        <div className="border-t border-border bg-bg p-3">
+          <Markdown className="text-sm">{cleanOutput}</Markdown>
         </div>
       )}
 
       {part.error && (
-        <div className="mt-2 rounded-lg border border-danger/30 bg-danger/10 px-2.5 py-1.5 text-[11px] text-danger">
+        <div className="border-t border-border bg-danger/10 px-3 py-2 text-xs text-danger">
           {part.error}
         </div>
       )}
 
       {childSessionId && depth < 3 && (
-        <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-2">
           <button
             type="button"
             onClick={() => setShowChild((s) => !s)}
             aria-expanded={showChild}
             aria-controls={childPanelId}
-            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-accent hover:underline"
+            className="touch-target inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
           >
             {isRunning && <Spinner className="size-3" />}
             <ChevronDown
-              className={`size-3.5 transition-transform ${
+              className={`size-3.5 transition-transform duration-150 ease-out ${
                 showChild ? "rotate-180" : ""
               }`}
               aria-hidden="true"
@@ -173,7 +173,7 @@ export function TaskCard({
             href={`/c/${encodeURIComponent(childSessionId)}`}
             aria-label="Open subagent session"
             title="Open subagent session"
-            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted hover:bg-hover hover:text-fg"
+            className="touch-target inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg"
           >
             <span>Open</span>
             <ExternalLink className="size-3" aria-hidden="true" />

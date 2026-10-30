@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import {
   ChevronRight,
+  Clock,
   Compass,
   Eye,
   FilePen,
@@ -9,7 +10,6 @@ import {
   FolderTree,
   ListTodo,
   Search,
-  Sparkles,
   TerminalSquare,
   Wrench,
 } from "lucide-react";
@@ -34,14 +34,14 @@ function getToolIcon(toolName: string) {
   if (lower.includes("inspect") || lower.includes("view")) return Eye;
   if (lower.includes("plan") || lower.includes("todo") || lower.includes("task"))
     return ListTodo;
-  if (lower.includes("wait")) return Sparkles;
+  if (lower.includes("wait")) return Clock;
   return Wrench;
 }
 
 function formatToolLabel(toolName: string): string {
   if (toolName.includes("__")) {
     const [server, tool] = toolName.split("__");
-    if (server && tool) return `${server} - ${tool}`;
+    if (server && tool) return `${server} · ${tool}`;
   }
   return toolName;
 }
@@ -102,9 +102,9 @@ export function ToolCard({
   const isDenied = part.state === "denied";
 
   const borderCls = isError
-    ? "border-danger/40"
+    ? "border-danger/35"
     : isDenied || needsApproval
-      ? "border-warning/40"
+      ? "border-warning/35"
       : "border-border";
 
   const diffBefore =
@@ -131,28 +131,25 @@ export function ToolCard({
 
   return (
     <div
-      className={`my-1.5 rounded-xl border ${borderCls} bg-elev text-xs transition-colors`}
+      className={`my-2 overflow-hidden rounded-xl border ${borderCls} bg-elev text-xs transition-colors duration-150 ease-out`}
     >
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-controls={bodyId}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-hover/60 rounded-xl"
+        className="touch-target flex w-full items-center gap-2 px-3 py-2 text-left transition-colors duration-150 ease-out hover:bg-hover/60"
       >
         <ChevronRight
-          className={`size-3.5 shrink-0 text-muted transition-transform ${
+          className={`size-3.5 shrink-0 text-muted transition-transform duration-150 ease-out ${
             open ? "rotate-90" : ""
           }`}
           aria-hidden="true"
         />
         <Icon className="size-3.5 shrink-0 text-muted" aria-hidden="true" />
-        <span className="shrink-0 font-mono text-[10px] text-muted/70">
-          {part.callId}
-        </span>
         <span className="font-medium text-fg shrink-0">{label}</span>
         {summary && (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted">
             {summary}
           </span>
         )}
@@ -163,7 +160,7 @@ export function ToolCard({
         )}
 
         {durationMs !== undefined && durationMs >= 10 && (
-          <span className="font-mono text-[11px] text-muted">
+          <span className="font-mono text-xs text-muted">
             {formatDuration(durationMs)}
           </span>
         )}
@@ -185,17 +182,17 @@ export function ToolCard({
       </button>
 
       {!open && isRunning && preview && (
-        <div className="border-t border-border px-3 py-1.5 font-mono text-[11px] text-muted truncate">
+        <div className="border-t border-border bg-bg/50 px-3 py-2 font-mono text-xs text-muted truncate">
           {preview}
         </div>
       )}
 
       {!open && isRunning && part.tool === "run_code" && calls.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1 border-t border-border px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-1 border-t border-border bg-bg/50 px-3 py-2">
           {calls.slice(-4).map((c, idx) => (
             <span
               key={idx}
-              className="inline-flex items-center gap-1 rounded border border-border bg-code px-1.5 py-0.5 font-mono text-[10px]"
+              className="inline-flex items-center gap-1 rounded border border-border bg-code px-2 py-0.5 font-mono text-xs"
             >
               <span>{c.tool || "call"}</span>
               {c.state === "error" && (
@@ -204,7 +201,7 @@ export function ToolCard({
             </span>
           ))}
           {calls.length > 4 && (
-            <span className="text-[10px] text-muted">
+            <span className="text-xs text-muted">
               +{calls.length - 4} earlier
             </span>
           )}
@@ -213,7 +210,7 @@ export function ToolCard({
 
       {!open && (isError || isDenied) && part.error && (
         <div
-          className={`border-t border-border px-3 py-1.5 text-[11px] line-clamp-2 ${
+          className={`border-t border-border bg-bg/50 px-3 py-2 text-xs line-clamp-2 ${
             isError ? "text-danger" : "text-warning"
           }`}
         >
@@ -224,10 +221,10 @@ export function ToolCard({
       {open && (
         <div
           id={bodyId}
-          className="space-y-2.5 border-t border-border p-3 text-xs"
+          className="divide-y divide-border border-t border-border bg-bg text-xs"
         >
           {safeUrl && (
-            <div className="flex items-center gap-2 text-[11px]">
+            <div className="flex items-center gap-2 px-3 py-2">
               <span className="text-muted">URL:</span>
               <a
                 href={safeUrl}
@@ -241,31 +238,29 @@ export function ToolCard({
           )}
 
           {rawCode && (
-            <div>
-              <div className="mb-1 flex items-center justify-between text-[11px] text-muted">
-                <span className="font-medium uppercase tracking-wide">
-                  Code (TypeScript)
-                </span>
+            <div className="p-3">
+              <div className="mb-2 flex items-center justify-between text-xs text-muted">
+                <span className="font-medium">Code (TypeScript)</span>
                 <CopyButton text={rawCode} label="Copy code" />
               </div>
-              <pre className="max-h-80 overflow-auto rounded-lg border border-border bg-code p-2.5 font-mono text-[11px] text-fg">
+              <pre className="max-h-80 overflow-auto rounded-lg bg-code p-3 font-mono text-xs text-fg">
                 {rawCode}
               </pre>
             </div>
           )}
 
           {calls.length > 0 && (
-            <div>
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">
+            <div className="p-3">
+              <div className="mb-2 text-xs font-medium text-muted">
                 Tool calls ({calls.length})
                 {calls.filter((c) => c.state === "error").length > 0 &&
-                  ` - ${calls.filter((c) => c.state === "error").length} failed`}
+                  ` · ${calls.filter((c) => c.state === "error").length} failed`}
               </div>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap gap-2">
                 {calls.slice(-4).map((c, idx) => (
                   <span
                     key={idx}
-                    className="inline-flex items-center gap-1 rounded border border-border bg-code px-1.5 py-0.5 font-mono text-[10px]"
+                    className="inline-flex items-center gap-1 rounded border border-border bg-code px-2 py-0.5 font-mono text-xs"
                   >
                     <span>{c.tool || "call"}</span>
                     {c.state === "error" && (
@@ -274,7 +269,7 @@ export function ToolCard({
                   </span>
                 ))}
                 {calls.length > 4 && (
-                  <span className="text-[10px] text-muted">
+                  <span className="text-xs text-muted">
                     +{calls.length - 4} earlier
                   </span>
                 )}
@@ -283,22 +278,20 @@ export function ToolCard({
           )}
 
           {diffBefore !== undefined && diffAfter !== undefined ? (
-            <div>
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">
-                Changes
-              </div>
-              <div className="max-h-80 overflow-auto rounded-lg border border-border bg-code p-2.5 font-mono text-[11px]">
+            <div className="p-3">
+              <div className="mb-2 text-xs font-medium text-muted">Changes</div>
+              <div className="max-h-80 overflow-auto rounded-lg bg-code p-3 font-mono text-xs">
                 {diffBefore
                   .split("\n")
                   .map((line, i) => (
-                    <div key={`b-${i}`} className="bg-danger/10 text-danger">
+                    <div key={`b-${i}`} className="bg-danger/10 px-1 text-danger">
                       - {line}
                     </div>
                   ))}
                 {diffAfter
                   .split("\n")
                   .map((line, i) => (
-                    <div key={`a-${i}`} className="bg-success/10 text-success">
+                    <div key={`a-${i}`} className="bg-success/10 px-1 text-success">
                       + {line}
                     </div>
                   ))}
@@ -307,14 +300,12 @@ export function ToolCard({
           ) : (
             !rawCode &&
             part.input !== undefined && (
-              <div>
-                <div className="mb-1 flex items-center justify-between text-[11px] text-muted">
-                  <span className="font-medium uppercase tracking-wide">
-                    Input
-                  </span>
+              <div className="p-3">
+                <div className="mb-2 flex items-center justify-between text-xs text-muted">
+                  <span className="font-medium">Input</span>
                   <CopyButton text={stringify(part.input)} label="Copy" />
                 </div>
-                <pre className="max-h-80 overflow-auto rounded-lg border border-border bg-code p-2.5 font-mono text-[11px] text-fg whitespace-pre-wrap">
+                <pre className="max-h-80 overflow-auto rounded-lg bg-code p-3 font-mono text-xs text-fg whitespace-pre-wrap">
                   {stringify(part.input)}
                 </pre>
               </div>
@@ -322,35 +313,33 @@ export function ToolCard({
           )}
 
           {part.output !== undefined && part.output !== "" && (
-            <div>
-              <div className="mb-1 flex items-center justify-between text-[11px] text-muted">
-                <span className="font-medium uppercase tracking-wide">
-                  Output
-                </span>
+            <div className="p-3">
+              <div className="mb-2 flex items-center justify-between text-xs text-muted">
+                <span className="font-medium">Output</span>
                 <CopyButton text={stringify(part.output)} label="Copy" />
               </div>
-              <pre className="max-h-80 overflow-auto rounded-lg border border-border bg-code p-2.5 font-mono text-[11px] text-fg whitespace-pre-wrap">
+              <pre className="max-h-80 overflow-auto rounded-lg bg-code p-3 font-mono text-xs text-fg whitespace-pre-wrap">
                 {stringify(part.output)}
               </pre>
             </div>
           )}
 
           {part.error && (
-            <div>
-              <div className="mb-1 flex items-center justify-between text-[11px] text-danger">
-                <span className="font-medium uppercase tracking-wide">
+            <div className="p-3">
+              <div className="mb-2 flex items-center justify-between text-xs text-danger">
+                <span className="font-medium">
                   {isDenied ? "Denied" : "Error"}
                 </span>
                 <CopyButton text={part.error} label="Copy" />
               </div>
-              <pre className="max-h-80 overflow-auto rounded-lg border border-danger/30 bg-danger/5 p-2.5 font-mono text-[11px] text-danger whitespace-pre-wrap">
+              <pre className="max-h-80 overflow-auto rounded-lg bg-danger/10 p-3 font-mono text-xs text-danger whitespace-pre-wrap">
                 {part.error}
               </pre>
             </div>
           )}
 
           {savedPath && (
-            <p className="font-mono text-[11px] text-muted">
+            <p className="px-3 py-2 font-mono text-xs text-muted">
               Full output saved to {savedPath}
             </p>
           )}
