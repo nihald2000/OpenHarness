@@ -248,7 +248,7 @@ export function ProvidersSection() {
             No providers configured.
           </p>
         ) : (
-          <div className="space-y-2.5">
+          <div className="space-y-3">
             {allIds.map((provId) => {
               const inCfg = Boolean(cfgProviders[provId]);
               const data = cfgProviders[provId] ?? effProviders[provId] ?? {};
@@ -264,11 +264,11 @@ export function ProvidersSection() {
                 >
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      <div className="flex flex-wrap items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-semibold text-fg">
                           {asString(data.name, provId)}
                         </span>
-                        <span className="font-mono text-[11px] text-muted">
+                        <span className="font-mono text-xs text-muted">
                           ({provId})
                         </span>
                         <Badge tone="neutral">
@@ -278,7 +278,7 @@ export function ProvidersSection() {
                           <Badge tone="accent">From environment</Badge>
                         )}
                       </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted">
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
                         <span>
                           {asString(data.baseUrl || data.base_url || data.kind)}
                         </span>
@@ -292,7 +292,7 @@ export function ProvidersSection() {
                     </div>
 
                     {inCfg && (
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-2">
                         <button
                           type="button"
                           onClick={() => openEdit(provId)}
@@ -318,7 +318,7 @@ export function ProvidersSection() {
                       {pModels.map((mId) => (
                         <span
                           key={mId}
-                          className="rounded border border-border bg-code px-1.5 py-0.5 font-mono text-[10px] text-muted"
+                          className="rounded border border-border bg-code px-1.5 py-0.5 font-mono text-xs text-muted"
                         >
                           {mId}
                         </span>
@@ -455,11 +455,11 @@ export function ProvidersSection() {
           </Field>
         )}
 
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-fg">API Key</span>
             {editingId && Boolean(cfgProviders[editingId]?.apiKey) && (
-              <div className="flex items-center gap-1.5 text-[11px]">
+              <div className="flex items-center gap-2 text-xs">
                 <Badge tone="success">Key stored</Badge>
                 <button
                   type="button"
@@ -499,7 +499,7 @@ export function ProvidersSection() {
             />
           )}
           {keyMode === "remove" && (
-            <p className="text-[11px] text-warning">
+            <p className="text-xs text-warning">
               API key reference will be removed on save.
             </p>
           )}

@@ -257,7 +257,7 @@ function CompactionCard() {
         />
       </div>
 
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="font-medium text-fg">
             Trigger at ({Math.round(sliderVal * 100)}% of context window)
@@ -266,7 +266,7 @@ function CompactionCard() {
             <button
               type="button"
               onClick={() => setTriggerAt(undefined)}
-              className="text-[11px] text-accent hover:underline"
+              className="text-xs text-accent hover:underline"
             >
               Use default ({Math.round(effTrigger * 100)}%)
             </button>
