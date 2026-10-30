@@ -2,7 +2,14 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import {
+  assertEnforcementAvailable,
+  isSrtInstalled,
+  killConfinedProcessGroup,
+  spawnConfined,
+  spawnConfinedArgv,
+  writeSrtSettings,
+} from "./config.ts";
 import type { ChildProcess } from "node:child_process";
 import type { CompiledSandboxPolicy } from "../../core/src/sandbox/policy.ts";
 import {
@@ -66,6 +73,9 @@ export interface SandboxDaemonConfig {
   tmpPath: string;
   shadowGitDir: string;
   policyFilePath?: string;
+  srtSettingsPath?: string;
+  runAs?: { uid: number; gid: number };
+  requireSrt?: boolean;
   policy: CompiledSandboxPolicy;
   secretValuesToRedact?: string[];
   onTelemetry?: (ev: SandboxTelemetryEvent) => void;
@@ -88,6 +98,13 @@ export class SandboxDaemon {
   private ipythonVars = new Map<string, unknown>();
   private shadowGitInitialized = false;
   private httpServer?: http.Server;
+  private osEnforced = false;
+  private enforcementError?: string;
+  private srtSettingsPath: string;
+  private idempotencyCache = new Map<
+    string,
+    { expiresAt: number; promise: Promise<{ status: number; body: Record<string, unknown>; headers: Record<string, string> }> }
+  >();
 
   constructor(config: SandboxDaemonConfig) {
     this.config = config;
@@ -95,6 +112,22 @@ export class SandboxDaemon {
     fs.mkdirSync(this.config.memoriesPath, { recursive: true });
     fs.mkdirSync(this.config.tmpPath, { recursive: true });
     fs.mkdirSync(this.config.shadowGitDir, { recursive: true });
+    this.srtSettingsPath =
+      this.config.srtSettingsPath ?? path.join(this.config.tmpPath, "srt-settings.json");
+    if (this.config.policy.network.mode !== "open") {
+      try {
+        writeSrtSettings(this.srtSettingsPath, this.config.policy);
+      } catch {
+        // ignore if open mode in test
+      }
+    }
+    try {
+      assertEnforcementAvailable();
+      this.osEnforced = true;
+    } catch (err) {
+      this.osEnforced = false;
+      this.enforcementError = (err as Error).message;
+    }
   }
 
   /**
@@ -136,33 +169,101 @@ export class SandboxDaemon {
     urlPath: string,
     headers: Record<string, string | undefined>,
     body?: Record<string, unknown>
-  ): Promise<{ status: number; body: Record<string, unknown> }> {
+  ): Promise<{ status: number; body: Record<string, unknown>; headers: Record<string, string> }> {
+    const daemonHeaders = { "x-oh-daemon": "1" };
+    const wrap = (res: { status: number; body: Record<string, unknown> }) => ({
+      ...res,
+      headers: daemonHeaders,
+    });
+
     const parsedUrl = new URL(urlPath, "http://127.0.0.1");
     const pathname = parsedUrl.pathname;
 
     // /health is the ONLY unauthenticated route (§5 C.2)
     if (method === "GET" && pathname === "/health") {
-      return {
+      if (this.config.requireSrt && !this.osEnforced) {
+        return wrap({
+          status: 503,
+          body: {
+            ok: false,
+            osEnforced: false,
+            allowedMethods: "unsupported",
+            error: this.enforcementError ?? "srt is not installed",
+          },
+        });
+      }
+      return wrap({
         status: 200,
         body: {
-          ok: true,
+          ok: !this.config.requireSrt || this.osEnforced,
+          osEnforced: this.osEnforced,
+          allowedMethods: "unsupported",
           runId: this.config.runId,
           sessionId: this.config.sessionId,
           workspace: this.config.workspacePath,
         },
-      };
+      });
     }
 
     const keyHeader =
       headers["x-session-key"] ?? headers["X-Session-Key"];
     if (!this.verifySessionKey(keyHeader)) {
-      return {
+      return wrap({
         status: 401,
         body: { error: "Unauthorized: invalid or missing X-Session-Key" },
+      });
+    }
+
+    const reqId = headers["x-oh-request-id"] ?? headers["X-Oh-Request-Id"];
+    if (method === "POST" && reqId) {
+      const now = Date.now();
+      for (const [k, v] of this.idempotencyCache.entries()) {
+        if (v.expiresAt <= now) this.idempotencyCache.delete(k);
+      }
+      const existing = this.idempotencyCache.get(reqId);
+      if (existing) return existing.promise;
+      const promise = this.dispatchAuthenticated(method, pathname, parsedUrl, body ?? {}).then(wrap);
+      this.idempotencyCache.set(reqId, { expiresAt: now + 10 * 60_000, promise });
+      return promise;
+    }
+
+    return wrap(await this.dispatchAuthenticated(method, pathname, parsedUrl, body ?? {}));
+  }
+
+  private async dispatchAuthenticated(
+    method: string,
+    pathname: string,
+    parsedUrl: URL,
+    payload: Record<string, unknown>
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const isExecRoute =
+      /^\/shell\/[^/]+\/exec$/.test(pathname) ||
+      pathname === "/processes" ||
+      pathname === "/ipython/exec";
+    if (isExecRoute && this.config.requireSrt && !this.osEnforced) {
+      return {
+        status: 503,
+        body: {
+          ok: false,
+          osEnforced: false,
+          error: this.enforcementError ?? "srt is not installed; refusing to execute (fail closed)",
+        },
       };
     }
 
-    const payload = body ?? {};
+    if (method === "POST" && pathname === "/processes/stop-all") {
+      for (const proc of this.processes.values()) {
+        killConfinedProcessGroup(proc.child, "SIGKILL");
+        proc.status = "stopped";
+      }
+      for (const s of this.shellSessions.values()) {
+        killConfinedProcessGroup(s.runningChild, "SIGKILL");
+        s.runningChild = undefined;
+        s.status = "idle";
+      }
+      this.ports.clear();
+      return { status: 200, body: { stopped: true } };
+    }
 
     // --- Shell Routes ---
     const shellExecMatch = pathname.match(/^\/shell\/([^/]+)\/exec$/);
@@ -356,9 +457,7 @@ export class SandboxDaemon {
         sid,
         cwd: this.config.workspacePath,
         env: {
-          PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
           HOME: this.config.workspacePath,
-          TERM: "xterm-256color",
         },
         partialOutput: "",
         status: "idle",
@@ -384,24 +483,21 @@ export class SandboxDaemon {
     const marker = `__OH_CWD_${crypto.randomBytes(4).toString("hex")}__`;
     const wrappedScript = `${command}\n__OH_EC=$?\necho "${marker}:$(pwd):$__OH_EC"`;
 
-    const hasSrt = Boolean(
-      this.config.policyFilePath &&
-        fs.existsSync(this.config.policyFilePath) &&
-        spawnSync("which", ["srt"]).status === 0
-    );
-    const spawnArgv = hasSrt
-      ? buildSrtCommandArgs(this.config.policyFilePath!, ["bash", "-c", wrappedScript])
-      : ["bash", "-c", wrappedScript];
-
     return new Promise((resolve) => {
       let stdoutBuf = "";
       let stderrBuf = "";
       let settled = false;
 
-      const child = spawn(spawnArgv[0]!, spawnArgv.slice(1), {
-        cwd: session!.cwd,
-        env: session!.env,
-      });
+      const child = spawnConfined(
+        {
+          srtSettingsPath: this.srtSettingsPath,
+          runAs: this.config.runAs,
+          useSrt: this.osEnforced,
+        },
+        wrappedScript,
+        session!.cwd,
+        session!.env
+      );
       session!.runningChild = child;
       session!.status = "still_running";
       session!.partialOutput = "";
@@ -433,7 +529,7 @@ export class SandboxDaemon {
         if (settled) return;
         settled = true;
         if (idleTimer) clearTimeout(idleTimer);
-        child.kill("SIGKILL");
+        killConfinedProcessGroup(child, "SIGKILL");
         session!.runningChild = undefined;
         session!.status = "idle";
         resolve({
@@ -534,7 +630,7 @@ export class SandboxDaemon {
     if (!session || !session.runningChild) {
       return { status: 200, body: { interrupted: false, status: "idle" } };
     }
-    session.runningChild.kill("SIGINT");
+    killConfinedProcessGroup(session.runningChild, "SIGINT");
     session.runningChild = undefined;
     session.status = "idle";
     return {
@@ -560,11 +656,17 @@ export class SandboxDaemon {
       return { status: 403, body: { error: policyCheck.error } };
     }
 
-    const id = `proc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const child = spawn("bash", ["-c", command], {
+    const id = `proc_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
+    const child = spawnConfined(
+      {
+        srtSettingsPath: this.srtSettingsPath,
+        runAs: this.config.runAs,
+        useSrt: this.osEnforced,
+      },
+      command,
       cwd,
-      env: { ...process.env, HOME: this.config.workspacePath },
-    });
+      { HOME: this.config.workspacePath }
+    );
 
     const procState: BackgroundProcessState = {
       id,
@@ -664,7 +766,7 @@ export class SandboxDaemon {
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const proc = this.processes.get(id);
     if (!proc) return { status: 404, body: { error: `Process "${id}" not found` } };
-    proc.child?.kill("SIGTERM");
+    killConfinedProcessGroup(proc.child, "SIGTERM");
     proc.status = "stopped";
     if (proc.port) {
       this.ports.delete(proc.port);
@@ -720,12 +822,12 @@ export class SandboxDaemon {
         diagnostics.push(`JSON syntax error: ${err instanceof Error ? err.message : String(err)}`);
       }
     } else if (ext === ".js" || ext === ".mjs" || ext === ".cjs") {
-      const check = spawnSync("node", ["--check", resolvedPath], { encoding: "utf8" });
+      const check = spawnConfinedArgv(["node", "--check", resolvedPath], this.config.workspacePath);
       if (check.status !== 0) {
         diagnostics.push((check.stderr || check.stdout || "JS syntax error").trim());
       }
     } else if (ext === ".py") {
-      const check = spawnSync("python3", ["-m", "py_compile", resolvedPath], { encoding: "utf8" });
+      const check = spawnConfinedArgv(["python3", "-m", "py_compile", resolvedPath], this.config.workspacePath);
       if (check.status !== 0) {
         diagnostics.push((check.stderr || check.stdout || "Python syntax error").trim());
       }
@@ -1129,8 +1231,7 @@ export class SandboxDaemon {
   // --- Shadow-Git Checkpoints (`GIT_DIR=<shadowGitDir>`, `GIT_WORK_TREE=<workspace>`) (§5 C.2, §11 Phase I) ---
 
   private runShadowGit(args: string[]): { status: number; stdout: string; stderr: string } {
-    const env = {
-      ...process.env,
+    const gitEnv = {
       GIT_DIR: this.config.shadowGitDir,
       GIT_WORK_TREE: this.config.workspacePath,
       GIT_AUTHOR_NAME: "OpenHarness Checkpoint",
@@ -1141,24 +1242,16 @@ export class SandboxDaemon {
 
     if (!this.shadowGitInitialized) {
       if (!fs.existsSync(path.join(this.config.shadowGitDir, "HEAD"))) {
-        spawnSync("git", ["init", "--bare", this.config.shadowGitDir], {
-          cwd: this.config.workspacePath,
-          env,
-          encoding: "utf8",
-        });
+        spawnConfinedArgv(["git", "init", "--bare", this.config.shadowGitDir], this.config.workspacePath, gitEnv);
       }
       this.shadowGitInitialized = true;
     }
 
-    const res = spawnSync("git", args, {
-      cwd: this.config.workspacePath,
-      env,
-      encoding: "utf8",
-    });
+    const res = spawnConfinedArgv(["git", ...args], this.config.workspacePath, gitEnv);
     return {
-      status: res.status ?? 1,
-      stdout: (res.stdout ?? "").trim(),
-      stderr: (res.stderr ?? "").trim(),
+      status: res.status,
+      stdout: res.stdout.trim(),
+      stderr: res.stderr.trim(),
     };
   }
 
@@ -1339,17 +1432,13 @@ export class SandboxDaemon {
     payload: Record<string, unknown>
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const code = String(payload.code ?? "");
-    const res = spawnSync("python3", ["-c", code], {
-      cwd: this.config.workspacePath,
-      encoding: "utf8",
-      timeout: 30_000,
-    });
+    const res = spawnConfinedArgv(["python3", "-c", code], this.config.workspacePath, {}, 30_000);
     return {
       status: 200,
       body: {
-        exitCode: res.status ?? 0,
-        stdout: this.redact(res.stdout ?? ""),
-        stderr: this.redact(res.stderr ?? ""),
+        exitCode: res.status,
+        stdout: this.redact(res.stdout),
+        stderr: this.redact(res.stderr),
         varsCount: this.ipythonVars.size,
       },
     };
@@ -1375,7 +1464,7 @@ export class SandboxDaemon {
             headers,
             parsedBody
           );
-          res.writeHead(response.status, { "Content-Type": "application/json" });
+          res.writeHead(response.status, { "Content-Type": "application/json", ...response.headers });
           res.end(JSON.stringify(response.body));
         } catch (err) {
           res.writeHead(500, { "Content-Type": "application/json" });
@@ -1394,10 +1483,10 @@ export class SandboxDaemon {
 
   async close(): Promise<void> {
     for (const proc of this.processes.values()) {
-      proc.child?.kill("SIGTERM");
+      killConfinedProcessGroup(proc.child, "SIGTERM");
     }
     for (const s of this.shellSessions.values()) {
-      s.runningChild?.kill("SIGTERM");
+      killConfinedProcessGroup(s.runningChild, "SIGTERM");
     }
     if (this.httpServer) {
       await new Promise<void>((r) => this.httpServer!.close(() => r()));
