@@ -60,6 +60,7 @@ class ExecutionResult:
             "truncated": self.truncated,
         }
 
+
     def __str__(self) -> str:
         parts = []
         if self.stdout:
@@ -70,6 +71,9 @@ class ExecutionResult:
         if self.truncated:
             parts.append("(Output was truncated to 12,000 characters)")
         return "\n\n".join(parts)
+
+
+SandboxExecutionResult = ExecutionResult
 
 
 class ModalSandboxManager:
