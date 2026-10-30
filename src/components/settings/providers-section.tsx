@@ -318,7 +318,7 @@ export function ProvidersSection() {
                       {pModels.map((mId) => (
                         <span
                           key={mId}
-                          className="rounded border border-border bg-code px-1.5 py-0.5 font-mono text-xs text-muted"
+                          className="rounded border border-border bg-code px-2 py-0.5 font-mono text-xs text-muted"
                         >
                           {mId}
                         </span>

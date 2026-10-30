@@ -462,7 +462,7 @@ export function McpSection() {
                               [srv.name]: !showFullErr,
                             }))
                           }
-                          className="ml-1.5 underline"
+                          className="ml-2 underline"
                         >
                           {showFullErr ? "Show less" : "Show more"}
                         </button>
@@ -492,11 +492,11 @@ export function McpSection() {
                         <span>Tools ({srv.tools.length})</span>
                       </button>
                       {showTools && (
-                        <div className="mt-1.5 flex flex-wrap gap-1">
+                        <div className="mt-2 flex flex-wrap gap-1">
                           {srv.tools.map((t) => (
                             <span
                               key={t}
-                              className="rounded border border-border bg-code px-1.5 py-0.5 font-mono text-xs text-fg"
+                              className="rounded border border-border bg-code px-2 py-0.5 font-mono text-xs text-fg"
                             >
                               {t}
                             </span>

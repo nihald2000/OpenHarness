@@ -306,7 +306,7 @@ export function Sidebar() {
                     onClick={() => openWorkspaceCapability(item.tab)}
                     aria-label={`Open ${item.label} in Capabilities`}
                     aria-pressed={isSelected}
-                    className={`touch-target flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs transition-colors duration-150 ease-out ${
+                    className={`touch-target flex w-full items-center justify-between rounded-lg px-2 py-2 text-left text-xs transition-colors duration-150 ease-out ${
                       isSelected
                         ? "bg-bg font-semibold text-accent shadow-card ring-1 ring-border"
                         : "font-medium text-fg hover:bg-hover/70"

@@ -33,7 +33,7 @@ import { Spinner } from "../ui";
 export { buttonBase, buttonPrimary, buttonSecondary, dangerButton, inputCls };
 export const ghostButton =
   "touch-target inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-medium text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-40";
-export const selectCls = `${inputCls} h-9 py-1.5 pr-8`;
+export const selectCls = `${inputCls} h-9 py-2 pr-8`;
 
 export const MASK = "********";
 export const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;

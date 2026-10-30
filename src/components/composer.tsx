@@ -345,7 +345,7 @@ export const Composer = forwardRef<
               aria-expanded={slashOpen}
               aria-controls={slashOpen ? slashListboxId : undefined}
               aria-activedescendant={activeCmdId}
-              className="max-h-60 min-h-[2.25rem] flex-1 resize-none bg-transparent py-1.5 px-1 text-sm leading-normal text-fg placeholder:text-muted focus:outline-none"
+              className="max-h-60 min-h-[2.25rem] flex-1 resize-none bg-transparent py-2 px-1 text-sm leading-normal text-fg placeholder:text-muted focus:outline-none"
             />
 
             {active ? (

@@ -292,7 +292,7 @@ export function GeneralSection() {
         <div className="space-y-2 text-xs">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted">Project file:</span>
-            <code className="rounded border border-border bg-code px-1.5 py-0.5 font-mono text-xs text-fg">
+            <code className="rounded border border-border bg-code px-2 py-0.5 font-mono text-xs text-fg">
               {view.file}
             </code>
             {!view.exists && <Badge tone="neutral">not created yet</Badge>}
