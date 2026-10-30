@@ -111,6 +111,34 @@ def _maybe_json(text: str) -> Any:
         return text
 
 
+_RESULT_RE = re.compile(r"^### Result[ \t]*\n(.*?)(?=^### |\Z)", re.S | re.M)
+
+
+def extract_result(text: str) -> str:
+    """Unwrap Playwright MCP's ``### Result`` envelope.
+
+    ``browser_evaluate`` returns::
+
+        ### Result
+        "Example Domain"
+        ### Ran Playwright code
+        ```js
+        await page.evaluate('() => document.title');
+        ```
+    """
+
+    match = _RESULT_RE.search(text or "")
+    body = (match.group(1) if match else (text or "")).strip()
+    if body.startswith("```"):
+        lines = body.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        body = "\n".join(lines).strip()
+    return body
+
+
 # --------------------------------------------------------------------------- #
 # Snapshot parsing / filtering
 # --------------------------------------------------------------------------- #
@@ -433,7 +461,7 @@ def evaluate(function: str, *, target: str | None = None) -> Any:
     arguments: dict[str, Any] = {"function": function}
     if target:
         arguments["target"] = target
-    return _maybe_json(_text("browser_evaluate", arguments, timeout=120))
+    return _maybe_json(extract_result(_text("browser_evaluate", arguments, timeout=120)))
 
 
 def page_url() -> str:
@@ -552,7 +580,7 @@ return axe.run(document, {json.dumps(options)}).then((r) => ({{
         raw = _text("browser_evaluate", {"function": function}, timeout=180)
     except Exception as exc:  # noqa: BLE001 - an audit must not kill the session
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:600]}
-    result = _maybe_json(raw)
+    result = _maybe_json(extract_result(raw))
     if not isinstance(result, dict):
         return {"ok": False, "raw": _clip(str(result), 2000)}
     violations = result.get("violations") or []
