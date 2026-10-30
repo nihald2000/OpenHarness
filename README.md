@@ -1,39 +1,37 @@
 # OpenHarness
 
-OpenHarness is a local-first agent harness with a Next.js chat/settings UI, a Bun API server, and a TypeScript SDK.
+OpenHarness is an AI agent harness and developer workspace rewritten as a modern React SPA powered by Vite and Tailwind CSS.
 
-## Start locally
+## Features
 
-Install dependencies with `bun install`, then run the server and web app in separate terminals:
+- **Multi-Agent Chat**: Seamlessly switch between `assistant`, `plan`, and specialized agents with model selection, runtime targeting, and quick slash commands (`/plan`, `/verify`, `/help`, `/compact`, `/clear`).
+- **Interactive Execution Plans**: Draft, inspect, and approve structured execution plans with live step progress cards and a dockable plan control bar.
+- **Tool Calling & Diffs**: Real-time tool execution tracking with expandable code diffs, inputs, outputs, execution duration, and error diagnostics.
+- **Permission Approval Prompts**: Explicit human-in-the-loop permission dialogs for tool invocations (Allow once, Always allow, Reject).
+- **Subagent Task Delegation**: Nested subagent execution cards with isolated transcript viewers and status indicators.
+- **Context Window Management**: Live token accounting (input, output, reasoning, cache read), cost estimation, and one-click session compaction.
+- **MCP & Plugin Architecture**: Manage Model Context Protocol (MCP) servers, install curated presets (GitHub, Filesystem, Memory, Fetch, Postgres), and attach custom runtime plugins.
+- **Comprehensive Settings Suite**:
+  - **General**: Default agent, model, runtime, server info, and configuration sources.
+  - **Providers**: Model provider configuration (OpenAI, Gemini, Anthropic, Ollama, custom endpoints).
+  - **MCP Servers**: Live status, transport selection, reconnecting, and custom server definitions.
+  - **Tools & Code Mode**: Code Mode sandbox limits and registered tool inspection.
+  - **Permissions**: Priority rule matrix for auto-approving or prompting tool actions.
+  - **Limits**: Concurrency, token limits, auto-compaction thresholds, and verify loops.
+  - **Guardrails**: PII redaction and regex pattern blocklists.
+  - **Secrets**: Encrypted environment secret management with masked values.
+  - **Advanced**: Masked JSON preview, configuration reload, and session controls.
+- **Dark & Light Mode**: Built-in theme toggle with zero-flicker localStorage persistence.
 
-```bash
-bun run server
-bun run dev
-```
-
-The server listens on `http://127.0.0.1:4096`; the UI runs on `http://localhost:3000`. The default mock provider works offline. See [server setup and security](packages/server/README.md) for provider credentials, admin tokens, and tool approvals.
-
-## CLI and evals
-
-```bash
-bun run oh help
-bun run oh info
-bun run oh run "Summarize the repository"
-bun run eval examples/demo.eval.jsonl
-```
-
-Run the example eval suite with the server running. `oh eval` accepts JSONL prompt cases or a simple YAML list of flat case mappings, plus substring, regex, exact tool-call/success, pending-approval, and latency assertions. Eval YAML supports scalar fields and scalar lists; anchors, aliases, and nested mappings are rejected. Agent and skill Markdown frontmatter accepts nested mappings and lists, common scalar types, and inline lists; unsupported YAML features and malformed metadata cause the file to be skipped.
-
-For Google/GitHub web sign-in, verified-email account signup, callback configuration, and deployment security notes, see [Authentication](docs/AUTHENTICATION.md).
-
-## Build and deploy
+## Development
 
 ```bash
-bun run build:server
-bun run build
-docker compose up --build
+# Install dependencies
+npm install
+
+# Start Vite dev server on port 3000
+npm run dev
+
+# Check types and build production bundle
+npm run build
 ```
-
-See [deployment notes](docs/DEPLOYMENT.md), [API routes](docs/API.md), [configuration and environment](docs/CONFIGURATION.md), [environment template](.env.example), and [the sample config](openharness.example.json).
-
-The distributed scaling design and migration status are tracked in [Scaling architecture](docs/SCALING.md). OIDC session ownership checks and rate/quota adapters are available when configured; Postgres state and durable worker execution are still being integrated, so the API continues to use its local session/job runtime.

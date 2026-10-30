@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenHarness</title>
+    <meta name="description" content="Chat with OpenHarness agents, protocols, apps, plan, skills and subagents." />
+    <meta property="og:title" content="OpenHarness" />
+    <meta property="og:description" content="Chat with OpenHarness agents, protocols, apps, plan, skills and subagents." />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <script>
+      try {
+        var t = localStorage.getItem('oh-theme');
+        if (t === 'light') {
+          var d = document.documentElement;
+          d.classList.add('light');
+          d.classList.remove('dark');
+          d.style.colorScheme = 'light';
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

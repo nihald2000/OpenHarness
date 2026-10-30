@@ -1,0 +1,7 @@
+{
+  "name": "OpenHarness",
+  "description": "Chat with OpenHarness agents, protocols, apps, plan, skills and subagents.",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

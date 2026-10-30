@@ -1,9 +1,0 @@
-.git
-.openharness
-node_modules
-**/node_modules
-**/.next
-dist
-*.log
-.env
-.env.local

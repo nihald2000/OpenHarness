@@ -1,2 +1,0 @@
-{"id":"mock-echo","prompt":"hello open harness","contains":"hello open harness","maxMs":10000}
-{"id":"readonly-tool","prompt":"/tool word_count {\"text\":\"hello OpenHarness\"}","tool":"word_count","contains":"word_count completed","maxMs":10000}
