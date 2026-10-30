@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 import type {
   CheckpointInfo,
   Message,
@@ -24,25 +26,77 @@ import {
   StandardToolRouter,
   validateOpenHarnessConfig,
 } from "@openharness/core";
-import type { EngineDeps, JobQueue, StateStore } from "@openharness/core";
+import type { EngineDeps, EventEnvelope, JobQueue, StateStore } from "@openharness/core";
 import { EncryptedSecretStore } from "./secrets.ts";
+import { OidcVerifier, type OidcConfig } from "./oidc/auth.ts";
+import { CookieSessionStore } from "./auth/oauth.ts";
+
+export class HttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+  }
+}
+
+export type Identity = {
+  tenantId: string;
+  userId: string;
+  admin: boolean;
+};
 
 export interface OpenHarnessServerConfig {
+  host?: string;
+  port?: number;
+  loopback?: boolean;
   dataDir?: string;
   workspaceRoot?: string;
   databaseUrl?: string;
   serverToken?: string;
   adminToken?: string;
+  oidc?: OidcConfig;
+  serviceTenantId?: string;
+  maxBodyBytes?: number;
   defaultAgent?: string;
   defaultModel?: string;
   defaultRuntime?: string;
   osEnforcedSandbox?: boolean;
 }
 
-/**
- * Thin HTTP & SSE server adapter that delegates all agent execution to `DurableWorker`
- * and `AgentEngine` (§3 A.1, A.2). No agent loop lives inside `server.ts`.
- */
+const safeEqual = (a: string, b: string): boolean =>
+  crypto.timingSafeEqual(
+    crypto.createHash("sha256").update(a).digest(),
+    crypto.createHash("sha256").update(b).digest()
+  );
+
+const PATCHABLE: Record<string, "string"> = {
+  title: "string",
+  agent: "string",
+  model: "string",
+  runtime: "string",
+  mode: "string",
+};
+
+class SseLimiter {
+  private readonly counts = new Map<string, number>();
+  private readonly maxPerUser: number;
+  constructor(maxPerUser = 16) {
+    this.maxPerUser = maxPerUser;
+  }
+  acquire(userId: string): boolean {
+    const cur = this.counts.get(userId) ?? 0;
+    if (cur >= this.maxPerUser) return false;
+    this.counts.set(userId, cur + 1);
+    return true;
+  }
+  release(userId: string): void {
+    const cur = this.counts.get(userId) ?? 0;
+    if (cur <= 1) this.counts.delete(userId);
+    else this.counts.set(userId, cur - 1);
+  }
+}
+
 export class OpenHarnessServer {
   readonly config: OpenHarnessServerConfig;
   readonly stateStore: StateStore;
@@ -52,13 +106,31 @@ export class OpenHarnessServer {
   readonly secretStore: EncryptedSecretStore;
   readonly checkpointManager: SessionCheckpointManager;
   readonly scheduleManager: ScheduleManager;
+  readonly sessions: CookieSessionStore;
+  readonly oidc?: OidcVerifier;
+  readonly sseLimiter = new SseLimiter();
   readonly deps: EngineDeps;
+  readonly log = {
+    info: (msg: string) => {
+      if (process.env.NODE_ENV !== "test") console.log(this.redactLog(msg));
+    },
+    error: (meta: unknown, msg: string) => {
+      if (process.env.NODE_ENV !== "test") {
+        console.error(this.redactLog(`${msg}: ${JSON.stringify(meta)}`));
+      }
+    },
+  };
   private defaultRuntime: string;
-  private httpServer?: http.Server;
+  private knownRuntimes = new Set<string>(["local", "srt-local", "docker", "modal"]);
+  private generatedAdminTokenPath?: string;
 
   constructor(config?: OpenHarnessServerConfig) {
-    this.config = config ?? {};
-    const dataDir = this.config.dataDir;
+    this.config = {
+      loopback: true,
+      serviceTenantId: "default",
+      ...(config ?? {}),
+    };
+    const dataDir = this.config.dataDir ?? ".openharness";
     const workspaceRoot = this.config.workspaceRoot ?? process.cwd();
     const dbUrl =
       this.config.databaseUrl ??
@@ -72,6 +144,10 @@ export class OpenHarnessServer {
     this.jobQueue = createJobQueue({ databaseUrl: dbUrl, dataDir });
     this.secretStore = new EncryptedSecretStore({ dataDir });
     this.checkpointManager = new SessionCheckpointManager(this.stateStore);
+    this.sessions = new CookieSessionStore();
+    if (this.config.oidc) {
+      this.oidc = new OidcVerifier(this.config.oidc);
+    }
     this.defaultRuntime = this.config.defaultRuntime ?? "local";
 
     const toolRouter = new StandardToolRouter({
@@ -160,7 +236,8 @@ export class OpenHarnessServer {
     this.scheduleManager = new ScheduleManager({
       onEnqueueRun: async (req) => {
         const sessionId = `sess_${req.runId}`;
-        await this.stateStore.saveSession("default", {
+        const tenantId = this.config.serviceTenantId ?? "default";
+        await this.stateStore.saveSession(tenantId, {
           id: sessionId,
           title: `Scheduled: ${req.prompt.slice(0, 40)}`,
           agent: req.agent,
@@ -176,8 +253,8 @@ export class OpenHarnessServer {
           id: `job_${req.runId}`,
           runId: req.runId,
           sessionId,
-          tenantId: "default",
-          prompt: req.prompt,
+          tenantId,
+          prompt: textOrEmpty(req.prompt),
           agent: req.agent,
           model: this.config.defaultModel ?? "mock/demo",
           mode: req.mode,
@@ -187,14 +264,217 @@ export class OpenHarnessServer {
     });
   }
 
-  private constantTimeTokenMatch(provided: string | undefined, expected: string | undefined): boolean {
-    if (!expected) return true;
-    if (!provided) return false;
-    const clean = provided.replace(/^Bearer\s+/i, "").trim();
-    const a = Buffer.from(clean, "utf8");
-    const b = Buffer.from(expected, "utf8");
-    if (a.length !== b.length) return false;
-    return crypto.timingSafeEqual(a, b);
+  private redactLog(input: string): string {
+    let out = input;
+    for (const tok of [this.config.serverToken, this.config.adminToken]) {
+      if (tok && tok.length >= 8) {
+        out = out.split(tok).join("[REDACTED]");
+      }
+    }
+    return out;
+  }
+
+  async start(): Promise<void> {
+    if (!this.config.adminToken && !process.env.OPENHARNESS_ADMIN_TOKEN && this.config.loopback !== false) {
+      const dataDir = this.config.dataDir ?? ".openharness";
+      fs.mkdirSync(dataDir, { recursive: true });
+      const tokenPath = path.join(dataDir, "admin-token");
+      if (fs.existsSync(tokenPath)) {
+        this.config.adminToken = fs.readFileSync(tokenPath, "utf8").trim();
+      } else {
+        const generated = crypto.randomBytes(24).toString("hex"); // 48 chars
+        fs.writeFileSync(tokenPath, `${generated}\n`, { mode: 0o600 });
+        this.config.adminToken = generated;
+      }
+      this.generatedAdminTokenPath = tokenPath;
+      this.log.info(`Admin token stored at ${tokenPath}`);
+    }
+    await this.jobQueue.reapExpiredLeases(Date.now());
+  }
+
+  async stop(): Promise<void> {
+    // Graceful shutdown hook for worker/scheduler
+  }
+
+  getAdminTokenPath(): string | undefined {
+    return this.generatedAdminTokenPath;
+  }
+
+  async authenticate(h: http.IncomingHttpHeaders | Record<string, string | undefined>): Promise<Identity | null> {
+    const authHeader = String(h["authorization"] ?? "");
+    const bearer = authHeader.replace(/^Bearer\s+/i, "").trim() || undefined;
+    const adminHeader = String(h["x-openharness-admin"] ?? "").trim();
+    const configuredAdmin = this.config.adminToken ?? process.env.OPENHARNESS_ADMIN_TOKEN;
+    const isAdminToken = Boolean(
+      configuredAdmin &&
+        ((adminHeader && safeEqual(adminHeader, configuredAdmin)) ||
+          (bearer && safeEqual(bearer, configuredAdmin)))
+    );
+
+    const cookieHeader = typeof h["cookie"] === "string" ? h["cookie"] : undefined;
+    const cookieSession = await this.sessions.fromCookie(cookieHeader);
+    if (cookieSession) {
+      return {
+        tenantId: cookieSession.tenantId,
+        userId: cookieSession.userId,
+        admin: cookieSession.admin || isAdminToken,
+      };
+    }
+
+    if (bearer && this.oidc && bearer.split(".").length === 3) {
+      try {
+        const claims = await this.oidc.verify(bearer);
+        return {
+          tenantId: claims.tenantId,
+          userId: claims.userId,
+          admin: claims.admin || isAdminToken,
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    const configuredServerToken = this.config.serverToken ?? process.env.OPENHARNESS_SERVER_TOKEN;
+    if (configuredServerToken) {
+      return bearer && safeEqual(bearer, configuredServerToken)
+        ? {
+            tenantId: this.config.serviceTenantId ?? "default",
+            userId: "service",
+            admin: isAdminToken,
+          }
+        : null;
+    }
+
+    return this.config.loopback !== false
+      ? {
+          tenantId: "default",
+          userId: "local",
+          admin: isAdminToken,
+        }
+      : null;
+  }
+
+  async listRuntimes(): Promise<RuntimeInfo[]> {
+    return [
+      {
+        id: "local",
+        description: "Local unsandboxed runtime (offline demo default).",
+        remote: false,
+        isDefault: this.defaultRuntime === "local",
+        active: true,
+        capabilities: {
+          osEnforced: false,
+          network: "open",
+          snapshots: false,
+          ports: false,
+          browser: false,
+          persistentShell: false,
+        },
+      },
+      {
+        id: "srt-local",
+        description: "Host child process isolated by Anthropic Sandbox Runtime (srt).",
+        remote: false,
+        isDefault: this.defaultRuntime === "srt-local",
+        active: process.platform !== "win32",
+        capabilities: {
+          osEnforced: true,
+          network: "allowlist",
+          snapshots: true,
+          ports: true,
+          browser: true,
+          persistentShell: true,
+        },
+      },
+      {
+        id: "docker",
+        description: "Container-isolated sandbox with srt defense-in-depth and shadow-git checkpoints.",
+        remote: false,
+        isDefault: this.defaultRuntime === "docker",
+        active: true,
+        capabilities: {
+          osEnforced: true,
+          network: "allowlist",
+          snapshots: true,
+          ports: true,
+          browser: true,
+          persistentShell: true,
+        },
+      },
+      {
+        id: "modal",
+        description: "Modal cloud microVM sandbox with filesystem snapshot hibernation.",
+        remote: true,
+        isDefault: this.defaultRuntime === "modal",
+        active: true,
+        capabilities: {
+          osEnforced: true,
+          network: "allowlist",
+          snapshots: true,
+          ports: true,
+          browser: true,
+          persistentShell: true,
+        },
+      },
+    ];
+  }
+
+  async streamEvents(
+    id: Identity,
+    url: URL,
+    req: http.IncomingMessage,
+    res: http.ServerResponse
+  ): Promise<void> {
+    const after =
+      Number(req.headers["last-event-id"] ?? url.searchParams.get("after") ?? 0) || 0;
+    const sessionId = url.searchParams.get("sessionId") ?? undefined;
+    if (sessionId && !(await this.stateStore.getSession(id.tenantId, sessionId))) {
+      res.writeHead(404).end();
+      return;
+    }
+    if (!this.sseLimiter.acquire(id.userId)) {
+      res.writeHead(429).end();
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+
+    let last = after;
+    let replaying = true;
+    const pending: EventEnvelope[] = [];
+    const write = (e: EventEnvelope) => {
+      if (e.seq <= last) return;
+      last = e.seq;
+      res.write(
+        `id: ${e.seq}\ndata: ${JSON.stringify({ ...e.event, seq: e.seq })}\n\n`
+      );
+      if (res.writableLength > 2_000_000) res.destroy();
+    };
+
+    const unsubscribe = this.eventBus.subscribe(
+      { tenantId: id.tenantId, sessionId },
+      (e) => (replaying ? pending.push(e) : write(e))
+    );
+
+    const historical = await this.stateStore.listEventsAfter(
+      id.tenantId,
+      after,
+      sessionId
+    );
+    for (const e of historical) write(e);
+    replaying = false;
+    for (const e of pending) write(e);
+
+    const ping = setInterval(() => res.write(`: ping ${Date.now()}\n\n`), 15_000);
+    res.on("close", () => {
+      clearInterval(ping);
+      unsubscribe();
+      this.sseLimiter.release(id.userId);
+    });
   }
 
   async handleRequest(
@@ -202,31 +482,55 @@ export class OpenHarnessServer {
     urlPath: string,
     headers: Record<string, string | undefined> = {},
     body?: Record<string, unknown>
-  ): Promise<{ status: number; body: unknown }> {
+  ): Promise<{ status: number; body: unknown; headers?: Record<string, string> }> {
     const parsedUrl = new URL(urlPath, "http://127.0.0.1:4096");
-    const pathname = parsedUrl.pathname;
-    const tenantId = headers["x-tenant-id"] || "default";
-
-    if (method === "GET" && pathname === "/health") {
+    if (method === "GET" && parsedUrl.pathname === "/health") {
       return { status: 200, body: { ok: true, version: "0.2.0" } };
     }
+    const identity = await this.authenticate(headers);
+    if (!identity) {
+      return { status: 401, body: { error: "Unauthorized" } };
+    }
+    return this.handleAuthenticatedRequest(identity, method, parsedUrl, headers, body);
+  }
 
-    // Server bearer token authentication when configured
-    const serverToken = this.config.serverToken ?? process.env.OPENHARNESS_SERVER_TOKEN;
-    if (serverToken && pathname.startsWith("/v1/") && pathname !== "/v1/admin/verify") {
-      if (!this.constantTimeTokenMatch(headers["authorization"], serverToken)) {
-        return { status: 401, body: { error: "Unauthorized" } };
+  async handleAuthenticatedRequest(
+    identity: Identity,
+    method: string,
+    parsedUrl: URL,
+    _headers: http.IncomingHttpHeaders | Record<string, string | undefined> = {},
+    body?: Record<string, unknown>
+  ): Promise<{ status: number; body: unknown; headers?: Record<string, string> }> {
+    const pathname = parsedUrl.pathname;
+    const tenantId = identity.tenantId;
+
+    // Admin session exchange endpoint (sets HttpOnly cookie after verifying admin token)
+    if (method === "POST" && pathname === "/v1/admin/session") {
+      const configuredAdmin = this.config.adminToken ?? process.env.OPENHARNESS_ADMIN_TOKEN;
+      const candidate = typeof body?.token === "string" ? body.token.trim() : "";
+      if (!configuredAdmin || !candidate || !safeEqual(candidate, configuredAdmin)) {
+        return { status: 403, body: { error: "Forbidden: invalid admin token" } };
       }
+      const issued = this.sessions.issueCookie(
+        {
+          tenantId: identity.tenantId,
+          userId: identity.userId,
+          admin: true,
+        },
+        86_400_000,
+        !this.config.loopback
+      );
+      return {
+        status: 200,
+        body: { ok: true, admin: true },
+        headers: { "set-cookie": issued.cookieHeader },
+      };
     }
 
-    // Admin routes require adminToken when configured
+    // All /v1/admin/* routes fail closed (403) unless identity.admin is true
     if (pathname.startsWith("/v1/admin/")) {
-      const adminToken = this.config.adminToken ?? process.env.OPENHARNESS_ADMIN_TOKEN;
-      if (adminToken) {
-        const candidate = headers["x-openharness-admin"] ?? headers["authorization"];
-        if (!this.constantTimeTokenMatch(candidate, adminToken)) {
-          return { status: 403, body: { error: "Forbidden: invalid admin token" } };
-        }
+      if (!identity.admin) {
+        return { status: 403, body: { error: "Forbidden: admin privileges required" } };
       }
     }
 
@@ -256,69 +560,7 @@ export class OpenHarnessServer {
     }
 
     if (method === "GET" && pathname === "/v1/runtimes") {
-      const runtimes: RuntimeInfo[] = [
-        {
-          id: "local",
-          description: "Local unsandboxed runtime (offline demo default).",
-          remote: false,
-          isDefault: this.defaultRuntime === "local",
-          active: true,
-          capabilities: {
-            osEnforced: false,
-            network: "open",
-            snapshots: false,
-            ports: false,
-            browser: false,
-            persistentShell: false,
-          },
-        },
-        {
-          id: "srt-local",
-          description: "Host child process isolated by Anthropic Sandbox Runtime (srt).",
-          remote: false,
-          isDefault: this.defaultRuntime === "srt-local",
-          active: process.platform !== "win32",
-          capabilities: {
-            osEnforced: true,
-            network: "allowlist",
-            snapshots: true,
-            ports: true,
-            browser: true,
-            persistentShell: true,
-          },
-        },
-        {
-          id: "docker",
-          description: "Container-isolated sandbox with srt defense-in-depth and shadow-git checkpoints.",
-          remote: false,
-          isDefault: this.defaultRuntime === "docker",
-          active: true,
-          capabilities: {
-            osEnforced: true,
-            network: "allowlist",
-            snapshots: true,
-            ports: true,
-            browser: true,
-            persistentShell: true,
-          },
-        },
-        {
-          id: "modal",
-          description: "Modal cloud microVM sandbox with filesystem snapshot hibernation.",
-          remote: true,
-          isDefault: this.defaultRuntime === "modal",
-          active: true,
-          capabilities: {
-            osEnforced: true,
-            network: "allowlist",
-            snapshots: true,
-            ports: true,
-            browser: true,
-            persistentShell: true,
-          },
-        },
-      ];
-      return { status: 200, body: runtimes };
+      return { status: 200, body: await this.listRuntimes() };
     }
 
     // --- Sessions CRUD ---
@@ -329,13 +571,17 @@ export class OpenHarnessServer {
 
     if (method === "POST" && pathname === "/v1/sessions") {
       const payload = body ?? {};
-      const id = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const id = `sess_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
       const session: Session = {
         id,
-        title: typeof payload.title === "string" ? payload.title : "New chat",
+        title: typeof payload.title === "string" ? payload.title.slice(0, 200) : "New chat",
         agent: typeof payload.agent === "string" ? payload.agent : "assistant",
-        model: typeof payload.model === "string" ? payload.model : (this.config.defaultModel ?? "mock/demo"),
-        runtime: typeof payload.runtime === "string" ? payload.runtime : this.defaultRuntime,
+        model:
+          typeof payload.model === "string"
+            ? payload.model
+            : (this.config.defaultModel ?? "mock/demo"),
+        runtime:
+          typeof payload.runtime === "string" ? payload.runtime : this.defaultRuntime,
         mode: (payload.mode as "chat" | "task" | "long_task") ?? "chat",
         status: "idle",
         updatedAt: Date.now(),
@@ -357,7 +603,28 @@ export class OpenHarnessServer {
       if (method === "PATCH") {
         const s = await this.stateStore.getSession(tenantId, sessionId);
         if (!s) return { status: 404, body: { error: "Session not found" } };
-        const updated: Session = { ...s, ...(body ?? {}), id: s.id, updatedAt: Date.now() };
+        const rawBody = body ?? {};
+        const patch: Partial<Session> = {};
+        for (const [k, type] of Object.entries(PATCHABLE)) {
+          const v = rawBody[k];
+          if (v === undefined || v === null) continue;
+          if (typeof v !== type || (v as string).length > 200) {
+            return { status: 400, body: { error: `invalid ${k}` } };
+          }
+          (patch as Record<string, unknown>)[k] = v;
+        }
+        if (patch.mode && !["chat", "task", "long_task"].includes(patch.mode)) {
+          return { status: 400, body: { error: "invalid mode" } };
+        }
+        if (patch.runtime && !this.knownRuntimes.has(patch.runtime)) {
+          return { status: 400, body: { error: "unknown runtime" } };
+        }
+        const updated: Session = {
+          ...s,
+          ...patch,
+          id: s.id,
+          updatedAt: Date.now(),
+        };
         await this.stateStore.saveSession(tenantId, updated);
         return { status: 200, body: updated };
       }
@@ -373,7 +640,6 @@ export class OpenHarnessServer {
       return { status: 200, body: data };
     }
 
-    // --- Prompt Acceptance (`POST /v1/sessions/:id/prompt`, supporting `async: true` -> `{ messageId, runId }`) (§3 A.2) ---
     const promptMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/prompt$/);
     if (method === "POST" && promptMatch) {
       const sessionId = promptMatch[1]!;
@@ -386,7 +652,7 @@ export class OpenHarnessServer {
       const isAsync = Boolean(payload.async);
 
       const userMsgId = `msg_u_${Date.now()}`;
-      const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const runId = `run_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
       const jobId = `job_${runId}`;
 
       const userMsg: Message = {
@@ -414,7 +680,6 @@ export class OpenHarnessServer {
       });
 
       if (isAsync) {
-        // Trigger worker asynchronously and return `{ messageId, runId }` immediately (§3 A.2)
         void this.worker.executeJobById(jobId);
         return {
           status: 202,
@@ -429,8 +694,6 @@ export class OpenHarnessServer {
       };
     }
 
-
-    // --- Runs List (`GET /v1/runs`) (§13 Phase K) ---
     if (method === "GET" && pathname === "/v1/runs") {
       const jobs = await this.jobQueue.listJobs({ tenantId });
       const runs = [];
@@ -441,7 +704,6 @@ export class OpenHarnessServer {
       return { status: 200, body: { runs } };
     }
 
-    // --- Sandboxes Routes (`/v1/sandboxes`) (§13 Phase K) ---
     if (method === "GET" && pathname === "/v1/sandboxes") {
       return {
         status: 200,
@@ -454,6 +716,10 @@ export class OpenHarnessServer {
     }
     const sbShellMatch = pathname.match(/^\/v1\/sandboxes\/([^/]+)\/shell$/);
     if (method === "POST" && sbShellMatch) {
+      const hasAdminCfg = Boolean(this.config.adminToken ?? process.env.OPENHARNESS_ADMIN_TOKEN);
+      if (hasAdminCfg && !identity.admin) {
+        return { status: 403, body: { error: "Forbidden: admin privileges required" } };
+      }
       return {
         status: 200,
         body: {
@@ -469,16 +735,17 @@ export class OpenHarnessServer {
       return { status: 200, body: { destroyed: sbDelMatch[1] } };
     }
 
-    // --- Admin Settings Validation (`PUT /v1/admin/settings`) (§14 fail-closed) ---
     if (method === "PUT" && pathname === "/v1/admin/settings") {
       const validation = validateOpenHarnessConfig(body ?? {});
       if (!validation.valid) {
-        return { status: 400, body: { error: validation.errors.join("; "), errors: validation.errors } };
+        return {
+          status: 400,
+          body: { error: validation.errors.join("; "), errors: validation.errors },
+        };
       }
       return { status: 200, body: { config: validation.sanitizedConfig } };
     }
 
-    // --- Run Control Routes (`GET /v1/runs/:id`, `POST /v1/runs/:id/pause|resume|cancel`) (§3 A.2) ---
     const runGetMatch = pathname.match(/^\/v1\/runs\/([^/]+)$/);
     if (method === "GET" && runGetMatch) {
       const run = await this.stateStore.getRun(tenantId, runGetMatch[1]!);
@@ -508,7 +775,6 @@ export class OpenHarnessServer {
       }
     }
 
-    // --- Permissions Routes ---
     if (method === "GET" && pathname === "/v1/permissions") {
       const sid = parsedUrl.searchParams.get("sessionId") ?? undefined;
       const list = await this.stateStore.listPermissionRequests(tenantId, sid);
@@ -518,14 +784,20 @@ export class OpenHarnessServer {
     const permReplyMatch = pathname.match(/^\/v1\/permissions\/([^/]+)\/reply$/);
     if (method === "POST" && permReplyMatch) {
       const reply = (body?.reply as PermissionReply) ?? "reject";
-      const res = await this.worker.replyPermissionAndResume(tenantId, permReplyMatch[1]!, reply);
+      const res = await this.worker.replyPermissionAndResume(
+        tenantId,
+        permReplyMatch[1]!,
+        reply
+      );
       return { status: 200, body: { replied: true, phase: res.state?.phase } };
     }
 
-    // --- Phase I Checkpoints, Rewind, and Fork Routes (§11) ---
     const cpListMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/checkpoints$/);
     if (method === "GET" && cpListMatch) {
-      const checkpoints = await this.checkpointManager.listCheckpoints(tenantId, cpListMatch[1]!);
+      const checkpoints = await this.checkpointManager.listCheckpoints(
+        tenantId,
+        cpListMatch[1]!
+      );
       return { status: 200, body: { checkpoints } };
     }
 
@@ -538,8 +810,10 @@ export class OpenHarnessServer {
         sessionId,
         checkpoint: String(payload.checkpoint ?? ""),
         files: payload.files !== undefined ? Boolean(payload.files) : true,
-        conversation: payload.conversation !== undefined ? Boolean(payload.conversation) : false,
-        atMessageId: typeof payload.atMessageId === "string" ? payload.atMessageId : undefined,
+        conversation:
+          payload.conversation !== undefined ? Boolean(payload.conversation) : false,
+        atMessageId:
+          typeof payload.atMessageId === "string" ? payload.atMessageId : undefined,
       });
       return { status: 200, body: res };
     }
@@ -551,14 +825,15 @@ export class OpenHarnessServer {
       const res = await this.checkpointManager.forkSession({
         tenantId,
         sessionId,
-        atMessageId: typeof payload.atMessageId === "string" ? payload.atMessageId : undefined,
-        checkpoint: typeof payload.checkpoint === "string" ? payload.checkpoint : undefined,
+        atMessageId:
+          typeof payload.atMessageId === "string" ? payload.atMessageId : undefined,
+        checkpoint:
+          typeof payload.checkpoint === "string" ? payload.checkpoint : undefined,
         newTitle: typeof payload.title === "string" ? payload.title : undefined,
       });
       return { status: 201, body: res };
     }
 
-    // --- Phase H Schedules CRUD (`/v1/schedules`) (§10) ---
     if (method === "GET" && pathname === "/v1/schedules") {
       return { status: 200, body: this.scheduleManager.list() };
     }
@@ -567,7 +842,8 @@ export class OpenHarnessServer {
       const created = this.scheduleManager.create({
         name: String(payload.name ?? "Scheduled Task"),
         cron: typeof payload.cron === "string" ? payload.cron : undefined,
-        webhookSecret: typeof payload.webhookSecret === "string" ? payload.webhookSecret : undefined,
+        webhookSecret:
+          typeof payload.webhookSecret === "string" ? payload.webhookSecret : undefined,
         enabled: payload.enabled !== undefined ? Boolean(payload.enabled) : true,
         mode: (payload.mode as "chat" | "task" | "long_task") ?? "task",
         agent: String(payload.agent ?? "assistant"),
@@ -600,7 +876,6 @@ export class OpenHarnessServer {
       }
     }
 
-    // --- Admin Secrets Routes ---
     if (method === "GET" && pathname === "/v1/admin/secrets") {
       return { status: 200, body: this.secretStore.listMetadata() };
     }
@@ -619,4 +894,8 @@ export class OpenHarnessServer {
 
     return { status: 404, body: { error: `Route not found: ${method} ${pathname}` } };
   }
+}
+
+function textOrEmpty(v?: string): string {
+  return typeof v === "string" ? v : "";
 }
