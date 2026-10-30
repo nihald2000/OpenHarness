@@ -14,7 +14,7 @@ export function Markdown({
 }) {
   return (
     <div
-      className={`markdown text-[15px] leading-relaxed ${
+      className={`markdown text-base leading-normal ${
         streaming ? "streaming-caret" : ""
       } ${className}`}
     >
@@ -44,12 +44,12 @@ export function Markdown({
             });
 
             return (
-              <div className="my-2.5 overflow-hidden rounded-xl border border-border bg-code">
-                <div className="flex items-center justify-between border-b border-border bg-subtle/60 px-3 py-1.5 text-[11px] font-mono text-muted">
+              <div className="my-3 overflow-hidden rounded-xl border border-border bg-code">
+                <div className="flex items-center justify-between border-b border-border bg-bg/60 px-3 py-2 text-xs font-mono text-muted">
                   <span>{lang}</span>
                   <CopyButton text={codeText} label="Copy code" />
                 </div>
-                <pre className="overflow-x-auto p-3 font-mono text-[13px] leading-relaxed text-fg !m-0">
+                <pre className="overflow-x-auto p-4 font-mono text-sm leading-normal text-fg !m-0">
                   {preChildren}
                 </pre>
               </div>

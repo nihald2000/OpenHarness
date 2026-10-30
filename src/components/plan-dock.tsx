@@ -29,15 +29,15 @@ export function PlanDock({
 
   if (mode === "approval") {
     return (
-      <div className="mx-auto w-full max-w-3xl px-4 pb-2 animate-fade-in">
-        <div className="overflow-hidden rounded-xl border border-accent/40 bg-elev shadow-lg shadow-black/20">
-          <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5">
+      <div className="mx-auto w-full max-w-[720px] px-4 pb-2 animate-fade-in">
+        <div className="overflow-hidden rounded-xl border border-accent/35 bg-elev shadow-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
             <button
               type="button"
               onClick={() => setOpen((o) => !o)}
               aria-expanded={open}
               aria-controls={panelId}
-              className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
+              className="touch-target flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
             >
               <ClipboardCheck
                 className="size-4 shrink-0 text-accent"
@@ -50,7 +50,7 @@ export function PlanDock({
                 <span className="truncate text-muted">— {plan.title}</span>
               )}
               <ChevronDown
-                className={`ml-auto size-3.5 shrink-0 text-muted transition-transform ${
+                className={`ml-auto size-3.5 shrink-0 text-muted transition-transform duration-150 ease-out ${
                   open ? "rotate-180" : ""
                 }`}
                 aria-hidden="true"
@@ -62,7 +62,7 @@ export function PlanDock({
                 type="button"
                 disabled={busy}
                 onClick={onRevise}
-                className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-subtle px-2.5 text-xs font-medium text-fg transition-colors hover:bg-hover disabled:opacity-40"
+                className="touch-target inline-flex h-8 items-center gap-2 rounded-lg border border-border bg-bg px-3 text-xs font-medium text-fg transition-colors duration-150 ease-out hover:bg-hover disabled:opacity-40"
               >
                 <PencilLine className="size-3.5" aria-hidden="true" />
                 <span>Revise</span>
@@ -71,7 +71,7 @@ export function PlanDock({
                 type="button"
                 disabled={busy}
                 onClick={onApprove}
-                className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-medium text-accent-fg transition-colors hover:bg-accent-strong disabled:opacity-40"
+                className="touch-target inline-flex h-8 items-center gap-2 rounded-lg bg-accent px-3 text-xs font-medium text-accent-fg transition-colors duration-150 ease-out hover:bg-accent-strong disabled:opacity-40"
               >
                 {busy ? (
                   <Spinner className="size-3.5" />
@@ -86,7 +86,7 @@ export function PlanDock({
           {open && (
             <div
               id={panelId}
-              className="max-h-44 overflow-y-auto border-t border-border px-3.5 py-2.5"
+              className="max-h-44 overflow-y-auto border-t border-border px-4 py-3"
             >
               <PlanSteps steps={plan.steps} />
             </div>
@@ -97,14 +97,14 @@ export function PlanDock({
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-2 animate-fade-in">
+    <div className="mx-auto w-full max-w-[720px] px-4 pb-2 animate-fade-in">
       <div className="overflow-hidden rounded-xl border border-border bg-elev">
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
           aria-controls={panelId}
-          className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs hover:bg-hover/60"
+          className="touch-target flex w-full items-center gap-2 px-4 py-2 text-left text-xs transition-colors duration-150 ease-out hover:bg-hover/60"
         >
           <ListChecks
             className="size-4 shrink-0 text-accent"
@@ -113,7 +113,7 @@ export function PlanDock({
           <span className="font-medium text-fg truncate">
             {prog.current ? prog.current.title : plan.title || "Plan"}
           </span>
-          <span className="ml-auto font-mono text-[11px] text-muted shrink-0">
+          <span className="ml-auto font-mono text-xs text-muted shrink-0">
             {prog.completed}/{prog.total}
           </span>
           <div className="hidden sm:block w-16 shrink-0">
@@ -124,7 +124,7 @@ export function PlanDock({
             />
           </div>
           <ChevronDown
-            className={`size-3.5 shrink-0 text-muted transition-transform ${
+            className={`size-3.5 shrink-0 text-muted transition-transform duration-150 ease-out ${
               open ? "rotate-180" : ""
             }`}
             aria-hidden="true"
@@ -145,7 +145,7 @@ export function PlanDock({
         {open && (
           <div
             id={panelId}
-            className="max-h-44 overflow-y-auto border-t border-border px-3.5 py-2.5"
+            className="max-h-44 overflow-y-auto border-t border-border px-4 py-3"
           >
             <PlanSteps steps={plan.steps} live />
           </div>
