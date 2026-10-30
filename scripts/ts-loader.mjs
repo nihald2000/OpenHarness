@@ -23,6 +23,7 @@ const WORKSPACE_MAP = {
   "openharness/server": path.join(ROOT_DIR, "packages/server/src/index.ts"),
   "openharness/sandboxd": path.join(ROOT_DIR, "packages/sandboxd/src/index.ts"),
   "openharness/cli": path.join(ROOT_DIR, "packages/cli/src/index.ts"),
+  "modal": path.join(ROOT_DIR, "scripts/modal-stub.mjs"),
 };
 
 export async function resolve(specifier, context, nextResolve) {
@@ -101,6 +102,13 @@ export async function load(url, context, nextLoad) {
 
 export function transpileTypeScript(source) {
   if (_babel && _presetTs) {
+    const crypto = _require("node:crypto");
+    const cacheDir = "/tmp/oh-ts-cache";
+    const key = crypto.createHash("sha1").update(source).digest("hex");
+    const cacheFile = path.join(cacheDir, key + ".mjs");
+    try {
+      if (fs.existsSync(cacheFile)) return fs.readFileSync(cacheFile, "utf8");
+    } catch {}
     const res = _babel.transformSync(source, {
       filename: "module.tsx",
       configFile: false,
@@ -108,6 +116,10 @@ export function transpileTypeScript(source) {
       presets: [[_presetTs, { isTSX: true, allExtensions: true }]],
       retainLines: true,
     });
+    try {
+      fs.mkdirSync(cacheDir, { recursive: true });
+      fs.writeFileSync(cacheFile, res.code, "utf8");
+    } catch {}
     return res.code;
   }
   let code = source;

@@ -1,3 +1,6 @@
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "deploy" / "modal" / "legacy"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "deploy" / "modal"))
 """Unit tests for Modal Sandbox Harness and MCP Code Bridge."""
 
 import py_compile

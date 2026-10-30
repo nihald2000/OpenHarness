@@ -1,3 +1,6 @@
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "deploy" / "modal" / "legacy"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "deploy" / "modal"))
 """Unit and Integration Tests for Phase 2 Modal Sandbox Bridge and Verification Checks."""
 
 import os
@@ -9,7 +12,7 @@ from pathlib import Path
 
 # Add project root and deploy directory to path
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEPLOY_DIR = REPO_ROOT / "deploy" / "modal"
+DEPLOY_DIR = REPO_ROOT / "deploy" / "modal" / "legacy"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(DEPLOY_DIR))
 
