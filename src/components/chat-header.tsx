@@ -317,7 +317,7 @@ export function ChatHeader({
         <ConnectionIndicator status={globalStatus} hideLabelOnMobile />
 
         <IconButton
-          label={capabilitiesOpen ? "Hide capabilities" : "Show capabilities"}
+          label="Capabilities"
           active={capabilitiesOpen}
           onClick={() => setCapabilitiesOpen((o) => !o)}
           size="md"
