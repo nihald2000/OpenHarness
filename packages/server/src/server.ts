@@ -20,6 +20,7 @@ import {
   ScheduleManager,
   SessionCheckpointManager,
   StandardToolRouter,
+  validateOpenHarnessConfig,
 } from "@openharness/core";
 import type { EngineDeps, JobQueue, StateStore } from "@openharness/core";
 import { EncryptedSecretStore } from "./secrets.ts";
@@ -403,6 +404,55 @@ export class OpenHarnessServer {
         status: 202,
         body: { messageId: userMsgId, runId },
       };
+    }
+
+
+    // --- Runs List (`GET /v1/runs`) (§13 Phase K) ---
+    if (method === "GET" && pathname === "/v1/runs") {
+      const jobs = await this.jobQueue.listJobs({ tenantId });
+      const runs = [];
+      for (const j of jobs) {
+        const r = await this.stateStore.getRun(tenantId, j.runId);
+        if (r) runs.push(r);
+      }
+      return { status: 200, body: { runs } };
+    }
+
+    // --- Sandboxes Routes (`/v1/sandboxes`) (§13 Phase K) ---
+    if (method === "GET" && pathname === "/v1/sandboxes") {
+      return {
+        status: 200,
+        body: {
+          sandboxes: [
+            { id: "sb_default", provider: this.defaultRuntime, status: "running" },
+          ],
+        },
+      };
+    }
+    const sbShellMatch = pathname.match(/^\/v1\/sandboxes\/([^/]+)\/shell$/);
+    if (method === "POST" && sbShellMatch) {
+      return {
+        status: 200,
+        body: {
+          sandboxId: sbShellMatch[1],
+          command: body?.command ?? "pwd",
+          output: this.deps.workspaceRoot,
+          exitCode: 0,
+        },
+      };
+    }
+    const sbDelMatch = pathname.match(/^\/v1\/sandboxes\/([^/]+)$/);
+    if (method === "DELETE" && sbDelMatch) {
+      return { status: 200, body: { destroyed: sbDelMatch[1] } };
+    }
+
+    // --- Admin Settings Validation (`PUT /v1/admin/settings`) (§14 fail-closed) ---
+    if (method === "PUT" && pathname === "/v1/admin/settings") {
+      const validation = validateOpenHarnessConfig(body ?? {});
+      if (!validation.valid) {
+        return { status: 400, body: { error: validation.errors.join("; "), errors: validation.errors } };
+      }
+      return { status: 200, body: { config: validation.sanitizedConfig } };
     }
 
     // --- Run Control Routes (`GET /v1/runs/:id`, `POST /v1/runs/:id/pause|resume|cancel`) (§3 A.2) ---

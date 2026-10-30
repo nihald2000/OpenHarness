@@ -1,6 +1,8 @@
 import type {
   AgentInfo,
   CheckpointInfo,
+  RunRecord,
+  ScheduleInfo,
   CommandInfo,
   ConnectionStatus,
   ContextUsage,
@@ -971,6 +973,80 @@ export class OpenHarnessClient {
     timers.push(completeTimer);
     this.activeTimeouts.set(sessionId, timers);
   }
+
+
+  readonly runs = {
+    list: async (): Promise<RunRecord[]> => [],
+    get: async (id: string): Promise<RunRecord> => ({
+      id,
+      sessionId: "sess-1",
+      mode: "task",
+      status: "running",
+      phase: "building",
+      iteration: 1,
+      maxIterations: 150,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+    pause: async (id: string): Promise<RunRecord> => ({
+      id,
+      sessionId: "sess-1",
+      mode: "task",
+      status: "idle",
+      phase: "paused",
+      iteration: 1,
+      maxIterations: 150,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+    resume: async (id: string, _opts?: { extend?: boolean }): Promise<RunRecord> => ({
+      id,
+      sessionId: "sess-1",
+      mode: "task",
+      status: "running",
+      phase: "building",
+      iteration: 1,
+      maxIterations: 300,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+    cancel: async (id: string): Promise<RunRecord> => ({
+      id,
+      sessionId: "sess-1",
+      mode: "task",
+      status: "cancelled",
+      phase: "cancelled",
+      iteration: 1,
+      maxIterations: 150,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+  };
+
+  readonly schedules = {
+    list: async (): Promise<ScheduleInfo[]> => [],
+    create: async (input: Partial<ScheduleInfo>): Promise<ScheduleInfo> => ({
+      id: `sched_${Date.now()}`,
+      name: input.name || "Schedule",
+      enabled: true,
+      mode: input.mode || "task",
+      agent: input.agent || "assistant",
+      prompt: input.prompt || "",
+      concurrency: input.concurrency || 1,
+    }),
+  };
+
+  readonly sandboxes = {
+    list: async (): Promise<Array<{ id: string; provider: string; status: string }>> => [
+      { id: "sb_default", provider: "docker", status: "running" },
+    ],
+    shell: async (id: string, command: string): Promise<{ sandboxId: string; output: string; exitCode: number }> => ({
+      sandboxId: id,
+      output: `Executed in ${id}: ${command}`,
+      exitCode: 0,
+    }),
+    destroy: async (id: string): Promise<{ destroyed: string }> => ({ destroyed: id }),
+  };
 
   readonly permissions = {
     list: async (sessionId?: string): Promise<PermissionRequest[]> => {

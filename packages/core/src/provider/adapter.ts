@@ -200,9 +200,16 @@ export interface ModelAgnosticProviderOptions {
 
 export class ModelAgnosticProviderAdapter implements ProviderAdapter {
   private opts: ModelAgnosticProviderOptions;
+  private callCountersByRun = new Map<string, number>();
 
   constructor(opts: ModelAgnosticProviderOptions) {
     this.opts = opts;
+  }
+
+  private nextCallSeq(runId: string): number {
+    const next = (this.callCountersByRun.get(runId) ?? 0) + 1;
+    this.callCountersByRun.set(runId, next);
+    return next;
   }
 
   async generateTurn(req: ProviderTurnRequest): Promise<ProviderTurnResponse> {
@@ -268,7 +275,7 @@ export class ModelAgnosticProviderAdapter implements ProviderAdapter {
       const rawArgs = tc.function?.arguments ?? tc.arguments ?? {};
       const repaired = repairToolArgumentsJson(rawArgs);
       decodedCalls.push({
-        id: synthesizeToolCallId(req.runId, i + 1, tc.id),
+        id: synthesizeToolCallId(req.runId, this.nextCallSeq(req.runId), tc.id),
         name,
         arguments: repaired.parsed,
       });
