@@ -118,9 +118,13 @@ def default_specs() -> dict[str, ServerSpec]:
                 "--headless",
                 "--isolated",
                 "--no-sandbox",
-                # Chromium is the default. `--browser` selects a *channel*
-                # (chrome/firefox/webkit/msedge), so passing "chromium" here
-                # is at best a no-op and at worst rejected.
+                # Without this, Playwright MCP defaults to the `chrome` channel
+                # and fails with "Chromium distribution 'chrome' is not found
+                # at /opt/google/chrome/chrome". `chromium` maps to the
+                # chrome-for-testing channel that `playwright install chromium`
+                # puts in PLAYWRIGHT_BROWSERS_PATH.
+                "--browser",
+                "chromium",
                 "--viewport-size",
                 "1280x720",
                 # Screenshots are written to disk and read back by path, so
