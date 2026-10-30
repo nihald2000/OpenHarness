@@ -15,6 +15,8 @@ import {
   LayeredContextManager,
   LocalStateStore,
   ModelAgnosticProviderAdapter,
+  createHttpTransport,
+  ProviderHttpError,
   PostgresStateStore,
   RiskPolicyGate,
   ScheduleManager,
@@ -98,16 +100,37 @@ export class OpenHarnessServer {
         });
         this.eventBus.publish(env);
       },
-      transport: async (payload) => {
-        // Offline deterministic mock provider response so the offline demo always works (§0.1)
-        const lastMsg = payload.messages?.at(-1);
-        const content = String(lastMsg?.content ?? "");
-        return {
-          text: `Processed prompt with model ${payload.model}: ${content.slice(0, 120)}`,
-          tool_calls: [],
-          usage: { prompt_tokens: 64, completion_tokens: 24 },
+      transport: (() => {
+        const mockTransport = async (payload: any) => {
+          const lastMsg = payload.messages?.at(-1);
+          const content = String(lastMsg?.content ?? "");
+          return {
+            text: `Processed prompt with model ${payload.model}: ${content.slice(0, 120)}`,
+            tool_calls: [],
+            usage: { prompt_tokens: 64, completion_tokens: 24 },
+          };
         };
-      },
+        const httpTransport = createHttpTransport(async (profile, model) => {
+          const keyName = profile.apiKeyEnv;
+          const apiKey = keyName
+            ? this.secretStore.getSecret(keyName) ?? process.env[keyName]
+            : undefined;
+          const baseUrl = profile.baseUrl;
+          if (!baseUrl) {
+            throw new ProviderHttpError(400, `no baseUrl configured for ${model}`);
+          }
+          if (!baseUrl.startsWith("http://127.0.0.1") && !baseUrl.startsWith("http://localhost")) {
+            if (!apiKey) {
+              throw new ProviderHttpError(401, `missing API key ${keyName ?? "API_KEY"} for ${model}`);
+            }
+          }
+          return { baseUrl, apiKey };
+        });
+        return async (payload, profile, opts) =>
+          payload.model.startsWith("mock/")
+            ? mockTransport(payload)
+            : httpTransport(payload, profile, opts);
+      })(),
     });
 
     this.deps = {

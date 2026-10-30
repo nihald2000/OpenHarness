@@ -119,10 +119,19 @@ export function buildProviderWirePayload(
       if (profile.strictSchemas) {
         fnDef.strict = true;
       }
-      const toolEntry: Record<string, unknown> = {
-        type: "function",
-        function: fnDef,
-      };
+      const toolEntry: Record<string, unknown> =
+        profile.wire === "anthropic"
+          ? {
+              name: t.name,
+              description: t.description,
+              input_schema: sortJsonKeysDeterministically(t.parameters) as Record<string, unknown>,
+              type: "function",
+              function: fnDef,
+            }
+          : {
+              type: "function",
+              function: fnDef,
+            };
       if (
         profile.promptCaching === "explicit" &&
         idx === advertisedTools.length - 1
@@ -178,7 +187,7 @@ export interface ModelAgnosticProviderOptions {
   transport: (
     payload: ProviderRequestWirePayload,
     profile: ModelProfile,
-    opts: { idleTimeoutMs: number }
+    opts: { idleTimeoutMs: number; signal?: AbortSignal }
   ) => Promise<RawProviderResponse>;
   profileOverrides?: Record<string, Partial<ModelProfile>>;
   fallbackModels?: string[];
@@ -242,7 +251,7 @@ export class ModelAgnosticProviderAdapter implements ProviderAdapter {
           { ...req, model: activeModel },
           profile
         );
-        return this.opts.transport(wirePayload, profile, { idleTimeoutMs });
+        return this.opts.transport(wirePayload, profile, { idleTimeoutMs, signal: req.signal });
       },
       {
         maxAttempts: this.opts.maxRetryAttempts ?? 8,
@@ -343,3 +352,5 @@ export class ModelAgnosticProviderAdapter implements ProviderAdapter {
     };
   }
 }
+
+export const buildProviderRequestBody = buildProviderWirePayload;

@@ -8,3 +8,5 @@ export * from "./json-repair.ts";
 export * from "./openai-chat.ts";
 export * from "./anthropic.ts";
 export * from "./bedrock.ts";
+
+export * from "./http-transport.ts";
