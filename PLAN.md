@@ -28,6 +28,11 @@
 - Admin settings persistence, AES-GCM secret storage, plaintext-secret extraction from settings, and an allowlisted built-in plugin lifecycle.
 - MCP configuration and clients for stdio, streamable HTTP, and SSE endpoint discovery; MCP tool schema checks, approval policy, output limits, manual reconnect, bounded exponential reconnect, and filesystem/browser presets.
 - Added an opt-in Modal sandbox plugin with tool approval, bounded Python execution/output, isolated temporary sandboxes, and outbound networking blocked by default.
+- Implemented Phase 1 Production Modal Sandbox Harness (`modal.Sandbox`) with Anthropic's "Code Execution with MCP" architecture:
+  - Multi-compiler & runtime Ubuntu 24.04 VM image (`modal_image.py`) with Python 3.12, Node 22, Rust, Go, Clang, gcc/g++, Playwright chromium, Pandoc, LibreOffice, and Anthropic Sandbox Runtime (`srt`).
+  - In-sandbox MCP Python bridge layout (`/mnt/mcp_servers/`) with stdio JSON-RPC client, Playwright automation, GitHub API, Filesystem access, and document/charting skills (`mcp_code_bridge.py`).
+  - Host-side `ModalSandboxManager` (`sandbox_manager.py`) with VM sandboxes, dynamic network modes (`connected`, `github_only`, `airgapped`), state-preserving bash execution, 12k char output truncation, file copy I/O, port 3000/8080 tunnels, and zero-cost filesystem snapshot hibernation.
+  - Minimal Claude tool interface (`agent_tools.py`) exposing `discover_mcp_modules`, `execute_sandbox_code`, `export_artifact`, and specialized code-mode system prompt.
 - A generic third-party runtime/plugin contribution API remains open; only explicitly allowlisted built-ins can currently attach.
 - Added an authenticated admin reload route to reset ephemeral plugin state and reconnect MCP servers.
 

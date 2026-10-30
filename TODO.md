@@ -70,6 +70,12 @@ Tracks the consolidated requirements in `prompt.md`. Items are checked only when
 - [x] Enforce per-turn token caps and optional per-run/per-session cost limits when model prices are configured.
 - [x] Compact older context automatically at the configured token threshold; preserve recent messages and active tool calls and summarize recent requirements, decisions, and verification/error evidence.
 - [x] Persist extracted user requirements, assistant decisions, and outstanding question sentences as structured fields in compaction records; preserve the readable summary and keep extraction bounded.
+- [x] Implement production Modal sandbox harness (`modal.Sandbox`) with Anthropic's "Code Execution with MCP" architecture:
+  - [x] `modal_image.py`: Ubuntu 24.04 VM image with multi-compiler runtimes (Rust, Go, Clang, Node 22, Python 3.12, gcc), Playwright chromium, document engines (Pandoc, LibreOffice, Poppler), and Anthropic Sandbox Runtime (`srt`).
+  - [x] `mcp_code_bridge.py`: In-sandbox `/mnt/mcp_servers` layout with JSON-RPC stdio client, Playwright automation, GitHub API, Filesystem access, and document/charting skills.
+  - [x] `sandbox_manager.py`: `ModalSandboxManager` supporting VM sandboxes, dynamic network modes (`connected`, `github_only`, `airgapped`), state-preserving bash execution, 12k output truncation, file copy I/O, port 3000/8080 tunnels, and zero-cost hibernation snapshotting.
+  - [x] `agent_tools.py`: Anthropic tools (`discover_mcp_modules`, `execute_sandbox_code`, `export_artifact`) and Claude code-mode system prompt.
+  - [x] Tested and verified with Python unit test suite (`tests/test_modal_sandbox.py`).
 - [ ] Implement general `run_code` with typed tool bindings and isolated execution; current Modal tool is Python-only and does not provide typed bindings.
 - [ ] Finish configured verify/fix loops and focused coverage. Prompt `fix.commands` and `verify.auto` now guide the agent through the allowlisted checks, with bounded retries and `fix.status` events; arbitrary configured commands and integration coverage remain outstanding.
 - [ ] Implement a first-party browser plugin and general trusted plugin manifests/contributions with lifecycle health and rollback; current browser support is a Playwright MCP preset and plugins are a small built-in allowlist.

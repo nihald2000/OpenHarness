@@ -22,6 +22,11 @@ OpenHarness is an AI agent harness and developer workspace rewritten as a modern
   - **Secrets**: Encrypted environment secret management with masked values.
   - **Advanced**: Masked JSON preview, configuration reload, and session controls.
 - **Dark & Light Mode**: Built-in theme toggle with zero-flicker localStorage persistence.
+- **Production Modal.com Sandbox Harness**: VM-isolated sandboxes (`modal.Sandbox`) equipped with Anthropic's "Code Execution with MCP" architecture:
+  - Multi-compiler & testing image: Ubuntu 24.04, Python 3.12, Node 22, Rust, Go, Clang, gcc, Playwright chromium, Pandoc, LibreOffice, and Anthropic Sandbox Runtime (`srt`).
+  - In-sandbox MCP bridges (`/mnt/mcp_servers/`): Playwright, GitHub, Filesystem, and Office document/charting skills.
+  - Zero-cost hibernation: Fast filesystem snapshots with instant restoration across session turns.
+  - Dynamic network security: Granular switching between `connected`, `github_only`, and `airgapped` execution.
 
 ## Development
 
