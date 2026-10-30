@@ -46,20 +46,20 @@ export function CheckpointsPopover({
   };
 
   return (
-    <div className="relative">
+    <div className="relative inline-block">
       <button
         type="button"
         onClick={handleToggle}
         title="Shadow-git file checkpoints, diff view, and file restore"
-        className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-elev px-2.5 text-xs font-medium text-fg hover:bg-hover"
+        className="touch-target inline-flex h-8 items-center gap-2 rounded-lg border border-border bg-elev px-3 text-xs font-medium text-fg transition-colors duration-150 ease-out hover:bg-hover"
       >
         <GitCommit className="size-3.5 text-accent" aria-hidden="true" />
         <span className="hidden md:inline">Checkpoints</span>
       </button>
 
       {open && (
-        <div className="absolute right-0 top-10 z-40 w-96 rounded-xl border border-border bg-elev p-3 shadow-xl">
-          <div className="mb-2 flex items-center justify-between border-b border-border pb-2">
+        <div className="absolute right-0 top-full z-40 mt-1 w-96 overflow-hidden rounded-xl border border-border bg-bg shadow-menu animate-fade-in">
+          <div className="flex items-center justify-between border-b border-border bg-elev px-4 py-3">
             <div className="flex items-center gap-2">
               <GitCommit className="size-4 text-accent" aria-hidden="true" />
               <span className="text-xs font-semibold text-fg">
@@ -70,63 +70,66 @@ export function CheckpointsPopover({
           </div>
 
           {statusMsg && (
-            <div className="mb-2 rounded-md border border-accent/30 bg-accent/10 px-2 py-1 text-[11px] text-fg">
+            <div className="border-b border-border bg-accent/10 px-4 py-2 text-xs text-fg">
               {statusMsg}
             </div>
           )}
 
-          <div className="max-h-72 space-y-2 overflow-y-auto">
-            {checkpoints.map((cp) => (
-              <div
-                key={cp.sha}
-                className="rounded-lg border border-border bg-bg p-2 text-xs"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-[11px] text-accent">
-                    {cp.sha.slice(0, 10)}
-                  </span>
-                  <span className="text-[10px] text-muted">
-                    {cp.automatic ? "auto" : "manual"}
-                  </span>
-                </div>
-                <p className="mt-1 truncate text-fg">{cp.message}</p>
+          <div className="max-h-72 divide-y divide-border overflow-y-auto">
+            {checkpoints.length === 0 ? (
+              <p className="p-4 text-center text-xs text-muted">
+                No checkpoints recorded yet.
+              </p>
+            ) : (
+              checkpoints.map((cp) => (
+                <div key={cp.sha} className="p-3 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-xs text-accent">
+                      {cp.sha.slice(0, 10)}
+                    </span>
+                    <span className="text-xs text-muted">
+                      {cp.automatic ? "auto" : "manual"}
+                    </span>
+                  </div>
+                  <p className="mt-1 truncate text-fg">{cp.message}</p>
 
-                <div className="mt-2 flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedDiffSha(selectedDiffSha === cp.sha ? null : cp.sha)
-                    }
-                    className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[11px] text-muted hover:bg-hover hover:text-fg"
-                  >
-                    <Eye className="size-3" aria-hidden="true" />
-                    <span>Diff</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRestoreFiles(cp.sha)}
-                    className="inline-flex items-center gap-1 rounded border border-accent/40 bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/20"
-                  >
-                    <RotateCcw className="size-3" aria-hidden="true" />
-                    <span>Restore files</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleFork(cp.sha)}
-                    className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[11px] text-muted hover:bg-hover hover:text-fg"
-                  >
-                    <GitFork className="size-3" aria-hidden="true" />
-                    <span>Fork</span>
-                  </button>
-                </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedDiffSha(selectedDiffSha === cp.sha ? null : cp.sha)
+                      }
+                      className="touch-target inline-flex items-center gap-1 rounded-lg border border-border bg-elev px-2 py-1 text-xs text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg"
+                    >
+                      <Eye className="size-3" aria-hidden="true" />
+                      <span>Diff</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRestoreFiles(cp.sha)}
+                      className="touch-target inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2 py-1 text-xs font-medium text-accent transition-colors duration-150 ease-out hover:bg-accent/15"
+                    >
+                      <RotateCcw className="size-3" aria-hidden="true" />
+                      <span>Restore files</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleFork(cp.sha)}
+                      className="touch-target inline-flex items-center gap-1 rounded-lg border border-border bg-elev px-2 py-1 text-xs text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg"
+                    >
+                      <GitFork className="size-3" aria-hidden="true" />
+                      <span>Fork</span>
+                    </button>
+                  </div>
 
-                {selectedDiffSha === cp.sha && (
-                  <pre className="mt-2 overflow-x-auto rounded border border-border bg-elev p-2 font-mono text-[10px] text-muted">
-                    {`--- a/workspace @ ${cp.sha.slice(0, 8)}~1\n+++ b/workspace @ ${cp.sha.slice(0, 8)}\n@@ -1,3 +1,5 @@\n // Shadow-git worktree snapshot (${cp.message})\n+Verified changes committed at step ${cp.step ?? 1}`}
-                  </pre>
-                )}
-              </div>
-            ))}
+                  {selectedDiffSha === cp.sha && (
+                    <pre className="mt-2 overflow-x-auto rounded-lg bg-code p-2 font-mono text-xs text-muted">
+                      {`--- a/workspace @ ${cp.sha.slice(0, 8)}~1\n+++ b/workspace @ ${cp.sha.slice(0, 8)}\n@@ -1,3 +1,5 @@\n // Shadow-git worktree snapshot (${cp.message})\n+Verified changes committed at step ${cp.step ?? 1}`}
+                    </pre>
+                  )}
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}
