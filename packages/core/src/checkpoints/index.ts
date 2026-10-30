@@ -7,6 +7,7 @@ export interface RewindSessionOptions {
   sessionId: string;
   checkpoint: string; // checkpoint SHA or ID
   files?: boolean; // default true (§11 Phase I)
+  filesExplicit?: boolean;
   conversation?: boolean; // default false (§11 Phase I)
   atMessageId?: string;
 }
@@ -17,6 +18,12 @@ export interface ForkSessionOptions {
   atMessageId?: string;
   checkpoint?: string;
   newTitle?: string;
+}
+
+function createStatusError(status: number, message: string): Error & { status: number } {
+  const err = new Error(message) as Error & { status: number };
+  err.status = status;
+  return err;
 }
 
 /**
@@ -36,8 +43,10 @@ export class SessionCheckpointManager {
   }
 
   /**
-   * Rewinds a session to a checkpoint (§11 Phase I):
+   * Rewinds a session to a checkpoint (§11 Phase I, Step 8 S8):
+   * - Validates that the checkpoint exists in `listCheckpoints` (404 if missing)
    * - Restores workspace files from the shadow-git checkpoint by default (`files: true`)
+   * - If `files: true` is requested on a task/long_task or sandboxed session without an active sandbox, fails closed with 409
    * - Keeps conversation history untouched by default (`conversation: false`); when `conversation: true`,
    *   also truncates the transcript to the checkpoint's step / `atMessageId`.
    */
@@ -52,31 +61,51 @@ export class SessionCheckpointManager {
 
     const session = await this.stateStore.getSession(opts.tenantId, opts.sessionId);
     if (!session) {
-      throw new Error(`Session not found: ${opts.sessionId}`);
+      throw createStatusError(404, `Session not found: ${opts.sessionId}`);
     }
 
     const checkpoints = await this.stateStore.listCheckpoints(opts.tenantId, opts.sessionId);
     const targetCp = checkpoints.find((c) => c.sha === opts.checkpoint);
+    if (!targetCp) {
+      throw createStatusError(404, `Checkpoint not found: ${opts.checkpoint}`);
+    }
 
     // 1. Restore files via active sandbox shadow-git if requested
     let restoredFiles = false;
     if (restoreFiles) {
-      restoredFiles = true;
+      let daemon = undefined;
       if (session.runId) {
         const stepCp = await this.stateStore.getStepCheckpoint(opts.tenantId, session.runId);
         const handleId = stepCp?.sandboxHandleId;
         if (handleId) {
-          const daemon = getActiveSandboxDaemon(handleId);
-          if (daemon) {
-            const res = await daemon.handleRequest(
-              "POST",
-              "/checkpoints/restore",
-              { "x-session-key": daemon.config.sessionKey },
-              { sha: opts.checkpoint }
-            );
-            restoredFiles = res.status === 200;
-          }
+          daemon = getActiveSandboxDaemon(handleId);
         }
+      }
+      if (daemon) {
+        const res = await daemon.handleRequest(
+          "POST",
+          "/checkpoints/restore",
+          { "x-session-key": daemon.config.sessionKey },
+          { sha: opts.checkpoint }
+        );
+        if (res.status !== 200) {
+          throw createStatusError(
+            409,
+            `Sandbox failed to restore files for checkpoint ${opts.checkpoint}`
+          );
+        }
+        restoredFiles = true;
+      } else if (
+        session.mode === "task" ||
+        session.mode === "long_task" ||
+        (session.runtime && session.runtime !== "local")
+      ) {
+        throw createStatusError(
+          409,
+          `Cannot restore files without an active sandbox for checkpoint ${opts.checkpoint}`
+        );
+      } else {
+        restoredFiles = true;
       }
       session.lastCheckpoint = opts.checkpoint;
     }
@@ -93,7 +122,7 @@ export class SessionCheckpointManager {
           finalMessages = messages.slice(0, idx + 1);
           truncatedConversation = true;
         }
-      } else if (targetCp && typeof targetCp.step === "number") {
+      } else if (typeof targetCp.step === "number") {
         finalMessages = messages.slice(0, Math.max(1, targetCp.step));
         truncatedConversation = true;
       } else if (messages.length > 1) {
@@ -125,7 +154,7 @@ export class SessionCheckpointManager {
   }> {
     const parent = await this.stateStore.getSession(opts.tenantId, opts.sessionId);
     if (!parent) {
-      throw new Error(`Parent session not found: ${opts.sessionId}`);
+      throw createStatusError(404, `Parent session not found: ${opts.sessionId}`);
     }
 
     const { messages } = await this.stateStore.getMessages(opts.tenantId, opts.sessionId);

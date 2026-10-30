@@ -237,6 +237,7 @@ export class SandboxDaemon {
     payload: Record<string, unknown>
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const isExecRoute =
+      pathname === "/exec" ||
       /^\/shell\/[^/]+\/exec$/.test(pathname) ||
       pathname === "/processes" ||
       pathname === "/ipython/exec";
@@ -266,6 +267,12 @@ export class SandboxDaemon {
     }
 
     // --- Shell Routes ---
+    if (method === "POST" && pathname === "/exec") {
+      const rawCmd = Array.isArray(payload.command)
+        ? payload.command[payload.command.length - 1] ?? payload.command.join(" ")
+        : String(payload.command ?? "");
+      return this.execShell("main", { ...payload, command: rawCmd });
+    }
     const shellExecMatch = pathname.match(/^\/shell\/([^/]+)\/exec$/);
     if (method === "POST" && shellExecMatch) {
       return this.execShell(shellExecMatch[1]!, payload);
@@ -1232,22 +1239,24 @@ export class SandboxDaemon {
 
   private runShadowGit(args: string[]): { status: number; stdout: string; stderr: string } {
     const gitEnv = {
-      GIT_DIR: this.config.shadowGitDir,
-      GIT_WORK_TREE: this.config.workspacePath,
       GIT_AUTHOR_NAME: "OpenHarness Checkpoint",
       GIT_AUTHOR_EMAIL: "checkpoint@openharness.dev",
       GIT_COMMITTER_NAME: "OpenHarness Checkpoint",
       GIT_COMMITTER_EMAIL: "checkpoint@openharness.dev",
     };
+    const baseArgs = [
+      `--git-dir=${this.config.shadowGitDir}`,
+      `--work-tree=${this.config.workspacePath}`,
+    ];
 
     if (!this.shadowGitInitialized) {
       if (!fs.existsSync(path.join(this.config.shadowGitDir, "HEAD"))) {
-        spawnConfinedArgv(["git", "init", "--bare", this.config.shadowGitDir], this.config.workspacePath, gitEnv);
+        spawnConfinedArgv(["git", ...baseArgs, "init"], this.config.workspacePath, gitEnv);
       }
       this.shadowGitInitialized = true;
     }
 
-    const res = spawnConfinedArgv(["git", ...args], this.config.workspacePath, gitEnv);
+    const res = spawnConfinedArgv(["git", ...baseArgs, ...args], this.config.workspacePath, gitEnv);
     return {
       status: res.status,
       stdout: res.stdout.trim(),
@@ -1260,14 +1269,37 @@ export class SandboxDaemon {
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const message = String(payload.message ?? "Checkpoint");
     this.runShadowGit(["add", "-A"]);
-    this.runShadowGit(["commit", "--allow-empty", "-m", message]);
+    const statusOut = this.runShadowGit(["status", "--porcelain"]);
+    const files = statusOut.stdout
+      ? statusOut.stdout
+          .split("\n")
+          .map((l) => l.slice(3).trim())
+          .filter(Boolean)
+      : [];
+    this.runShadowGit([
+      "-c",
+      "user.name=OpenHarness",
+      "-c",
+      "user.email=oh@local",
+      "commit",
+      "--allow-empty",
+      "--no-gpg-sign",
+      "-m",
+      message,
+    ]);
     const rev = this.runShadowGit(["rev-parse", "HEAD"]);
-    const sha = rev.stdout || crypto.randomBytes(20).toString("hex");
+    if (rev.status !== 0 || !rev.stdout) {
+      return {
+        status: 500,
+        body: { error: rev.stderr || "shadow-git rev-parse failed" },
+      };
+    }
     return {
       status: 200,
       body: {
-        sha,
+        sha: rev.stdout,
         message,
+        files,
         createdAt: Date.now(),
       },
     };

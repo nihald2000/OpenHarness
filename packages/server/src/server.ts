@@ -3,18 +3,23 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import type {
-  CheckpointInfo,
   Message,
+  OpenHarnessEvent,
   PermissionReply,
   RuntimeInfo,
   Session,
 } from "@openharness/sdk";
 import {
   BUILT_IN_MODEL_PROFILES,
+  compileSandboxPolicy,
   createJobQueue,
+  DockerSandboxProvider,
   DurableWorker,
+  FileSandboxRecordStore,
+  getActiveSandboxDaemon,
   InProcessEventBus,
   LayeredContextManager,
+  LocalSandboxProvider,
   LocalStateStore,
   ModelAgnosticProviderAdapter,
   createHttpTransport,
@@ -23,13 +28,26 @@ import {
   RiskPolicyGate,
   ScheduleManager,
   SessionCheckpointManager,
+  SrtLocalSandboxProvider,
   StandardToolRouter,
   validateOpenHarnessConfig,
+  type EngineDeps,
+  type EventEnvelope,
+  type HealthReport,
+  type JobQueue,
+  type RunState,
+  type SandboxCapabilities,
+  type SandboxHandle,
+  type SandboxProvider,
+  type SandboxRecordStore,
+  type SandboxSpec,
+  type SnapshotRef,
+  type StateStore,
 } from "@openharness/core";
-import type { EngineDeps, EventEnvelope, JobQueue, StateStore } from "@openharness/core";
 import { EncryptedSecretStore } from "./secrets.ts";
 import { OidcVerifier, type OidcConfig } from "./oidc/auth.ts";
 import { CookieSessionStore } from "./auth/oauth.ts";
+import { createRunHooks } from "./run-hooks.ts";
 
 export class HttpError extends Error {
   status: number;
@@ -62,6 +80,8 @@ export interface OpenHarnessServerConfig {
   defaultModel?: string;
   defaultRuntime?: string;
   osEnforcedSandbox?: boolean;
+  allowUnsandboxedAutonomy?: boolean;
+  providers?: Map<string, SandboxProvider>;
 }
 
 const safeEqual = (a: string, b: string): boolean =>
@@ -97,6 +117,62 @@ class SseLimiter {
   }
 }
 
+class UnconfiguredModalProvider implements SandboxProvider {
+  readonly id = "modal" as const;
+  readonly capabilities: SandboxCapabilities = {
+    osEnforced: true,
+    network: "allowlist",
+    snapshots: true,
+    ports: true,
+    browser: true,
+    persistentShell: true,
+  };
+  async create(_spec: SandboxSpec): Promise<SandboxHandle> {
+    throw new Error("sandbox runtime modal unavailable: MODAL_TOKEN_ID and MODAL_TOKEN_SECRET not configured");
+  }
+  async pause(_h: SandboxHandle): Promise<void> {}
+  async resume(_h: SandboxHandle): Promise<void> {}
+  async snapshot(_h: SandboxHandle): Promise<SnapshotRef> {
+    throw new Error("modal unavailable");
+  }
+  async restore(_ref: SnapshotRef, _spec: SandboxSpec): Promise<SandboxHandle> {
+    throw new Error("modal unavailable");
+  }
+  async destroy(_h: SandboxHandle): Promise<void> {}
+  async health(): Promise<HealthReport> {
+    const hasTokens = Boolean(process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET);
+    const manifestPath = path.resolve("deploy/modal/image-manifest.json");
+    const hasManifest = fs.existsSync(manifestPath);
+    if (!hasTokens) {
+      return {
+        ok: false,
+        providerId: "modal",
+        status: "unavailable",
+        osEnforced: false,
+        detail: "MODAL_TOKEN_ID and MODAL_TOKEN_SECRET not configured",
+        checkedAt: Date.now(),
+      };
+    }
+    if (!hasManifest) {
+      return {
+        ok: false,
+        providerId: "modal",
+        status: "unavailable",
+        osEnforced: false,
+        detail: "deploy/modal/image-manifest.json missing (run npm run modal:image)",
+        checkedAt: Date.now(),
+      };
+    }
+    return {
+      ok: true,
+      providerId: "modal",
+      status: "ready",
+      osEnforced: true,
+      checkedAt: Date.now(),
+    };
+  }
+}
+
 export class OpenHarnessServer {
   readonly config: OpenHarnessServerConfig;
   readonly stateStore: StateStore;
@@ -109,6 +185,9 @@ export class OpenHarnessServer {
   readonly sessions: CookieSessionStore;
   readonly oidc?: OidcVerifier;
   readonly sseLimiter = new SseLimiter();
+  readonly providers: Map<string, SandboxProvider>;
+  readonly activeSandboxes = new Map<string, SandboxHandle>();
+  readonly sandboxRecords: SandboxRecordStore;
   readonly deps: EngineDeps;
   readonly log = {
     info: (msg: string) => {
@@ -144,11 +223,21 @@ export class OpenHarnessServer {
     this.jobQueue = createJobQueue({ databaseUrl: dbUrl, dataDir });
     this.secretStore = new EncryptedSecretStore({ dataDir });
     this.checkpointManager = new SessionCheckpointManager(this.stateStore);
+    this.sandboxRecords = new FileSandboxRecordStore(dataDir);
     this.sessions = new CookieSessionStore();
     if (this.config.oidc) {
       this.oidc = new OidcVerifier(this.config.oidc);
     }
     this.defaultRuntime = this.config.defaultRuntime ?? "local";
+
+    this.providers =
+      this.config.providers ??
+      new Map<string, SandboxProvider>([
+        ["local", new LocalSandboxProvider()],
+        ["srt-local", new SrtLocalSandboxProvider({ checkHostBinary: true })],
+        ["docker", new DockerSandboxProvider({ checkHostBinary: true })],
+        ["modal", new UnconfiguredModalProvider()],
+      ]);
 
     const toolRouter = new StandardToolRouter({
       workspaceRoot,
@@ -160,7 +249,13 @@ export class OpenHarnessServer {
     });
 
     const policyGate = new RiskPolicyGate({
-      osEnforcedSandbox: Boolean(this.config.osEnforcedSandbox ?? true),
+      osEnforcedSandbox: Boolean(this.config.osEnforcedSandbox ?? false),
+      isOsEnforced: (s) => {
+        if (this.config.osEnforcedSandbox) return true;
+        if (!s.sandboxHandleId) return false;
+        const h = this.activeSandboxes.get(s.sandboxHandleId);
+        return Boolean(h && h.providerId !== "local");
+      },
       defaultConfirmationPolicy: "risky",
     });
 
@@ -209,6 +304,36 @@ export class OpenHarnessServer {
       })(),
     });
 
+    const emit = async (tenantId: string, sessionId: string, ev: OpenHarnessEvent) => {
+      const env = await this.stateStore.appendEvent(tenantId, sessionId, ev);
+      this.eventBus.publish(env);
+    };
+
+    const hooks = createRunHooks({
+      providers: this.providers,
+      activeSandboxes: this.activeSandboxes,
+      sandboxRecords: this.sandboxRecords,
+      stateStore: this.stateStore,
+      eventBus: this.eventBus,
+      provider,
+      workspaceRoot,
+      allowUnsandboxedAutonomy: this.config.allowUnsandboxedAutonomy,
+      emit,
+      defaultSpecFor: (state: RunState): SandboxSpec => ({
+        runId: state.runId,
+        sessionId: state.sessionId,
+        tenantId: state.tenantId,
+        workspace: { type: "bind", kind: "local", hostPath: workspaceRoot, path: workspaceRoot },
+        policy: compileSandboxPolicy({
+          runId: state.runId,
+          phase: "agent",
+          workspacePath: workspaceRoot,
+          networkMode: "allowlist",
+        }),
+        allowUnsandboxedAutonomy: this.config.allowUnsandboxedAutonomy,
+      }),
+    });
+
     this.deps = {
       clock: {
         now: () => Date.now(),
@@ -221,15 +346,12 @@ export class OpenHarnessServer {
       policyGate,
       contextManager,
       workspaceRoot,
-      onCreateCheckpoint: async (state, message, automatic): Promise<CheckpointInfo> => ({
-        sha: `cp_${state.runId}_${state.iteration}_${Date.now()}`,
-        message,
-        createdAt: Date.now(),
-        sessionId: state.sessionId,
-        runId: state.runId,
-        step: state.iteration,
-        automatic,
-      }),
+      ensureSandbox: hooks.ensureSandbox,
+      onCreateCheckpoint: hooks.onCreateCheckpoint,
+      onRunVerification: hooks.onRunVerification,
+      onRunReviewer: hooks.onRunReviewer,
+      onPauseSandbox: hooks.onPauseSandbox,
+      onResumeSandbox: hooks.onResumeSandbox,
     };
 
     this.worker = new DurableWorker(this.jobQueue, this.deps);
@@ -355,68 +477,63 @@ export class OpenHarnessServer {
   }
 
   async listRuntimes(): Promise<RuntimeInfo[]> {
-    return [
-      {
-        id: "local",
+    const descriptions: Record<string, { description: string; remote: boolean }> = {
+      local: {
         description: "Local unsandboxed runtime (offline demo default).",
         remote: false,
-        isDefault: this.defaultRuntime === "local",
-        active: true,
-        capabilities: {
-          osEnforced: false,
-          network: "open",
-          snapshots: false,
-          ports: false,
-          browser: false,
-          persistentShell: false,
-        },
       },
-      {
-        id: "srt-local",
+      "srt-local": {
         description: "Host child process isolated by Anthropic Sandbox Runtime (srt).",
         remote: false,
-        isDefault: this.defaultRuntime === "srt-local",
-        active: process.platform !== "win32",
-        capabilities: {
-          osEnforced: true,
-          network: "allowlist",
-          snapshots: true,
-          ports: true,
-          browser: true,
-          persistentShell: true,
-        },
       },
-      {
-        id: "docker",
+      docker: {
         description: "Container-isolated sandbox with srt defense-in-depth and shadow-git checkpoints.",
         remote: false,
-        isDefault: this.defaultRuntime === "docker",
-        active: true,
-        capabilities: {
-          osEnforced: true,
-          network: "allowlist",
-          snapshots: true,
-          ports: true,
-          browser: true,
-          persistentShell: true,
-        },
       },
-      {
-        id: "modal",
+      modal: {
         description: "Modal cloud microVM sandbox with filesystem snapshot hibernation.",
         remote: true,
-        isDefault: this.defaultRuntime === "modal",
-        active: true,
-        capabilities: {
-          osEnforced: true,
-          network: "allowlist",
-          snapshots: true,
-          ports: true,
-          browser: true,
-          persistentShell: true,
-        },
       },
-    ];
+    };
+
+    const out: RuntimeInfo[] = [];
+    for (const id of ["local", "srt-local", "docker", "modal"]) {
+      const provider = this.providers.get(id);
+      const meta = descriptions[id] ?? { description: id, remote: false };
+      if (!provider) {
+        out.push({
+          id,
+          description: meta.description,
+          remote: meta.remote,
+          isDefault: this.defaultRuntime === id,
+          active: false,
+          detail: "provider not registered",
+          capabilities: {
+            osEnforced: false,
+            network: "none",
+            snapshots: false,
+            ports: false,
+            browser: false,
+            persistentShell: false,
+          },
+        });
+        continue;
+      }
+      const health = await provider.health();
+      out.push({
+        id,
+        description: meta.description,
+        remote: meta.remote,
+        isDefault: this.defaultRuntime === id,
+        active: health.ok,
+        detail: health.detail,
+        capabilities: {
+          ...provider.capabilities,
+          osEnforced: health.osEnforced,
+        },
+      });
+    }
+    return out;
   }
 
   async streamEvents(
@@ -704,35 +821,67 @@ export class OpenHarnessServer {
       return { status: 200, body: { runs } };
     }
 
+    // --- Sandboxes routes backed by SandboxRecordStore (Step 8 R4) ---
     if (method === "GET" && pathname === "/v1/sandboxes") {
-      return {
-        status: 200,
-        body: {
-          sandboxes: [
-            { id: "sb_default", provider: this.defaultRuntime, status: "running" },
-          ],
-        },
-      };
+      const all = await this.sandboxRecords.list();
+      const sandboxes = all
+        .filter((r) => r.tenantId === tenantId || identity.admin)
+        .map(({ sessionKeyEnc: _omit, ...rest }) => ({
+          id: rest.handleId,
+          provider: rest.providerId,
+          ...rest,
+        }));
+      return { status: 200, body: { sandboxes } };
     }
+
     const sbShellMatch = pathname.match(/^\/v1\/sandboxes\/([^/]+)\/shell$/);
     if (method === "POST" && sbShellMatch) {
       const hasAdminCfg = Boolean(this.config.adminToken ?? process.env.OPENHARNESS_ADMIN_TOKEN);
       if (hasAdminCfg && !identity.admin) {
         return { status: 403, body: { error: "Forbidden: admin privileges required" } };
       }
+      const sandboxId = sbShellMatch[1]!;
+      const daemon = getActiveSandboxDaemon(sandboxId);
+      const command = String(body?.command ?? "pwd");
+      if (daemon) {
+        const res = await daemon.handleRequest(
+          "POST",
+          "/exec",
+          { "x-session-key": daemon.config.sessionKey },
+          { command: ["bash", "-lc", command], timeoutSec: 60 }
+        );
+        return {
+          status: res.status === 200 ? 200 : res.status,
+          body: {
+            sandboxId,
+            command,
+            output: String(res.body.stdout ?? res.body.output ?? ""),
+            exitCode: typeof res.body.exitCode === "number" ? res.body.exitCode : 0,
+          },
+        };
+      }
       return {
         status: 200,
         body: {
-          sandboxId: sbShellMatch[1],
-          command: body?.command ?? "pwd",
+          sandboxId,
+          command,
           output: this.deps.workspaceRoot,
           exitCode: 0,
         },
       };
     }
+
     const sbDelMatch = pathname.match(/^\/v1\/sandboxes\/([^/]+)$/);
     if (method === "DELETE" && sbDelMatch) {
-      return { status: 200, body: { destroyed: sbDelMatch[1] } };
+      const sandboxId = sbDelMatch[1]!;
+      const handle = this.activeSandboxes.get(sandboxId);
+      if (handle) {
+        const provider = this.providers.get(handle.providerId);
+        await provider?.destroy(handle);
+        this.activeSandboxes.delete(sandboxId);
+      }
+      await this.sandboxRecords.update(sandboxId, { status: "terminated" }).catch(() => {});
+      return { status: 200, body: { destroyed: sandboxId } };
     }
 
     if (method === "PUT" && pathname === "/v1/admin/settings") {
@@ -805,33 +954,44 @@ export class OpenHarnessServer {
     if (method === "POST" && rewindMatch) {
       const sessionId = rewindMatch[1]!;
       const payload = body ?? {};
-      const res = await this.checkpointManager.rewindSession({
-        tenantId,
-        sessionId,
-        checkpoint: String(payload.checkpoint ?? ""),
-        files: payload.files !== undefined ? Boolean(payload.files) : true,
-        conversation:
-          payload.conversation !== undefined ? Boolean(payload.conversation) : false,
-        atMessageId:
-          typeof payload.atMessageId === "string" ? payload.atMessageId : undefined,
-      });
-      return { status: 200, body: res };
+      try {
+        const res = await this.checkpointManager.rewindSession({
+          tenantId,
+          sessionId,
+          checkpoint: String(payload.checkpoint ?? ""),
+          files: payload.files !== undefined ? Boolean(payload.files) : true,
+          filesExplicit: payload.files !== undefined,
+          conversation:
+            payload.conversation !== undefined ? Boolean(payload.conversation) : false,
+          atMessageId:
+            typeof payload.atMessageId === "string" ? payload.atMessageId : undefined,
+        });
+        return { status: 200, body: res };
+      } catch (err) {
+        const status = typeof (err as any)?.status === "number" ? (err as any).status : 400;
+        return { status, body: { error: (err as Error).message } };
+      }
     }
 
     const forkMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/fork$/);
     if (method === "POST" && forkMatch) {
       const sessionId = forkMatch[1]!;
       const payload = body ?? {};
-      const res = await this.checkpointManager.forkSession({
-        tenantId,
-        sessionId,
-        atMessageId:
-          typeof payload.atMessageId === "string" ? payload.atMessageId : undefined,
-        checkpoint:
-          typeof payload.checkpoint === "string" ? payload.checkpoint : undefined,
-        newTitle: typeof payload.title === "string" ? payload.title : undefined,
-      });
-      return { status: 201, body: res };
+      try {
+        const res = await this.checkpointManager.forkSession({
+          tenantId,
+          sessionId,
+          atMessageId:
+            typeof payload.atMessageId === "string" ? payload.atMessageId : undefined,
+          checkpoint:
+            typeof payload.checkpoint === "string" ? payload.checkpoint : undefined,
+          newTitle: typeof payload.title === "string" ? payload.title : undefined,
+        });
+        return { status: 201, body: res };
+      } catch (err) {
+        const status = typeof (err as any)?.status === "number" ? (err as any).status : 400;
+        return { status, body: { error: (err as Error).message } };
+      }
     }
 
     if (method === "GET" && pathname === "/v1/schedules") {

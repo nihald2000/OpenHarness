@@ -88,6 +88,7 @@ export class DurableWorker {
       state = structuredClone(savedCheckpoint.state);
       state.jobId = job.id;
     } else {
+      const session = await this.deps.stateStore.getSession(job.tenantId, job.sessionId);
       state = createInitialRunState({
         runId: job.runId,
         jobId: job.id,
@@ -95,6 +96,7 @@ export class DurableWorker {
         tenantId: job.tenantId,
         agent: job.agent,
         model: job.model,
+        runtime: session?.runtime ?? "local",
         mode: job.mode,
         now: this.deps.clock.now(),
       });
@@ -146,8 +148,44 @@ export class DurableWorker {
       const message = err instanceof Error ? err.message : String(err);
       state.phase = "failed";
       state.error = message;
+      state.updatedAt = this.deps.clock.now();
+      state.completedAt = state.updatedAt;
       await persistStepCheckpoint(this.deps, state);
       await this.queue.fail(job.id, this.workerId, job.fenceToken, message);
+
+      const failedRunRecord: RunRecord = {
+        id: state.runId,
+        sessionId: state.sessionId,
+        tenantId: state.tenantId,
+        mode: state.mode,
+        status: "failed",
+        phase: "failed",
+        iteration: state.iteration,
+        maxIterations: state.budgets.maxIterations,
+        startedAt: state.startedAt,
+        updatedAt: state.updatedAt,
+        completedAt: state.completedAt,
+        error: message,
+        sandboxHandleId: state.sandboxHandleId ?? undefined,
+        usage: state.usage,
+        cost: state.cost,
+      };
+      await this.deps.stateStore.saveRun(state.tenantId, failedRunRecord);
+      const sess = await this.deps.stateStore.getSession(state.tenantId, state.sessionId);
+      if (sess) {
+        sess.status = "failed";
+        sess.phase = "failed";
+        sess.error = message;
+        sess.updatedAt = state.updatedAt;
+        await this.deps.stateStore.saveSession(state.tenantId, sess);
+      }
+      const env = await this.deps.stateStore.appendEvent(state.tenantId, state.sessionId, {
+        type: "run.status",
+        sessionId: state.sessionId,
+        status: "failed",
+        error: message,
+      });
+      this.deps.eventBus.publish(env);
     }
 
     const updatedJob = (await this.queue.getJob(job.id)) ?? job;

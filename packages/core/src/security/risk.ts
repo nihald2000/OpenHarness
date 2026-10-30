@@ -236,6 +236,7 @@ export function wrapUntrustedContent(content: string, provenance: string): strin
 
 export interface RiskPolicyGateOptions {
   osEnforcedSandbox: boolean;
+  isOsEnforced?: (state: RunState) => boolean;
   defaultConfirmationPolicy?: ConfirmationPolicy;
   initialPreTaintAllowedDomains?: string[];
 }
@@ -255,13 +256,16 @@ export class RiskPolicyGate implements PolicyGate {
   }
 
   resolveConfirmationPolicy(state: RunState): ConfirmationPolicy {
+    const osEnforced = this.opts.isOsEnforced
+      ? this.opts.isOsEnforced(state)
+      : this.opts.osEnforcedSandbox;
     const requested =
       state.confirmationPolicy ??
       this.opts.defaultConfirmationPolicy ??
-      (this.opts.osEnforcedSandbox && state.mode !== "chat" ? "risky" : "always");
+      (osEnforced && state.mode !== "chat" ? "risky" : "always");
 
     // Fail closed: `never` is allowed ONLY inside an OS-enforced sandbox (§0 rule 10, §9 G.3)
-    if (requested === "never" && !this.opts.osEnforcedSandbox) {
+    if (requested === "never" && !osEnforced) {
       return "risky";
     }
     return requested;

@@ -74,6 +74,7 @@ export interface RunState {
   tenantId: string;
   agent: string;
   model: string;
+  runtime?: string;
   mode: RunMode;
   phase: RunPhase;
   iteration: number;
@@ -273,6 +274,7 @@ export interface EngineDeps {
   policyGate: PolicyGate;
   contextManager: ContextManager;
   workspaceRoot: string;
+  ensureSandbox?: (state: RunState) => Promise<{ id: string }>;
   onCreateCheckpoint?: (state: RunState, message: string, automatic: boolean) => Promise<CheckpointInfo | null>;
   onRunVerification?: (state: RunState) => Promise<{
     passed: boolean;

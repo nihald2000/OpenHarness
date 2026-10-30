@@ -1,4 +1,5 @@
 import type { CompiledSandboxPolicy } from "./policy.ts";
+import type { DaemonTransport } from "./transport.ts";
 
 export type SandboxProviderId = "local" | "srt-local" | "docker" | "modal";
 
@@ -12,11 +13,14 @@ export interface SandboxCapabilities {
 }
 
 export interface WorkspaceSource {
-  type: "bind" | "git" | "snapshot";
+  type?: "bind" | "git" | "snapshot";
+  kind?: "local" | "git" | "snapshot";
   hostPath?: string;
+  path?: string;
   gitUrl?: string;
   gitRef?: string;
   snapshotId?: string;
+  imageId?: string;
 }
 
 export interface SandboxResourceLimits {
@@ -31,6 +35,7 @@ export interface SandboxSpec {
   runId: string;
   sessionId: string;
   tenantId?: string;
+  providerId?: SandboxProviderId;
   toolchain?: "node-python" | "full" | "minimal" | string;
   workspace: WorkspaceSource;
   limits?: SandboxResourceLimits;
@@ -54,6 +59,8 @@ export interface SandboxHandle {
   status: "running" | "paused" | "snapshotted" | "destroyed";
   ports: Record<number, string>;
   policy: CompiledSandboxPolicy;
+  snapshotId?: string;
+  transport?: DaemonTransport;
 }
 
 export interface SnapshotRef {

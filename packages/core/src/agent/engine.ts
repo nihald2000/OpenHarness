@@ -68,6 +68,7 @@ export function createInitialRunState(params: {
   tenantId?: string;
   agent?: string;
   model?: string;
+  runtime?: string;
   mode?: RunMode;
   phase?: RunPhase;
   budgets?: Partial<BudgetState>;
@@ -88,6 +89,7 @@ export function createInitialRunState(params: {
     tenantId: params.tenantId ?? "default",
     agent: params.agent ?? "assistant",
     model: params.model ?? "mock/demo",
+    runtime: params.runtime,
     mode,
     phase: initialPhase,
     iteration: 0,
@@ -308,6 +310,16 @@ export async function runStep(
 
   if (isTerminalPhase(state.phase) || state.phase === "paused" || state.phase === "stuck") {
     return { state, events };
+  }
+
+  // Ensure sandbox is provisioned when mode !== "chat" or runtime !== "local" (Step 8 R4, R5)
+  if (
+    !state.sandboxHandleId &&
+    deps.ensureSandbox &&
+    (state.mode !== "chat" || (state.runtime && state.runtime !== "local"))
+  ) {
+    const h = await deps.ensureSandbox(state);
+    state.sandboxHandleId = h.id;
   }
 
   // 1. Handle pending approval state

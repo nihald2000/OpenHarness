@@ -56,6 +56,7 @@ export interface CheckpointInfo {
   step?: number;
   automatic?: boolean;
   paths?: string[];
+  files?: string[];
 }
 
 export interface FeatureItem {
@@ -115,11 +116,11 @@ export interface RunRecord {
   featureId?: string;
   lastCheckpoint?: string;
   sandboxHandleId?: string;
-  usage?: TokenUsage;
-  cost?: number;
+  usage: TokenUsage;
+  cost: number;
 }
 
-export interface ScheduleInfo {
+export interface ScheduleRecord {
   id: string;
   name: string;
   cron?: string;
@@ -133,15 +134,13 @@ export interface ScheduleInfo {
   concurrency: number;
   lastRunAt?: number;
   nextRunAt?: number;
-  history?: Array<{ runId: string; sessionId: string; startedAt: number; status: string }>;
+  activeRunId?: string;
 }
 
 export interface TextPart {
   type: "text";
   text: string;
   synthetic?: boolean;
-  untrusted?: boolean;
-  provenance?: string;
 }
 
 export interface ReasoningPart {
@@ -149,50 +148,56 @@ export interface ReasoningPart {
   text: string;
 }
 
+export type ToolCallState =
+  | "pending"
+  | "running"
+  | "completed"
+  | "error"
+  | "denied"
+  | "interrupted";
+
 export interface ToolPart {
   type: "tool";
   tool: string;
   callId: string;
-  state: "pending" | "running" | "completed" | "error" | "denied" | "interrupted";
-  input: unknown;
+  state: ToolCallState;
+  input?: unknown;
   output?: unknown;
   error?: string;
-  title?: string;
   risk?: RiskLevel;
-  metadata?: Record<string, unknown>;
-  startedAt?: number;
-  endedAt?: number;
+  metadata?: {
+    childSessionId?: string;
+    truncated?: boolean;
+    spillPath?: string;
+    diagnostics?: string[];
+    [key: string]: unknown;
+  };
+  startedAt?: number | string;
+  endedAt?: number | string;
 }
 
 export interface SkillPart {
   type: "skill";
   name: string;
-  reason?: "trigger" | "agent" | string;
+  description?: string;
 }
 
 export interface CompactionPart {
   type: "compaction";
-  summary: string;
-  reason: "tokens" | "messages" | "manual" | "overflow" | string;
-  compactedMessages: number;
-  tokensBefore?: number;
-  tokensAfter?: number;
-  keptMessages?: number;
-  requirements?: string[];
-  decisions?: string[];
-  openQuestions?: string[];
+  strategy?: "microcompact" | "observation_masking" | "summarize" | "hard_reset";
+  tokensSaved?: number;
+  summary?: string;
 }
 
 export interface VerifyPart {
   type: "verify";
-  name: string;
-  command: string;
-  passed: boolean;
-  exitCode: number;
-  durationMs?: number;
-  output?: string;
-  iteration: number;
-  maxIterations: number;
+  command?: string;
+  passed?: boolean;
+  exitCode?: number | null;
+  timedOut?: boolean;
+  stdout?: string;
+  stderr?: string;
+  truncated?: boolean;
 }
 
 export interface StepPart {
@@ -202,11 +207,11 @@ export interface StepPart {
 }
 
 export interface DelegatedTaskPart {
-  type: "task";
-  taskId: string;
-  agent: string;
-  prompt: string;
-  status: "pending" | "running" | "completed" | "failed";
+  type: "delegated_task";
+  childSessionId: string;
+  role: "explorer" | "coder" | "verifier" | "reviewer" | string;
+  task: string;
+  status: "running" | "completed" | "failed" | "conflict";
   background?: boolean;
   worktreeBranch?: string;
   summary?: string;
@@ -379,6 +384,7 @@ export interface RuntimeInfo {
   remote?: boolean;
   isDefault?: boolean;
   active?: boolean;
+  detail?: string;
   plugin?: string;
   capabilities?: {
     osEnforced: boolean;
@@ -439,6 +445,7 @@ export type OpenHarnessEvent =
   | { type: "budget.warning"; sessionId: string; runId?: string; resource: "iterations" | "duration" | "tokens" | "cost"; used: number; limit: number; ratio: number }
   | { type: "checkpoint.created"; sessionId: string; runId?: string; checkpoint: CheckpointInfo }
   | { type: "context.hard_reset"; sessionId: string; runId?: string; attempts: number; tokensBefore: number; tokensAfter: number }
+  | { type: "sandbox.status"; sessionId: string; runId?: string; sandboxId: string; provider: string; status: string }
   | { type: "sandbox.violation"; sessionId: string; runId?: string; kind: "fs_read" | "fs_write" | "network" | "mandatory_deny"; target: string; detail?: string; timestamp: number }
   | { type: "sandbox.policy_switched"; sessionId: string; runId?: string; fromPhase: "setup"; toPhase: "agent"; policy: Record<string, unknown> }
   | { type: "process.output"; sessionId: string; processId: string; stream: "stdout" | "stderr"; data: string }
@@ -458,6 +465,117 @@ export class OpenHarnessError extends Error {
     this.name = "OpenHarnessError";
     this.status = status;
   }
+}
+
+export interface CreateSessionInput {
+  title?: string;
+  agent?: string;
+  model?: string;
+  runtime?: string | null;
+  mode?: RunMode;
+  sandboxPolicy?: Record<string, unknown>;
+}
+
+export interface UpdateSessionInput {
+  title?: string;
+  agent?: string;
+  model?: string;
+  runtime?: string | null;
+  mode?: RunMode;
+}
+
+export interface PromptInput {
+  text: string;
+  agent?: string;
+  mode?: RunMode;
+  async?: boolean;
+}
+
+export interface PromptResponse {
+  message?: Message;
+  messageId?: string;
+  runId?: string;
+}
+
+export interface RewindInput {
+  checkpoint: string;
+  files?: boolean;
+  conversation?: boolean;
+  atMessageId?: string;
+}
+
+export interface ForkInput {
+  atMessageId?: string;
+  checkpoint?: string;
+  title?: string;
+}
+
+export interface OpenHarnessClient {
+  info(): Promise<ServerInfo>;
+  listAgents(): Promise<AgentInfo[]>;
+  listModels(): Promise<ModelInfo[]>;
+  listCommands(): Promise<CommandInfo[]>;
+  listSkills(): Promise<SkillInfo[]>;
+  listMcp(): Promise<McpServerInfo[]>;
+  listTools(): Promise<ToolInfo[]>;
+  listPlugins(): Promise<PluginInfo[]>;
+  listRuntimes(): Promise<RuntimeInfo[]>;
+  reloadRuntime(): Promise<void>;
+
+  listSessions(): Promise<Session[]>;
+  createSession(input?: CreateSessionInput): Promise<Session>;
+  getSession(id: string): Promise<Session>;
+  updateSession(id: string, input: UpdateSessionInput): Promise<Session>;
+  deleteSession(id: string): Promise<void>;
+  getMessages(sessionId: string): Promise<{ messages: Message[]; lastSeq?: number }>;
+  prompt(sessionId: string, input: PromptInput): Promise<PromptResponse>;
+  abort(sessionId: string): Promise<void>;
+  contextUsage(sessionId: string): Promise<ContextUsage>;
+  summarize(sessionId: string): Promise<void>;
+  executeCommand(
+    sessionId: string,
+    input: { command: string; arguments?: string }
+  ): Promise<{ message: Message }>;
+
+  listRuns?(): Promise<RunRecord[]>;
+  pauseRun?(runId: string): Promise<void>;
+  resumeRun?(runId: string, opts?: { extend?: boolean }): Promise<void>;
+  cancelRun?(runId: string): Promise<void>;
+  listCheckpoints?(sessionId: string): Promise<CheckpointInfo[]>;
+  rewindSession?(sessionId: string, input: RewindInput): Promise<Session>;
+  forkSession?(sessionId: string, input: ForkInput): Promise<Session>;
+  listSchedules?(): Promise<ScheduleRecord[]>;
+  createSchedule?(input: Partial<ScheduleRecord>): Promise<ScheduleRecord>;
+  triggerSchedule?(id: string): Promise<void>;
+
+  listPermissions(sessionId?: string): Promise<PermissionRequest[]>;
+  replyPermission(id: string, reply: PermissionReply): Promise<void>;
+
+  adminListMcp(): Promise<McpServerAdminInfo[]>;
+  adminListMcpPresets(): Promise<McpPreset[]>;
+  adminInstallMcpPreset(
+    id: string,
+    input?: { secrets?: Record<string, string>; enabled?: boolean }
+  ): Promise<void>;
+  adminSaveMcp(name: string, config: Partial<McpServerAdminInfo>): Promise<void>;
+  adminDeleteMcp(name: string): Promise<void>;
+  adminReconnectMcp(name: string): Promise<void>;
+
+  adminGetSettings(): Promise<SettingsPreviewResponse>;
+  adminSaveSettings(config: Record<string, unknown>): Promise<SettingsPreviewResponse>;
+
+  adminListSecrets(): Promise<SecretItem[]>;
+  adminSetSecret(name: string, value: string): Promise<void>;
+  adminDeleteSecret(name: string): Promise<void>;
+
+  subscribe(
+    onEvent: (event: OpenHarnessEvent) => void,
+    options?: {
+      sessionId?: string;
+      onStatus?: (status: ConnectionStatus) => void;
+      onError?: (error: Error) => void;
+    }
+  ): () => void;
 }
 
 export function applyEvent(
@@ -500,7 +618,8 @@ export function latestPlan(messages: Message[]): {
   plan: PlanData | null;
   stale: boolean;
 } {
-  let latest: PlanData | null = null;
+  let latest: PlanData | null;
+  latest = null;
   let lastPlanMsgIdx = -1;
 
   messages.forEach((m, mIdx) => {

@@ -1,5 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { CompiledSandboxPolicy } from "./policy.ts";
 import type { SandboxProviderId } from "./contracts.ts";
+import { atomicWriteFileSync } from "../util/atomic-write.ts";
 
 export type SandboxRecord = {
   handleId: string;
@@ -7,9 +10,9 @@ export type SandboxRecord = {
   tenantId: string;
   sessionId: string;
   runId: string;
-  status: "setup" | "starting" | "running" | "snapshotted" | "terminated";
+  status: "setup" | "starting" | "running" | "paused" | "snapshotted" | "terminated";
   modalSandboxId?: string;
-  imageId: string;
+  imageId?: string;
   lastSnapshotImageId?: string;
   sessionKeyEnc: string;
   cpu: number;
@@ -32,8 +35,8 @@ export interface SandboxRecordStore {
 }
 
 export class InMemorySandboxRecordStore implements SandboxRecordStore {
-  private records = new Map<string, SandboxRecord>();
-  private envImages = new Map<string, { imageId: string; expiresAt: number }>();
+  protected records = new Map<string, SandboxRecord>();
+  protected envImages = new Map<string, { imageId: string; expiresAt: number }>();
 
   async save(r: SandboxRecord): Promise<void> {
     this.records.set(r.handleId, structuredClone(r));
@@ -84,5 +87,64 @@ export class InMemorySandboxRecordStore implements SandboxRecordStore {
   ): Promise<{ imageId: string; expiresAt: number } | null> {
     const hit = this.envImages.get(key);
     return hit ? { ...hit } : null;
+  }
+}
+
+export class FileSandboxRecordStore extends InMemorySandboxRecordStore {
+  private readonly filePath: string;
+
+  constructor(dataDir: string) {
+    super();
+    fs.mkdirSync(dataDir, { recursive: true });
+    this.filePath = path.join(dataDir, "sandboxes.json");
+    this.loadFromDisk();
+  }
+
+  private loadFromDisk(): void {
+    if (!fs.existsSync(this.filePath)) return;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as {
+        records?: SandboxRecord[];
+        envImages?: Record<string, { imageId: string; expiresAt: number }>;
+      };
+      for (const r of parsed.records ?? []) {
+        this.records.set(r.handleId, r);
+      }
+      for (const [k, v] of Object.entries(parsed.envImages ?? {})) {
+        this.envImages.set(k, v);
+      }
+    } catch {
+      // ignore corrupted cache on boot
+    }
+  }
+
+  private flushToDisk(): void {
+    const payload = {
+      records: Array.from(this.records.values()),
+      envImages: Object.fromEntries(this.envImages.entries()),
+    };
+    atomicWriteFileSync(this.filePath, JSON.stringify(payload, null, 2));
+  }
+
+  override async save(r: SandboxRecord): Promise<void> {
+    await super.save(r);
+    this.flushToDisk();
+  }
+
+  override async update(
+    handleId: string,
+    patch: Partial<SandboxRecord>
+  ): Promise<SandboxRecord> {
+    const updated = await super.update(handleId, patch);
+    this.flushToDisk();
+    return updated;
+  }
+
+  override async putEnvImage(
+    key: string,
+    v: { imageId: string; expiresAt: number }
+  ): Promise<void> {
+    await super.putEnvImage(key, v);
+    this.flushToDisk();
   }
 }

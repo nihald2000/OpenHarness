@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import type { SandboxTelemetryEvent } from "../../../sandboxd/src/server.ts";
 import { SandboxDaemon } from "../../../sandboxd/src/server.ts";
 import type {
@@ -14,12 +15,43 @@ import type {
   SnapshotRef,
 } from "./contracts.ts";
 import { compileSandboxPolicy } from "./policy.ts";
+import type { DaemonTransport } from "./transport.ts";
 
-const activeDaemons = new Map<string, SandboxDaemon>();
+export interface SandboxDaemonLike {
+  config: { sessionKey: string };
+  handleRequest(
+    method: string,
+    urlPath: string,
+    headers: Record<string, string | undefined>,
+    body?: Record<string, unknown>
+  ): Promise<{ status: number; body: Record<string, unknown> }>;
+  close(): Promise<void>;
+}
+
+const activeDaemons = new Map<string, SandboxDaemonLike>();
 const snapshotStore = new Map<string, { workspaceBackupDir: string; sha?: string; createdAt: number }>();
 
-export function getActiveSandboxDaemon(handleId: string): SandboxDaemon | undefined {
+export function getActiveSandboxDaemon(handleId: string): SandboxDaemonLike | undefined {
   return activeDaemons.get(handleId);
+}
+
+export function registerSandboxTransport(
+  handleId: string,
+  transport: DaemonTransport,
+  sessionKey = ""
+): void {
+  activeDaemons.set(handleId, {
+    config: { sessionKey },
+    handleRequest: async (method, urlPath, _headers, body) => {
+      const m = (method.toUpperCase() === "GET" ? "GET" : "POST") as "GET" | "POST";
+      return transport.request(m, urlPath, body);
+    },
+    close: async () => {},
+  });
+}
+
+export function unregisterSandboxTransport(handleId: string): void {
+  activeDaemons.delete(handleId);
 }
 
 /**
@@ -212,6 +244,7 @@ export class ManagedDaemonSandboxProvider implements SandboxProvider {
     policy: Record<string, unknown>;
   }) => void;
   private secretValuesToRedact: string[];
+  private checkHostBinary: boolean;
 
   constructor(
     id: SandboxProviderId,
@@ -225,15 +258,23 @@ export class ManagedDaemonSandboxProvider implements SandboxProvider {
         policy: Record<string, unknown>;
       }) => void;
       secretValuesToRedact?: string[];
+      checkHostBinary?: boolean;
     }
   ) {
     this.id = id;
     this.onTelemetry = opts?.onTelemetry;
     this.onPolicySwitched = opts?.onPolicySwitched;
     this.secretValuesToRedact = opts?.secretValuesToRedact ?? [];
+    this.checkHostBinary = Boolean(opts?.checkHostBinary);
   }
 
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
+    if (this.checkHostBinary) {
+      const h = await this.health();
+      if (!h.ok) {
+        throw new Error(`sandbox runtime ${this.id} unavailable: ${h.detail ?? h.status}`);
+      }
+    }
     const dirs = createSandboxRootDirs(spec);
     const sessionKey = crypto.randomBytes(24).toString("hex");
     const handleId = `${this.id}_${spec.runId}_${Math.random().toString(36).slice(2, 7)}`;
@@ -301,6 +342,10 @@ export class ManagedDaemonSandboxProvider implements SandboxProvider {
     activeDaemons.set(handleId, daemon);
 
     const agentPort = 30000 + Math.floor(Math.random() * 9999);
+    const transport: DaemonTransport = {
+      request: async (method, route, body) =>
+        daemon.handleRequest(method, route, { "x-session-key": sessionKey }, body),
+    };
     return {
       id: handleId,
       providerId: this.id,
@@ -315,6 +360,7 @@ export class ManagedDaemonSandboxProvider implements SandboxProvider {
       status: "running",
       ports: {},
       policy: daemon.config.policy,
+      transport,
     };
   }
 
@@ -387,6 +433,35 @@ export class ManagedDaemonSandboxProvider implements SandboxProvider {
         detail: "Windows srt backend not provisioned",
         checkedAt: Date.now(),
       };
+    }
+    if (this.checkHostBinary && !h) {
+      if (this.id === "srt-local") {
+        const probe = spawnSync(process.platform === "win32" ? "where" : "which", ["srt"], {
+          stdio: "ignore",
+        });
+        if (probe.status !== 0) {
+          return {
+            ok: false,
+            providerId: this.id,
+            status: "unavailable",
+            osEnforced: false,
+            detail: "srt binary not found on PATH",
+            checkedAt: Date.now(),
+          };
+        }
+      } else if (this.id === "docker") {
+        const probe = spawnSync("docker", ["info"], { stdio: "ignore", timeout: 2500 });
+        if (probe.status !== 0) {
+          return {
+            ok: false,
+            providerId: this.id,
+            status: "unavailable",
+            osEnforced: false,
+            detail: "docker daemon not available",
+            checkedAt: Date.now(),
+          };
+        }
+      }
     }
     if (h) {
       const daemon = activeDaemons.get(h.id);

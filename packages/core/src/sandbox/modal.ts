@@ -13,6 +13,7 @@ import { SETUP_DOMAINS, toModalNetwork } from "./modal-policy.ts";
 import { HttpDaemonTransport, type SandboxTransport } from "./transport.ts";
 import type { SandboxRecord, SandboxRecordStore } from "./records.ts";
 import { materializeWorkspace, packLocal, sha256 } from "./workspace-io.ts";
+import { registerSandboxTransport, unregisterSandboxTransport } from "./providers.ts";
 
 const DAEMON_PORT = 8080;
 const DAY = 86_400_000;
@@ -264,6 +265,7 @@ export class ModalSandboxProvider implements SandboxProvider {
     delete tunnels[DAEMON_PORT];
     await this.records.update(handleId, { status: "running", ports: tunnels });
     this.live.set(handleId, { ref, transport });
+    registerSandboxTransport(handleId, transport, sessionKey);
 
     return {
       id: handleId,
@@ -279,6 +281,7 @@ export class ModalSandboxProvider implements SandboxProvider {
       status: "running",
       ports: tunnels,
       policy,
+      transport,
     };
   }
 
@@ -307,6 +310,7 @@ export class ModalSandboxProvider implements SandboxProvider {
     if (cached) {
       if ((await cached.ref.poll()) !== null) {
         this.live.delete(handleId);
+        unregisterSandboxTransport(handleId);
         await this.records.update(handleId, { status: "terminated" });
         throw new SandboxGoneError(handleId);
       }
@@ -321,11 +325,11 @@ export class ModalSandboxProvider implements SandboxProvider {
       await this.records.update(handleId, { status: "terminated" });
       throw new SandboxGoneError(handleId);
     }
-    const entry = {
-      ref,
-      transport: this.transportFor(ref, this.cfg.decrypt(rec.sessionKeyEnc), rec),
-    };
+    const decryptedKey = this.cfg.decrypt(rec.sessionKeyEnc);
+    const transport = this.transportFor(ref, decryptedKey, rec);
+    const entry = { ref, transport };
     this.live.set(handleId, entry);
+    registerSandboxTransport(handleId, transport, decryptedKey);
     return entry;
   }
 
@@ -337,29 +341,32 @@ export class ModalSandboxProvider implements SandboxProvider {
     const imageId = await ref.snapshotFilesystem(this.cfg.snapshotTtlMs);
     await ref.terminate();
     this.live.delete(h.id);
+    unregisterSandboxTransport(h.id);
     await this.records.update(h.id, {
       status: "snapshotted",
       lastSnapshotImageId: imageId,
     });
     h.status = "paused";
+    h.snapshotId = imageId;
   }
 
   /** Resume keeps the same handle id so RunState and checkpoints stay valid. */
   async resume(h: SandboxHandle): Promise<void> {
     const rec = await this.records.get(h.id);
-    if (!rec?.lastSnapshotImageId) {
+    const snapshotImageId = rec?.lastSnapshotImageId ?? h.snapshotId;
+    if (!snapshotImageId) {
       throw new Error(`no snapshot to resume ${h.id}`);
     }
     const next = await this.boot(
       {
-        runId: rec.runId,
-        sessionId: rec.sessionId,
+        runId: rec?.runId ?? h.runId,
+        sessionId: rec?.sessionId ?? h.sessionId,
         providerId: "modal",
-        workspace: { kind: "snapshot", imageId: rec.lastSnapshotImageId } as any,
-        policy: rec.policy,
-        limits: { cpuCores: rec.cpu, memoryMb: rec.memoryMiB },
+        workspace: { kind: "snapshot", imageId: snapshotImageId } as any,
+        policy: rec?.policy ?? h.policy,
+        limits: { cpuCores: rec?.cpu, memoryMb: rec?.memoryMiB },
       },
-      rec.lastSnapshotImageId,
+      snapshotImageId,
       h.id
     );
     Object.assign(h, next);
@@ -372,6 +379,7 @@ export class ModalSandboxProvider implements SandboxProvider {
     });
     const imageId = await ref.snapshotFilesystem(this.cfg.snapshotTtlMs);
     await this.records.update(h.id, { lastSnapshotImageId: imageId });
+    h.snapshotId = imageId;
     return {
       id: `${h.id}:${imageId}`,
       providerId: "modal",
@@ -395,6 +403,7 @@ export class ModalSandboxProvider implements SandboxProvider {
       await attached.ref.terminate().catch(() => {});
     }
     this.live.delete(h.id);
+    unregisterSandboxTransport(h.id);
     await this.records.update(h.id, { status: "terminated" }).catch(() => {});
     h.status = "destroyed";
   }
