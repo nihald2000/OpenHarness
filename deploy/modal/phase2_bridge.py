@@ -106,13 +106,19 @@ def _run(sb, name, command, results, timeout=300):
     started = time.monotonic()
     proc = sb.exec("bash", "-lc", command, workdir="/mnt/data", env=SANDBOX_ENV, timeout=timeout)
     proc.wait()
-    results[name] = {
+    entry = {
         "exit": proc.returncode,
         "duration_ms": round((time.monotonic() - started) * 1000),
         "stdout": proc.stdout.read()[-14000:],
         "stderr": proc.stderr.read()[-6000:],
     }
-    return results[name]
+    results[name] = entry
+    # Echo progress so an aborted run still leaves useful logs.
+    print(f"\n--- {name} exit={entry['exit']} {entry['duration_ms']}ms ---")
+    print(entry["stdout"])
+    if entry["stderr"].strip():
+        print("STDERR:", entry["stderr"][-2000:])
+    return entry
 
 
 def _json_stdout(entry: dict):
@@ -171,16 +177,12 @@ def main():
         sb.terminate()
 
     if snapshot is not None:
-        sb2 = _create(
-            image=modal.Image.from_id(snapshot.object_id),
-            cpu=1.0,
-            memory=2048,
-            timeout=600,
-            idle_timeout=300,
-        )
+        # Directory snapshots are not bootable images: mount one into a normal
+        # sandbox at the original path. Using image=Image.from_id(dir_snapshot)
+        # produces a sandbox that shuts down immediately.
+        sb2 = _create(cpu=1.0, memory=2048, timeout=600, idle_timeout=300)
         try:
-            # The directory snapshot only contains /mnt/mcp_servers/skills, so
-            # the check runs inline instead of from /mnt/data/checks.
+            sb2.mount_image("/mnt/mcp_servers/skills", snapshot)
             restore = (
                 "import json, pathlib;"
                 "p = pathlib.Path('/mnt/mcp_servers/skills/greet.py');"
@@ -189,6 +191,9 @@ def main():
                 " 'files': sorted(x.name for x in p.parent.glob('*.py'))}))"
             )
             _run(sb2, "skills_restore", f"python -c {json.dumps(restore)}", results, timeout=120)
+        except Exception as exc:  # noqa: BLE001 - recorded, not fatal
+            results["skills_restore_error"] = f"{type(exc).__name__}: {exc}"
+            print(f"\n--- skills_restore FAILED: {type(exc).__name__}: {exc}")
         finally:
             sb2.terminate()
 
