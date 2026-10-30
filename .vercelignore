@@ -1,0 +1,7 @@
+.git/
+.vercel/
+node_modules/
+dist/
+.openharness/
+.bun-tmp/
+.env*
