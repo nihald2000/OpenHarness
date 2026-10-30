@@ -2,7 +2,7 @@ import React from "react";
 import { Loader2 } from "lucide-react";
 import type { ConnectionStatus, RunStatus } from "@/types/sdk";
 
-export function Spinner({ className = "size-3.5" }: { className?: string }) {
+export function Spinner({ className = "size-4" }: { className?: string }) {
   return <Loader2 className={`${className} animate-spin`} aria-hidden="true" />;
 }
 
@@ -10,10 +10,10 @@ export type BadgeTone = "neutral" | "accent" | "success" | "warning" | "danger";
 
 const TONE_CLASSES: Record<BadgeTone, string> = {
   neutral: "border-border bg-subtle text-muted",
-  accent: "border-accent/40 bg-accent/10 text-accent",
-  success: "border-success/40 bg-success/10 text-success",
-  warning: "border-warning/40 bg-warning/10 text-warning",
-  danger: "border-danger/40 bg-danger/10 text-danger",
+  accent: "border-accent/25 bg-accent/10 text-accent",
+  success: "border-success/25 bg-success/10 text-success",
+  warning: "border-warning/25 bg-warning/10 text-warning",
+  danger: "border-danger/25 bg-danger/10 text-danger",
 };
 
 export function Badge({
@@ -31,8 +31,8 @@ export function Badge({
 }) {
   const sizeCls =
     size === "md"
-      ? "px-2.5 py-0.5 text-xs leading-5"
-      : "px-2 py-0.5 text-[11px] leading-4";
+      ? "px-2 py-1 text-xs leading-4"
+      : "px-2 py-0.5 text-xs leading-4";
   return (
     <span
       title={title}
@@ -103,7 +103,7 @@ export function ConnectionIndicator({
       role="status"
       aria-live="polite"
       title={`Stream: ${info.label}`}
-      className="inline-flex items-center gap-1.5 text-xs text-muted"
+      className="inline-flex items-center gap-2 text-xs text-muted"
     >
       <span className="relative inline-flex size-2 shrink-0">
         {info.pulse && (
@@ -126,7 +126,7 @@ export function IconButton({
   onClick,
   active,
   disabled,
-  size = "sm",
+  size = "md",
   children,
   className = "",
   type = "button",
@@ -140,7 +140,7 @@ export function IconButton({
   className?: string;
   type?: "button" | "submit";
 }) {
-  const dim = size === "md" ? "size-8" : "size-7";
+  const dim = size === "md" ? "size-8" : "size-8";
   const activeCls = active ? "bg-hover text-fg" : "text-muted";
   return (
     <button
@@ -150,7 +150,7 @@ export function IconButton({
       aria-label={label}
       title={label}
       aria-pressed={active}
-      className={`inline-flex ${dim} shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-40 ${activeCls} ${className}`}
+      className={`touch-target inline-flex ${dim} shrink-0 items-center justify-center rounded-lg transition-colors duration-150 ease-out hover:bg-hover hover:text-fg active:bg-hover disabled:pointer-events-none disabled:opacity-40 ${activeCls} ${className}`}
     >
       {children}
     </button>
@@ -165,25 +165,12 @@ export function BrandLogo({ className = "size-6" }: { className?: string }) {
       aria-hidden="true"
       className={`shrink-0 ${className}`}
     >
-      <defs>
-        <linearGradient
-          id="oh-brand-grad"
-          x1="0"
-          y1="0"
-          x2="64"
-          y2="64"
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop offset="0%" stopColor="#406eff" />
-          <stop offset="100%" stopColor="#8b55ff" />
-        </linearGradient>
-      </defs>
-      <rect width="64" height="64" rx="28" fill="url(#oh-brand-grad)" />
-      <circle cx="32" cy="32" r="26" stroke="#ffffff" strokeWidth="5" />
+      <rect width="64" height="64" rx="16" fill="var(--accent)" />
+      <circle cx="32" cy="32" r="18" stroke="var(--accent-fg)" strokeWidth="4.5" />
       <path
-        d="M32 12v8M32 44v8M12 32h8M44 32h8"
-        stroke="#ffffff"
-        strokeWidth="5"
+        d="M32 10v8M32 46v8M10 32h8M46 32h8"
+        stroke="var(--accent-fg)"
+        strokeWidth="4.5"
         strokeLinecap="round"
       />
     </svg>
