@@ -44,6 +44,31 @@
   color-scheme: light;
 }
 
+.dark {
+  --bg: #000000;
+  --bg-elev: #1C1C1E;
+  --bg-subtle: #1C1C1E;
+  --bg-hover: #2C2C2E;
+  --fg: #F5F5F7;
+  --fg-muted: #98989D;
+  --muted: #98989D;
+  --border: #2C2C2E;
+  --accent: #0071E3;
+  --accent-strong: #0077ED;
+  --color-accent: #0071E3;
+  --color-accent-strong: #0077ED;
+  --accent-fg: #FFFFFF;
+  --danger: #FF453A;
+  --warning: #FF9F0A;
+  --success: #30D158;
+  --code-bg: #1C1C1E;
+  --surface-glass: rgba(0, 0, 0, 0.78);
+  --overlay: rgba(0, 0, 0, 0.56);
+  --shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.36);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.48), 0 1px 2px rgba(0, 0, 0, 0.32);
+  color-scheme: dark;
+}
+
 @theme inline {
   --color-bg: var(--bg);
   --color-elev: var(--bg-elev);
