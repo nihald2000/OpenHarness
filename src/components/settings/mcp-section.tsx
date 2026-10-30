@@ -330,7 +330,7 @@ export function McpSection() {
             No MCP servers configured.
           </p>
         ) : (
-          <div className="space-y-2.5">
+          <div className="space-y-3">
             {servers.map((srv) => {
               const isConnecting = srv.status === "connecting";
               const isConnected = srv.status === "connected";
@@ -364,7 +364,7 @@ export function McpSection() {
                       <span className="font-semibold text-fg">
                         {srv.title || srv.name}
                       </span>
-                      <span className="font-mono text-[11px] text-muted">
+                      <span className="font-mono text-xs text-muted">
                         ({srv.name})
                       </span>
                       <Badge
@@ -386,7 +386,7 @@ export function McpSection() {
                       {srv.readOnly && (
                         <Badge tone="accent">read-only</Badge>
                       )}
-                      <span className="font-mono text-[11px] text-muted">
+                      <span className="font-mono text-xs text-muted">
                         {srv.tools?.length ?? srv.toolsCount ?? 0} tools
                       </span>
                     </div>
@@ -447,7 +447,7 @@ export function McpSection() {
                   </div>
 
                   {srv.error && (
-                    <div className="rounded-md border border-danger/30 bg-danger/10 px-2.5 py-1.5 text-[11px] text-danger">
+                    <div className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
                       <span>
                         {showFullErr || srv.error.length <= 180
                           ? srv.error
@@ -462,7 +462,7 @@ export function McpSection() {
                               [srv.name]: !showFullErr,
                             }))
                           }
-                          className="ml-1.5 underline"
+                          className="ml-2 underline"
                         >
                           {showFullErr ? "Show less" : "Show more"}
                         </button>
@@ -481,7 +481,7 @@ export function McpSection() {
                           }))
                         }
                         aria-expanded={showTools}
-                        className="inline-flex items-center gap-1 text-[11px] font-medium text-muted hover:text-fg"
+                        className="inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-fg"
                       >
                         <ChevronDown
                           className={`size-3.5 transition-transform ${
@@ -492,11 +492,11 @@ export function McpSection() {
                         <span>Tools ({srv.tools.length})</span>
                       </button>
                       {showTools && (
-                        <div className="mt-1.5 flex flex-wrap gap-1">
+                        <div className="mt-2 flex flex-wrap gap-1">
                           {srv.tools.map((t) => (
                             <span
                               key={t}
-                              className="rounded border border-border bg-code px-1.5 py-0.5 font-mono text-[10px] text-fg"
+                              className="rounded border border-border bg-code px-2 py-0.5 font-mono text-xs text-fg"
                             >
                               {t}
                             </span>
@@ -525,11 +525,11 @@ export function McpSection() {
               return (
                 <div
                   key={preset.id}
-                  className="flex flex-col justify-between rounded-lg border border-border bg-bg p-3 space-y-2.5"
+                  className="flex flex-col justify-between rounded-lg border border-border bg-bg p-3 space-y-3"
                 >
-                  <div className="space-y-1.5">
-                    <div className="flex flex-wrap items-center justify-between gap-1.5">
-                      <div className="flex items-center gap-1.5">
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
                         <span className="font-semibold text-fg">
                           {preset.title || preset.id}
                         </span>
@@ -540,22 +540,22 @@ export function McpSection() {
                       {installed && <Badge tone="success">Installed</Badge>}
                     </div>
                     {preset.description && (
-                      <p className="text-[11px] text-muted">
+                      <p className="text-xs text-muted">
                         {preset.description}
                       </p>
                     )}
                     {preset.runtimeNote && (
-                      <p className="font-mono text-[10px] text-muted">
+                      <p className="font-mono text-xs text-muted">
                         {preset.runtimeNote}
                       </p>
                     )}
 
                     {preset.requiredSecrets &&
                       preset.requiredSecrets.length > 0 && (
-                        <div className="space-y-1.5 pt-1">
+                        <div className="space-y-2 pt-1">
                           {preset.requiredSecrets.map((sec) => (
                             <div key={sec.name}>
-                              <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                              <div className="mb-1 flex items-center justify-between text-xs">
                                 <span className="font-mono text-fg">
                                   {sec.name}
                                 </span>
@@ -594,7 +594,7 @@ export function McpSection() {
                         href={preset.homepage}
                         target="_blank"
                         rel="noopener noreferrer nofollow"
-                        className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
+                        className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
                       >
                         <span>Docs</span>
                         <ExternalLink className="size-3" aria-hidden="true" />
@@ -823,7 +823,7 @@ export function McpSection() {
                   className={`${inputCls} flex-1 font-mono`}
                 />
                 {pair.stored && <Badge tone="success">Stored</Badge>}
-                <label className="flex items-center gap-1 text-[11px] text-muted">
+                <label className="flex items-center gap-1 text-xs text-muted">
                   <input
                     type="checkbox"
                     checked={pair.secret}

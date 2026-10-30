@@ -9,7 +9,7 @@ export function Kbd({
 }) {
   return (
     <kbd
-      className={`inline-flex items-center justify-center rounded border border-border bg-subtle px-1.5 py-0.5 font-mono text-[10px] font-medium leading-none text-muted ${className}`}
+      className={`inline-flex items-center justify-center rounded border border-border bg-subtle px-1 py-0.5 font-mono text-xs font-medium leading-none text-muted ${className}`}
     >
       {children}
     </kbd>

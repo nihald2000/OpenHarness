@@ -157,7 +157,7 @@ export function ChatHeader({
     windowSize > 0 ? Math.min(100, Math.round((estimated / windowSize) * 100)) : 0;
 
   return (
-    <header className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b border-border bg-bg/80 px-3 py-2 backdrop-blur">
+    <header className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b border-border bg-glass px-4 py-2 backdrop-blur-md">
       <div className="flex min-w-0 items-center gap-2">
         <IconButton
           label="Open sessions menu"
@@ -186,7 +186,7 @@ export function ChatHeader({
               }
             }}
             aria-label="Chat title"
-            className="max-w-[75vw] rounded-md border border-accent bg-bg px-2 py-1 text-xs font-semibold text-fg focus:outline-none"
+            className="h-8 max-w-[75vw] rounded-lg border border-accent bg-bg px-3 text-sm font-semibold text-fg focus:outline-none"
           />
         ) : (
           <button
@@ -194,14 +194,14 @@ export function ChatHeader({
             disabled={!session || readOnly}
             onClick={() => setEditingTitle(true)}
             title={session?.title || "New chat"}
-            className="group inline-flex max-w-[16rem] items-center gap-1.5 truncate rounded-lg px-2 py-1 text-xs font-semibold text-fg hover:bg-hover disabled:pointer-events-none"
+            className="touch-target group inline-flex h-8 max-w-[16rem] items-center gap-2 truncate rounded-lg px-2 text-sm font-semibold tracking-tight text-fg transition-colors duration-150 ease-out hover:bg-hover disabled:pointer-events-none"
           >
             <span className="truncate">
               {session ? session.title || "Untitled" : "New chat"}
             </span>
             {session && !readOnly && (
               <Pencil
-                className="size-3 shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100"
+                className="size-3.5 shrink-0 text-muted opacity-0 transition-opacity duration-150 ease-out group-hover:opacity-100"
                 aria-hidden="true"
               />
             )}
@@ -222,7 +222,7 @@ export function ChatHeader({
               const el = document.getElementById(`verify-${fix.iteration}`);
               el?.scrollIntoView({ behavior: "smooth", block: "center" });
             }}
-            className="inline-flex items-center gap-1.5 rounded-full border border-warning/40 bg-warning/10 px-2.5 py-0.5 text-[11px] font-medium text-warning hover:bg-warning/20"
+            className="touch-target inline-flex items-center gap-2 rounded-full border border-warning/30 bg-warning/10 px-3 py-1 text-xs font-medium text-warning transition-colors duration-150 ease-out hover:bg-warning/15"
           >
             <Wrench className="size-3" aria-hidden="true" />
             <span>
@@ -232,16 +232,16 @@ export function ChatHeader({
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-2">
         {session && contextUsage && windowSize > 0 && (
           <button
             type="button"
             disabled={active}
             onClick={onCompact}
             title={`Context ${fillPct}% full - Compact`}
-            className={`hidden sm:inline-flex h-8 max-w-[70px] items-center justify-center rounded-lg border px-2 font-mono text-[11px] transition-colors disabled:opacity-40 ${
+            className={`touch-target hidden sm:inline-flex h-8 max-w-[72px] items-center justify-center rounded-lg border px-2 font-mono text-xs transition-colors duration-150 ease-out disabled:opacity-40 ${
               fillPct >= 65
-                ? "border-warning/40 bg-warning/10 text-warning hover:bg-warning/20"
+                ? "border-warning/30 bg-warning/10 text-warning hover:bg-warning/15"
                 : "border-border bg-elev text-muted hover:bg-hover hover:text-fg"
             }`}
           >
@@ -258,7 +258,7 @@ export function ChatHeader({
             disabled={readOnly}
             badge={isPlan ? "read-only" : undefined}
             buttonClassName={
-              isPlan ? "border-accent/40 bg-accent/10" : ""
+              isPlan ? "border-accent/30 bg-accent/10" : ""
             }
           />
         )}
@@ -317,7 +317,7 @@ export function ChatHeader({
         <ConnectionIndicator status={globalStatus} hideLabelOnMobile />
 
         <IconButton
-          label={capabilitiesOpen ? "Hide capabilities" : "Show capabilities"}
+          label="Capabilities"
           active={capabilitiesOpen}
           onClick={() => setCapabilitiesOpen((o) => !o)}
           size="md"

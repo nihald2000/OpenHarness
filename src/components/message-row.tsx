@@ -62,16 +62,18 @@ function SyntheticDisclosure({
     : "Injected context";
 
   return (
-    <div className={`mt-1.5 ${hasVerify ? "text-left" : "text-right"}`}>
+    <div className={`mt-2 ${hasVerify ? "text-left" : "text-right"}`}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-controls={panelId}
-        className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] text-muted hover:bg-hover hover:text-fg"
+        className="touch-target inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg"
       >
         <ChevronRight
-          className={`size-3 transition-transform ${open ? "rotate-90" : ""}`}
+          className={`size-3.5 transition-transform duration-150 ease-out ${
+            open ? "rotate-90" : ""
+          }`}
           aria-hidden="true"
         />
         <span>{label}</span>
@@ -79,7 +81,7 @@ function SyntheticDisclosure({
       {open && (
         <div
           id={panelId}
-          className="mt-1 rounded-xl border border-border bg-elev p-2.5 text-left font-mono text-[11px] text-muted whitespace-pre-wrap"
+          className="mt-1 rounded-xl border border-border bg-elev p-3 text-left font-mono text-xs text-muted whitespace-pre-wrap"
         >
           {texts.join("\n\n")}
         </div>
@@ -111,15 +113,15 @@ function UserMessageRow({ message }: { message: Message }) {
   const hasVerify = verifyParts.length > 0;
 
   return (
-    <div className="flex flex-col items-end">
+    <div className="flex flex-col items-end animate-fade-in">
       {regularTexts.length > 0 && (
-        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-accent/25 bg-accent/12 px-4 py-2.5 text-[15px] leading-relaxed text-fg whitespace-pre-wrap">
+        <div className="max-w-[85%] rounded-2xl border border-border bg-elev px-4 py-3 text-base leading-normal text-fg whitespace-pre-wrap">
           {regularTexts.join("\n\n")}
         </div>
       )}
 
       {skillParts.length > 0 && (
-        <div className="mt-1.5 flex flex-wrap justify-end gap-1.5">
+        <div className="mt-2 flex flex-wrap justify-end gap-2">
           {skillParts.map((sp, i) => (
             <SkillChip key={i} part={sp} />
           ))}
@@ -216,7 +218,7 @@ export function MessageList({
       Boolean(lastMessage.completedAt));
 
   return (
-    <div className={`flex flex-col ${compact ? "gap-3" : "gap-4"}`}>
+    <div className={`flex flex-col ${compact ? "gap-4" : "gap-6"}`}>
       {groups.map((group, gIdx) => {
         if (group.kind === "user") {
           return <UserMessageRow key={group.message.info.id} message={group.message} />;
@@ -243,13 +245,16 @@ export function MessageList({
           active && isLastGroup && Boolean(lastInGroup && !lastInGroup.completedAt);
 
         return (
-          <div key={group.messages[0]?.info.id ?? gIdx} className="flex gap-3">
+          <div
+            key={group.messages[0]?.info.id ?? gIdx}
+            className="flex gap-3 animate-fade-in"
+          >
             <div
-              className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-elev"
+              className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border border-border bg-elev"
               aria-hidden="true"
             >
               <span
-                className="size-2.5 rounded-full"
+                className="size-2 rounded-full"
                 style={{ backgroundColor: dotColor }}
               />
             </div>
@@ -259,7 +264,7 @@ export function MessageList({
                 {group.agent}
               </div>
 
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {group.messages.map((msg, mIdx) => {
                   const isMsgStreaming =
                     isGroupStreaming && mIdx === group.messages.length - 1;
@@ -278,7 +283,7 @@ export function MessageList({
                   });
 
                   return (
-                    <div key={msg.info.id} className={mIdx > 0 ? "-mt-1" : ""}>
+                    <div key={msg.info.id} className="space-y-2">
                       {msg.parts.map((part: Part, pIdx: number) => {
                         if (part.type === "text") {
                           if (part.synthetic || !part.text) return null;
@@ -359,7 +364,7 @@ export function MessageList({
                       {msg.info.error && (
                         <div
                           role="alert"
-                          className="mt-2 flex items-start gap-2 rounded-xl border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger"
+                          className="mt-2 flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"
                         >
                           <AlertCircle
                             className="mt-0.5 size-4 shrink-0"

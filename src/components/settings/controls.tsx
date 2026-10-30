@@ -32,8 +32,8 @@ import { Spinner } from "../ui";
 
 export { buttonBase, buttonPrimary, buttonSecondary, dangerButton, inputCls };
 export const ghostButton =
-  "inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted transition-colors hover:bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-40";
-export const selectCls = `${inputCls} h-[34px] py-1 pr-7`;
+  "touch-target inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-medium text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-40";
+export const selectCls = `${inputCls} h-9 py-2 pr-8`;
 
 export const MASK = "********";
 export const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -230,7 +230,7 @@ export function SectionHeading({
     <div className="mb-4">
       <h2 className="text-base font-semibold text-fg">{title}</h2>
       {description && (
-        <p className="mt-0.5 text-xs text-muted">{description}</p>
+        <p className="mt-1 text-xs text-muted">{description}</p>
       )}
     </div>
   );
@@ -258,7 +258,7 @@ export function Card({
               <h3 className="text-xs font-semibold text-fg">{title}</h3>
             )}
             {description && (
-              <p className="mt-0.5 text-[11px] text-muted">{description}</p>
+              <p className="mt-1 text-xs text-muted">{description}</p>
             )}
           </div>
           {actions && <div className="flex items-center gap-2">{actions}</div>}
@@ -266,7 +266,7 @@ export function Card({
       )}
       <div className="p-4 text-xs space-y-3">{children}</div>
       {footer && (
-        <div className="border-t border-border bg-subtle/50 px-4 py-2.5">
+        <div className="border-t border-border bg-subtle/50 px-4 py-3">
           {footer}
         </div>
       )}
@@ -348,7 +348,7 @@ export function SaveBar({
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <span className="text-[11px] text-muted">
+      <span className="text-xs text-muted">
         {dirty ? "Unsaved changes" : "Up to date"}
       </span>
       <div className="flex items-center gap-2">
@@ -409,7 +409,7 @@ export function Field({
       {(error || hint) && (
         <p
           id={descId}
-          className={`text-[11px] ${error ? "text-danger" : "text-muted"}`}
+          className={`text-xs ${error ? "text-danger" : "text-muted"}`}
         >
           {error || hint}
         </p>
@@ -451,7 +451,7 @@ export function NumberField({
             className={`${inputCls} font-mono ${unit ? "pr-12" : ""}`}
           />
           {unit && (
-            <span className="pointer-events-none absolute right-2.5 text-[11px] text-muted">
+            <span className="pointer-events-none absolute right-3 text-xs text-muted">
               {unit}
             </span>
           )}
@@ -487,7 +487,7 @@ export function Switch({
       }`}
     >
       <span
-        className={`inline-block size-3.5 rounded-full bg-white transition-transform ${
+        className={`inline-block size-3.5 rounded-full bg-accent-fg transition-transform ${
           checked ? "translate-x-4" : "translate-x-0.5"
         }`}
       />
@@ -537,14 +537,14 @@ export function StringListEditor({
       {(fieldProps) => (
         <div className="space-y-2">
           {values.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-2">
               {values.map((item) => {
                 const itemErr = validateItem ? validateItem(item) : null;
                 return (
                   <span
                     key={item}
                     title={itemErr || undefined}
-                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[11px] ${
+                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-xs ${
                       itemErr
                         ? "border-danger/50 bg-danger/10 text-danger"
                         : "border-border bg-code text-fg"
@@ -638,7 +638,7 @@ export function Modal({
       }}
       className={`m-auto w-full ${
         wide ? "max-w-[44rem]" : "max-w-[28rem]"
-      } rounded-2xl border border-border bg-elev p-0 text-xs text-fg shadow-2xl backdrop:bg-black/50`}
+      } rounded-2xl border border-border bg-bg p-0 text-xs text-fg shadow-menu backdrop:bg-overlay`}
     >
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h3 className="text-sm font-semibold text-fg">{title}</h3>
@@ -686,9 +686,9 @@ export function Callout({
   return (
     <div
       role={tone === "danger" ? "alert" : "status"}
-      className={`flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5 text-xs ${styles}`}
+      className={`flex items-start gap-3 rounded-xl border px-4 py-3 text-xs ${styles}`}
     >
-      <Icon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <Icon className="mt-1 size-4 shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1 leading-relaxed">{children}</div>
     </div>
   );
@@ -716,7 +716,7 @@ export function SecretInput({
 }) {
   const [show, setShow] = useState(false);
   return (
-    <div className="flex gap-1.5">
+    <div className="flex gap-2">
       <input
         id={id}
         type={show ? "text" : "password"}

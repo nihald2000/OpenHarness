@@ -206,14 +206,14 @@ export const Composer = forwardRef<
       : undefined;
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-3">
+    <div className="mx-auto w-full max-w-[720px] px-4 pb-4">
       <div className="relative">
         {slashOpen && (
           <div
             id={slashListboxId}
             role="listbox"
             aria-label="Slash commands"
-            className="absolute bottom-full left-0 right-0 z-30 mb-2 max-h-64 overflow-y-auto rounded-xl border border-border bg-elev p-1.5 shadow-xl shadow-black/25 animate-fade-in"
+            className="absolute bottom-full left-0 right-0 z-30 mb-2 max-h-64 overflow-y-auto rounded-xl border border-border bg-bg p-1 shadow-menu animate-fade-in"
           >
             {matchingCommands.map((cmd, idx) => {
               const isSelected = idx === slashIndex;
@@ -228,8 +228,8 @@ export const Composer = forwardRef<
                     e.preventDefault();
                     pickCommand(cmd);
                   }}
-                  className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-xs ${
-                    isSelected ? "bg-hover text-fg" : "text-fg hover:bg-hover/60"
+                  className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg px-3 py-2 text-xs transition-colors duration-150 ease-out ${
+                    isSelected ? "bg-hover text-fg" : "text-fg hover:bg-hover/70"
                   }`}
                 >
                   <div className="flex min-w-0 items-center gap-2">
@@ -245,7 +245,7 @@ export const Composer = forwardRef<
                     )}
                   </div>
                   {cmd.agent && (
-                    <span className="shrink-0 font-mono text-[10px] text-muted">
+                    <span className="shrink-0 font-mono text-xs text-muted">
                       {cmd.agent}
                     </span>
                   )}
@@ -256,12 +256,12 @@ export const Composer = forwardRef<
         )}
 
         <div
-          className={`rounded-2xl border bg-elev p-2 transition-colors focus-within:border-accent ${
-            verifyEnabled ? "border-warning/50" : "border-border"
-          } ${disabled ? "opacity-40 pointer-events-none" : ""}`}
+          className={`rounded-2xl border border-border bg-elev p-2 shadow-card transition-colors duration-150 ease-out focus-within:border-accent focus-within:bg-bg ${
+            disabled ? "opacity-40 pointer-events-none" : ""
+          }`}
         >
           {verifyEnabled && (
-            <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-subtle px-2.5 py-1.5 text-xs">
+            <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-border px-2 pb-2 text-xs">
               <span className="font-medium text-fg">Verify &amp; fix with</span>
               <input
                 ref={verifyInputRef}
@@ -280,14 +280,14 @@ export const Composer = forwardRef<
                 }}
                 placeholder="bun test"
                 aria-label="Verify and fix command"
-                className="min-w-[10rem] flex-1 rounded-md border border-border bg-bg px-2 py-1 font-mono text-xs text-fg placeholder:text-muted/70 focus-visible:border-accent"
+                className="h-7 min-w-[10rem] flex-1 rounded-lg border border-border bg-bg px-2 font-mono text-xs text-fg placeholder:text-muted focus-visible:border-accent"
               />
               {trimmedCmd ? (
-                <span className="text-[11px] text-muted">
+                <span className="text-xs text-muted">
                   Runs after the turn; failures go back to the agent
                 </span>
               ) : (
-                <span className="text-[11px] font-medium text-warning">
+                <span className="text-xs font-medium text-warning">
                   Enter a command to enable
                 </span>
               )}
@@ -296,7 +296,7 @@ export const Composer = forwardRef<
                 onClick={() => updateVerifyEnabled(false)}
                 aria-label="Disable verify and fix"
                 title="Disable verify and fix"
-                className="rounded-md p-1 text-muted hover:bg-hover hover:text-fg"
+                className="touch-target inline-flex size-6 items-center justify-center rounded-lg text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg"
               >
                 <X className="size-3.5" aria-hidden="true" />
               </button>
@@ -316,16 +316,16 @@ export const Composer = forwardRef<
               aria-label="Verify & fix toggle"
               title="Verify & fix toggle"
               aria-pressed={verifyEnabled}
-              className={`relative inline-flex size-10 shrink-0 items-center justify-center rounded-xl border transition-colors ${
+              className={`touch-target relative inline-flex size-9 shrink-0 items-center justify-center rounded-xl border transition-colors duration-150 ease-out ${
                 verifyEnabled
-                  ? "border-warning/40 bg-warning/10 text-warning"
+                  ? "border-accent/30 bg-accent/10 text-accent"
                   : "border-transparent text-muted hover:bg-hover hover:text-fg"
               }`}
             >
               <Wrench className="size-4" aria-hidden="true" />
               {verifyEnabled && trimmedCmd && (
                 <span
-                  className="absolute top-1.5 right-1.5 size-2 rounded-full bg-warning"
+                  className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-accent"
                   aria-hidden="true"
                 />
               )}
@@ -345,7 +345,7 @@ export const Composer = forwardRef<
               aria-expanded={slashOpen}
               aria-controls={slashOpen ? slashListboxId : undefined}
               aria-activedescendant={activeCmdId}
-              className="max-h-60 min-h-[2.5rem] flex-1 resize-none bg-transparent py-2 px-1 text-[14px] leading-6 text-fg placeholder:text-muted/70 focus:outline-none"
+              className="max-h-60 min-h-[2.25rem] flex-1 resize-none bg-transparent py-2 px-1 text-sm leading-normal text-fg placeholder:text-muted focus:outline-none"
             />
 
             {active ? (
@@ -355,13 +355,13 @@ export const Composer = forwardRef<
                 disabled={stopping}
                 aria-label="Stop"
                 title="Stop"
-                className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl bg-danger/15 text-danger transition-colors hover:bg-danger/25 disabled:opacity-40"
+                className="touch-target inline-flex size-9 shrink-0 items-center justify-center rounded-xl bg-danger/15 text-danger transition-colors duration-150 ease-out hover:bg-danger/25 disabled:opacity-40"
               >
                 {stopping ? (
                   <Spinner className="size-4" />
                 ) : (
                   <Square
-                    className="size-4 fill-current"
+                    className="size-3.5 fill-current"
                     aria-hidden="true"
                   />
                 )}
@@ -373,10 +373,10 @@ export const Composer = forwardRef<
                 disabled={!canSend}
                 aria-label="Send message"
                 title="Send message"
-                className={`inline-flex size-10 shrink-0 items-center justify-center rounded-xl transition-colors ${
+                className={`touch-target inline-flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors duration-150 ease-out ${
                   canSend
                     ? "bg-accent text-accent-fg hover:bg-accent-strong"
-                    : "bg-subtle text-muted opacity-50 pointer-events-none"
+                    : "bg-hover text-muted opacity-50 pointer-events-none"
                 }`}
               >
                 {sending ? (
@@ -389,11 +389,11 @@ export const Composer = forwardRef<
           </div>
         </div>
 
-        <div className="mt-1.5 hidden md:flex items-center justify-between px-1 text-[11px] text-muted">
+        <div className="mt-2 hidden md:flex items-center justify-between px-1 text-xs text-muted">
           <span>
-            Enter to send - Shift+Enter for a new line - / for commands
+            Enter to send · Shift+Enter for a new line · / for commands
             {verifyEnabled && trimmedCmd
-              ? ` - will verify with ${trimmedCmd}`
+              ? ` · will verify with ${trimmedCmd}`
               : ""}
           </span>
           {isPlanMode && <span>plan mode is read-only</span>}

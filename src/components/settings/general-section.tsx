@@ -248,40 +248,40 @@ export function GeneralSection() {
       <Card title="Server" description="Read-only runtime server status.">
         <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2 text-xs">
           <div className="rounded-lg border border-border bg-bg px-3 py-2">
-            <dt className="text-[11px] text-muted">Host</dt>
-            <dd className="mt-0.5 font-mono text-fg">
+            <dt className="text-xs text-muted">Host</dt>
+            <dd className="mt-1 font-mono text-fg">
               {asString(server.host, "127.0.0.1")}
             </dd>
           </div>
           <div className="rounded-lg border border-border bg-bg px-3 py-2">
-            <dt className="text-[11px] text-muted">Port</dt>
-            <dd className="mt-0.5 font-mono text-fg">
+            <dt className="text-xs text-muted">Port</dt>
+            <dd className="mt-1 font-mono text-fg">
               {String(server.port ?? 4096)}
             </dd>
           </div>
           <div className="rounded-lg border border-border bg-bg px-3 py-2">
-            <dt className="text-[11px] text-muted">Auth required</dt>
-            <dd className="mt-0.5">
+            <dt className="text-xs text-muted">Auth required</dt>
+            <dd className="mt-1">
               <Badge tone={server.authRequired ? "success" : "neutral"}>
                 {server.authRequired ? "Yes" : "No"}
               </Badge>
             </dd>
           </div>
           <div className="rounded-lg border border-border bg-bg px-3 py-2">
-            <dt className="text-[11px] text-muted">Storage</dt>
-            <dd className="mt-0.5 font-mono text-fg">
+            <dt className="text-xs text-muted">Storage</dt>
+            <dd className="mt-1 font-mono text-fg">
               {asString(eff.storage, "sqlite")}
             </dd>
           </div>
           <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
-            <dt className="text-[11px] text-muted">CORS origins</dt>
-            <dd className="mt-0.5 font-mono text-fg">
+            <dt className="text-xs text-muted">CORS origins</dt>
+            <dd className="mt-1 font-mono text-fg">
               {cors.length > 0 ? cors.join(", ") : "None"}
             </dd>
           </div>
           <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
-            <dt className="text-[11px] text-muted">Plugin Allowlist</dt>
-            <dd className="mt-0.5 font-mono text-fg">
+            <dt className="text-xs text-muted">Plugin Allowlist</dt>
+            <dd className="mt-1 font-mono text-fg">
               {allowlist.length > 0 ? allowlist.join(", ") : "None"}
             </dd>
           </div>
@@ -292,14 +292,14 @@ export function GeneralSection() {
         <div className="space-y-2 text-xs">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted">Project file:</span>
-            <code className="rounded border border-border bg-code px-1.5 py-0.5 font-mono text-[11px] text-fg">
+            <code className="rounded border border-border bg-code px-2 py-0.5 font-mono text-xs text-fg">
               {view.file}
             </code>
             {!view.exists && <Badge tone="neutral">not created yet</Badge>}
           </div>
 
           {view.sources && view.sources.length > 0 ? (
-            <ol className="list-decimal pl-5 space-y-1 font-mono text-[11px] text-muted">
+            <ol className="list-decimal pl-5 space-y-1 font-mono text-xs text-muted">
               {view.sources.map((src, i) => (
                 <li key={i}>{src}</li>
               ))}

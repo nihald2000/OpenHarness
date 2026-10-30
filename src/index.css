@@ -1,46 +1,72 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 @custom-variant light (&:where(.light, .light *));
 
-:root {
-  --bg: #0e0e11;
-  --bg-elev: #15151c;
-  --bg-subtle: #181c25;
-  --bg-hover: #1f242e;
-  --fg: #e6e8ec;
-  --fg-muted: #8b92a7;
-  --muted: #8b92a7;
-  --border: #222a34;
-  --accent: #2b55ff;
-  --accent-strong: #0d3cd6;
-  --color-accent: #2b55ff;
-  --color-accent-strong: #0d3cd6;
-  --accent-fg: #ffffff;
-  --danger: #f87272;
-  --warning: #e0bf24;
-  --success: #24d299;
-  --code-bg: #0f131c;
-  color-scheme: dark;
+:root,
+.light {
+  --bg: #FFFFFF;
+  --bg-elev: #F5F5F7;
+  --bg-subtle: #F5F5F7;
+  --bg-hover: #EBEBED;
+  --fg: #1D1D1F;
+  --fg-muted: #6E6E73;
+  --muted: #6E6E73;
+  --border: #E5E5EA;
+  --accent: #0071E3;
+  --accent-strong: #005BB5;
+  --color-accent: #0071E3;
+  --color-accent-strong: #005BB5;
+  --accent-fg: #FFFFFF;
+  --danger: #D70015;
+  --warning: #B25000;
+  --success: #248A3D;
+  --code-bg: #F5F5F7;
+  --surface-glass: rgba(255, 255, 255, 0.82);
+  --overlay: rgba(29, 29, 31, 0.32);
+  --shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+
+  --radius-control: 0.5rem;
+  --radius-card: 0.75rem;
+  --radius-panel: 1rem;
+
+  --text-12: 0.75rem;
+  --text-14: 0.875rem;
+  --text-16: 1rem;
+  --text-20: 1.25rem;
+  --text-28: 1.75rem;
+  --text-40: 2.5rem;
+
+  --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+
+  color-scheme: light;
 }
 
-.light {
-  --bg: #ffffff;
-  --bg-elev: #f6f8fb;
-  --bg-subtle: #eff1f5;
-  --bg-hover: #e6e9ef;
-  --fg: #05151b;
-  --fg-muted: #6b6e77;
-  --muted: #6b6e77;
-  --border: #e2e4ea;
-  --accent: #2b55ff;
-  --accent-strong: #002eec;
-  --color-accent: #2b55ff;
-  --color-accent-strong: #002eec;
-  --accent-fg: #ffffff;
-  --danger: #d42626;
-  --warning: #b45309;
-  --success: #059669;
-  --code-bg: #f4f5f8;
-  color-scheme: light;
+.dark {
+  --bg: #000000;
+  --bg-elev: #1C1C1E;
+  --bg-subtle: #1C1C1E;
+  --bg-hover: #2C2C2E;
+  --fg: #F5F5F7;
+  --fg-muted: #98989D;
+  --muted: #98989D;
+  --border: #2C2C2E;
+  --accent: #0071E3;
+  --accent-strong: #0077ED;
+  --color-accent: #0071E3;
+  --color-accent-strong: #0077ED;
+  --accent-fg: #FFFFFF;
+  --danger: #FF453A;
+  --warning: #FF9F0A;
+  --success: #30D158;
+  --code-bg: #1C1C1E;
+  --surface-glass: rgba(0, 0, 0, 0.78);
+  --overlay: rgba(0, 0, 0, 0.56);
+  --shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.36);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.48), 0 1px 2px rgba(0, 0, 0, 0.32);
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -58,23 +84,71 @@
   --color-warning: var(--warning);
   --color-success: var(--success);
   --color-code: var(--code-bg);
-  --font-sans: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --color-glass: var(--surface-glass);
+  --color-overlay: var(--overlay);
+  --shadow-card: var(--shadow-subtle);
+  --shadow-menu: var(--shadow-popover);
+  --font-sans: "Inter", -apple-system, "SF Pro Text", BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 @layer base {
-  html, body { height: 100%; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--fg); font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
-  ::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-14);
+    line-height: 1.5;
+    letter-spacing: -0.006em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  h1, h2, h3, h4 {
+    letter-spacing: -0.022em;
+    line-height: 1.25;
+    color: var(--fg);
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+}
+
+/* Coarse-pointer 44x44px hit-area expansion while keeping desktop compact */
+.touch-target {
+  position: relative;
+}
+@media (pointer: coarse) {
+  .touch-target::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
 }
 
 @keyframes oh-fade-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
 }
-.animate-fade-in { animation: oh-fade-in 140ms ease-out both; }
+.animate-fade-in {
+  animation: oh-fade-in 180ms var(--ease-apple) both;
+}
 
 @keyframes oh-caret {
   50% { opacity: 0; }
@@ -82,9 +156,9 @@
 .streaming-caret > :last-child::after {
   content: "";
   display: inline-block;
-  width: 0.6em;
+  width: 0.5em;
   height: 1em;
-  margin-left: 2px;
+  margin-left: 4px;
   vertical-align: -0.15em;
   background: var(--accent);
   animation: oh-caret 1s steps(1) infinite;
@@ -95,12 +169,15 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
 @layer components {
   .markdown {
-    line-height: 1.65;
+    font-size: var(--text-16);
+    line-height: 1.5;
+    color: var(--fg);
     overflow-wrap: anywhere;
   }
   .markdown > :first-child { margin-top: 0; }
@@ -111,57 +188,58 @@
   .markdown blockquote,
   .markdown table,
   .markdown pre {
-    margin: 0.65em 0;
+    margin: 12px 0;
   }
   .markdown h1,
   .markdown h2,
   .markdown h3,
   .markdown h4 {
-    font-weight: 650;
-    line-height: 1.3;
-    margin: 1.5em 0 0.5em;
+    font-weight: 600;
+    letter-spacing: -0.022em;
+    line-height: 1.25;
+    margin: 24px 0 8px;
   }
-  .markdown h1 { font-size: 1.4em; }
-  .markdown h2 { font-size: 1.25em; }
-  .markdown h3 { font-size: 1.1em; }
-  .markdown h4 { font-size: 1em; }
-  .markdown ul { list-style: disc; padding-left: 1.4em; }
-  .markdown ol { list-style: decimal; padding-left: 1.4em; }
-  .markdown li { margin: 0.2em 0; }
+  .markdown h1 { font-size: var(--text-28); }
+  .markdown h2 { font-size: var(--text-20); }
+  .markdown h3 { font-size: var(--text-16); }
+  .markdown h4 { font-size: var(--text-14); }
+  .markdown ul { list-style: disc; padding-left: 20px; }
+  .markdown ol { list-style: decimal; padding-left: 20px; }
+  .markdown li { margin: 4px 0; }
   .markdown a {
     color: var(--accent);
     text-decoration: underline;
     text-underline-offset: 2px;
   }
-  .markdown strong { font-weight: 650; }
+  .markdown strong { font-weight: 600; }
   .markdown blockquote {
-    border-left: 3px solid var(--border);
-    padding-left: 0.7em;
+    border-left: 2px solid var(--border);
+    padding-left: 12px;
     color: var(--fg-muted);
   }
   .markdown hr {
     border: 0;
     border-top: 1px solid var(--border);
-    margin: 1.2em 0;
+    margin: 20px 0;
   }
   .markdown :not(pre) > code {
     font-family: var(--font-mono);
-    font-size: 0.92em;
+    font-size: 0.875em;
     background: var(--bg-subtle);
     border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 0.05em 0.35em;
+    border-radius: 4px;
+    padding: 2px 6px;
   }
   .markdown table {
     display: block;
     overflow-x: auto;
     border-collapse: collapse;
-    font-size: 0.92em;
+    font-size: var(--text-14);
   }
   .markdown th,
   .markdown td {
     border: 1px solid var(--border);
-    padding: 0.45em 0.75em;
+    padding: 8px 12px;
   }
   .markdown th {
     background: var(--bg-subtle);
@@ -169,6 +247,6 @@
   }
   .markdown input[type="checkbox"] {
     accent-color: var(--accent);
-    margin-right: 0.4em;
+    margin-right: 8px;
   }
 }

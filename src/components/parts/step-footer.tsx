@@ -50,7 +50,7 @@ export function StepFooter({ messages }: { messages: Message[] }) {
   if (steps > 0) items.push(`${steps} ${steps === 1 ? "step" : "steps"}`);
   if (inputTokens > 0 || outputTokens > 0) {
     items.push(
-      `${formatTokens(inputTokens)} in - ${formatTokens(outputTokens)} out`
+      `${formatTokens(inputTokens)} in · ${formatTokens(outputTokens)} out`
     );
   }
   if (totalCost > 0) {
@@ -63,10 +63,10 @@ export function StepFooter({ messages }: { messages: Message[] }) {
   if (items.length === 0) return null;
 
   return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted/40">
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted">
       {items.map((item, idx) => (
         <React.Fragment key={idx}>
-          {idx > 0 && <span className="text-muted/40"> - </span>}
+          {idx > 0 && <span className="text-muted">·</span>}
           <span>{item}</span>
         </React.Fragment>
       ))}

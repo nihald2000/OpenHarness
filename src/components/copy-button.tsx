@@ -41,7 +41,7 @@ export function CopyButton({
       onClick={handleCopy}
       aria-label={copied ? "Copied" : label}
       title={copied ? "Copied" : label}
-      className={`inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg ${className}`}
+      className={`touch-target inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg active:bg-hover ${className}`}
     >
       {copied ? (
         <>

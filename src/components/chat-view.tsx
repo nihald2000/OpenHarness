@@ -386,7 +386,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   };
 
   return (
-    <div className="flex min-w-0 flex-1 overflow-hidden">
+    <div className="flex min-w-0 flex-1 overflow-hidden bg-bg">
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <ChatHeader
           session={session}
@@ -408,8 +408,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         />
 
         {notFound ? (
-          <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
-            <h2 className="text-base font-semibold text-fg">
+          <div className="flex flex-1 flex-col items-center justify-center p-6 text-center animate-fade-in">
+            <h2 className="text-base font-semibold tracking-tight text-fg">
               Session not found
             </h2>
             <p className="mt-1 text-xs text-muted">
@@ -417,29 +417,33 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
             </p>
             <Link
               href="/"
-              className="mt-4 inline-flex h-8 items-center rounded-lg bg-accent px-3 text-xs font-medium text-accent-fg hover:bg-accent-strong"
+              className="mt-4 inline-flex h-8 items-center rounded-lg bg-accent px-3 text-xs font-medium text-accent-fg transition-colors duration-150 ease-out hover:bg-accent-strong"
             >
               Start a new chat
             </Link>
           </div>
         ) : error ? (
-          <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
-            <h2 className="text-base font-semibold text-fg">
+          <div className="flex flex-1 flex-col items-center justify-center p-6 text-center animate-fade-in">
+            <h2 className="text-base font-semibold tracking-tight text-fg">
               Could not load this chat
             </h2>
             <p className="mt-1 max-w-md text-xs text-danger">{error}</p>
             <button
               type="button"
               onClick={() => void refreshSession()}
-              className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-elev px-3 text-xs font-medium text-fg hover:bg-hover"
+              className="touch-target mt-4 inline-flex h-8 items-center gap-2 rounded-lg border border-border bg-elev px-3 text-xs font-medium text-fg transition-colors duration-150 ease-out hover:bg-hover"
             >
               <RefreshCw className="size-3.5" aria-hidden="true" />
               <span>Retry</span>
             </button>
           </div>
         ) : loading ? (
-          <div className="flex flex-1 items-center justify-center">
-            <Spinner className="size-5 text-accent" />
+          <div
+            className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-xs text-muted"
+            role="status"
+          >
+            <Spinner className="size-5 text-muted" />
+            <span>Loading conversation...</span>
           </div>
         ) : messages.length === 0 && !optimisticPrompt ? (
           <EmptyState
@@ -481,15 +485,15 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
             )}
 
             {readOnly && session?.parentId ? (
-              <div className="mx-auto w-full max-w-3xl px-4 pb-3">
-                <div className="flex items-center justify-between rounded-xl border border-border bg-elev px-3.5 py-2.5 text-xs text-muted">
+              <div className="mx-auto w-full max-w-[720px] px-4 pb-3">
+                <div className="flex items-center justify-between rounded-xl border border-border bg-elev px-4 py-3 text-xs text-muted">
                   <span className="inline-flex items-center gap-2">
                     <Eye className="size-4" aria-hidden="true" />
                     <span>This is a read-only subagent session.</span>
                   </span>
                   <Link
                     href={`/c/${encodeURIComponent(session.parentId)}`}
-                    className="inline-flex items-center gap-1.5 font-medium text-accent hover:underline"
+                    className="inline-flex items-center gap-1 font-medium text-accent hover:underline"
                   >
                     <ArrowLeft className="size-3.5" aria-hidden="true" />
                     <span>Parent chat</span>

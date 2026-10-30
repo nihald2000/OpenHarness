@@ -96,7 +96,7 @@ export function UsagePopover({
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label="Session token usage and context window"
-        className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-elev px-2.5 text-xs font-mono text-fg transition-colors hover:bg-hover"
+        className="touch-target inline-flex h-8 items-center gap-2 rounded-lg border border-border bg-elev px-3 text-xs font-mono text-fg transition-colors duration-150 ease-out hover:bg-hover"
       >
         <Coins className="size-3.5 text-muted" aria-hidden="true" />
         <span>{formatTokens(tok)} tok</span>
@@ -125,9 +125,9 @@ export function UsagePopover({
         <div
           role="dialog"
           aria-label="Usage and context window"
-          className="absolute right-0 top-full z-40 mt-1.5 w-72 rounded-xl border border-border bg-elev p-3 text-xs shadow-xl shadow-black/25 animate-fade-in"
+          className="absolute right-0 top-full z-40 mt-1 w-72 rounded-xl border border-border bg-bg p-4 text-xs shadow-menu animate-fade-in"
         >
-          <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted">
+          <div className="mb-2 text-xs font-semibold text-fg">
             Usage
           </div>
           <dl className="space-y-1 text-xs">
@@ -159,7 +159,7 @@ export function UsagePopover({
                 </dd>
               </div>
             )}
-            <div className="flex justify-between pt-1 border-t border-border/60">
+            <div className="flex justify-between pt-2 mt-1 border-t border-border">
               <dt className="text-muted">Total cost</dt>
               <dd className="font-mono tabular-nums font-medium text-fg">
                 {formatCost(session.cost)}
@@ -169,8 +169,8 @@ export function UsagePopover({
 
           <div className="my-3 border-t border-border" />
 
-          <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted">
-            CONTEXT WINDOW
+          <div className="mb-2 text-xs font-semibold text-fg">
+            Context Window
           </div>
 
           {contextError ? (
@@ -190,7 +190,7 @@ export function UsagePopover({
                 className="relative h-2 w-full overflow-hidden rounded-full bg-subtle"
               >
                 <div
-                  className={`h-full rounded-full ${barColor} transition-all`}
+                  className={`h-full rounded-full ${barColor} transition-all duration-200 ease-out`}
                   style={{ width: `${Math.max(1, fillPct)}%` }}
                 />
                 <div
@@ -200,11 +200,11 @@ export function UsagePopover({
                 />
               </div>
 
-              <div className="font-mono text-[11px] text-fg">
+              <div className="font-mono text-xs text-fg">
                 {fillPct}% full · {formatTokens(estimated)} of{" "}
                 {formatTokens(windowSize)} tokens
               </div>
-              <div className="text-[11px] text-muted">
+              <div className="text-xs text-muted">
                 {contextUsage.messages ?? 0} messages ·{" "}
                 {contextUsage.compactions ?? 0} compactions · auto at{" "}
                 {triggerPct}%
@@ -222,7 +222,7 @@ export function UsagePopover({
               onCompact();
               setOpen(false);
             }}
-            className="mt-3 flex h-8 w-full items-center justify-center rounded-lg border border-border bg-subtle px-3 text-xs font-medium text-fg transition-colors hover:bg-hover disabled:pointer-events-none disabled:opacity-40"
+            className="touch-target mt-3 flex h-8 w-full items-center justify-center rounded-lg border border-border bg-elev px-3 text-xs font-medium text-fg transition-colors duration-150 ease-out hover:bg-hover disabled:pointer-events-none disabled:opacity-40"
           >
             Compact context
           </button>

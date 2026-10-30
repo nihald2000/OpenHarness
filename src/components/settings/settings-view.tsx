@@ -129,8 +129,8 @@ export function SettingsView() {
 
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-      <header className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b border-border bg-bg/80 px-4 py-2.5 backdrop-blur">
-        <div className="flex min-w-0 items-center gap-2.5">
+      <header className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b border-border bg-glass px-4 py-2 backdrop-blur-md">
+        <div className="flex min-w-0 items-center gap-2">
           <IconButton
             label="Open sessions menu"
             onClick={() => setSidebarOpen(true)}
@@ -238,7 +238,7 @@ export function SettingsView() {
                         type="button"
                         aria-current={active ? "page" : undefined}
                         onClick={() => selectSection(s.id)}
-                        className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors ${
+                        className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors ${
                           active
                             ? "bg-hover text-fg"
                             : "text-muted hover:bg-hover/60 hover:text-fg"

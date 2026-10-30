@@ -83,7 +83,7 @@ export function Transcript({
       >
         <div
           ref={contentRef}
-          className="mx-auto max-w-3xl px-4 pt-6 pb-8 space-y-4"
+          className="mx-auto max-w-[720px] px-4 pt-6 pb-8 space-y-6"
         >
           <MessageList
             messages={messages}
@@ -92,8 +92,8 @@ export function Transcript({
           />
 
           {optimisticPrompt && (
-            <div className="flex flex-col items-end gap-2 opacity-70">
-              <div className="max-w-[85%] rounded-2xl rounded-br-md border border-accent/25 bg-accent/12 px-4 py-2.5 text-[15px] leading-relaxed text-fg whitespace-pre-wrap">
+            <div className="flex flex-col items-end gap-2 opacity-75">
+              <div className="max-w-[85%] rounded-2xl border border-border bg-elev px-4 py-3 text-base leading-normal text-fg whitespace-pre-wrap">
                 {optimisticPrompt}
               </div>
               <WorkingIndicator label="Sending..." />
@@ -118,7 +118,7 @@ export function Transcript({
           {!active && status === "failed" && error && !lastMsgHasError && (
             <div
               role="alert"
-              className="flex items-start gap-2 rounded-xl border border-danger/40 bg-danger/10 px-3.5 py-2.5 text-xs text-danger"
+              className="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-xs text-danger"
             >
               <AlertCircle
                 className="mt-0.5 size-4 shrink-0"
@@ -131,7 +131,7 @@ export function Transcript({
           {!active && status === "cancelled" && (
             <div
               role="status"
-              className="rounded-xl border border-border bg-subtle px-3.5 py-2 text-xs text-muted"
+              className="rounded-xl border border-border bg-subtle px-4 py-2 text-xs text-muted"
             >
               Run stopped.
             </div>
@@ -143,7 +143,7 @@ export function Transcript({
         <button
           type="button"
           onClick={() => scrollToBottom(true)}
-          className="absolute bottom-4 left-1/2 -translate-x-1/2 inline-flex items-center gap-1.5 rounded-full border border-border bg-elev px-3 py-1.5 text-xs font-medium text-fg shadow-lg shadow-black/30 transition-colors hover:bg-hover animate-fade-in"
+          className="touch-target absolute bottom-4 left-1/2 -translate-x-1/2 inline-flex items-center gap-2 rounded-full border border-border bg-bg px-3 py-2 text-xs font-medium text-fg shadow-menu transition-colors duration-150 ease-out hover:bg-hover animate-fade-in"
         >
           <ArrowDown className="size-3.5 text-accent" aria-hidden="true" />
           <span>Jump to latest</span>

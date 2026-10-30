@@ -63,7 +63,7 @@ export function AdvancedSection() {
       >
         <pre
           tabIndex={0}
-          className="max-h-[32rem] overflow-auto rounded-xl border border-border bg-code p-3 font-mono text-[11px] leading-relaxed text-fg"
+          className="max-h-[32rem] overflow-auto rounded-xl border border-border bg-code p-3 font-mono text-xs leading-relaxed text-fg"
         >
           {formattedJson}
         </pre>

@@ -145,7 +145,7 @@ export function SelectMenu({
         aria-expanded={open}
         aria-label={`${label}: ${selected?.label ?? value}`}
         title={disabled && disabledTitle ? disabledTitle : `${label}: ${selected?.label ?? value}`}
-        className={`inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-elev px-2.5 text-xs font-medium text-fg transition-colors hover:bg-hover disabled:pointer-events-none disabled:opacity-40 ${buttonClassName}`}
+        className={`touch-target inline-flex h-8 items-center gap-2 rounded-lg border border-border bg-elev px-3 text-xs font-medium text-fg transition-colors duration-150 ease-out hover:bg-hover active:bg-hover disabled:pointer-events-none disabled:opacity-40 ${buttonClassName}`}
       >
         {selected?.color ? (
           <span
@@ -160,7 +160,7 @@ export function SelectMenu({
           {selected?.label ?? value}
         </span>
         {badge && (
-          <span className="rounded-full border border-accent/40 bg-accent/10 px-1.5 py-0.2 text-[10px] font-medium text-accent">
+          <span className="rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-xs font-medium leading-4 text-accent">
             {badge}
           </span>
         )}
@@ -176,7 +176,7 @@ export function SelectMenu({
           aria-label={label}
           aria-activedescendant={activeOptionId}
           onKeyDown={handleListKeyDown}
-          className={`absolute top-full z-40 mt-1.5 max-h-80 w-72 overflow-y-auto rounded-xl border border-border bg-elev p-1.5 shadow-xl shadow-black/25 animate-fade-in ${
+          className={`absolute top-full z-40 mt-1 max-h-80 w-72 overflow-y-auto rounded-xl border border-border bg-bg p-1 shadow-menu animate-fade-in ${
             align === "right" ? "right-0" : "left-0"
           }`}
         >
@@ -192,14 +192,14 @@ export function SelectMenu({
                 aria-selected={isSelected}
                 onMouseEnter={() => setActiveIndex(idx)}
                 onClick={() => selectOption(opt)}
-                className={`flex cursor-pointer items-start gap-2.5 rounded-lg px-2.5 py-2 text-xs transition-colors ${
-                  isActive ? "bg-hover text-fg" : "text-fg hover:bg-hover/60"
+                className={`flex cursor-pointer items-start gap-2 rounded-lg px-3 py-2 text-xs transition-colors duration-150 ease-out ${
+                  isActive ? "bg-hover text-fg" : "text-fg hover:bg-hover/70"
                 }`}
               >
                 <div className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
                   {opt.color ? (
                     <span
-                      className="size-2.5 rounded-full"
+                      className="size-2 rounded-full"
                       style={{ backgroundColor: opt.color }}
                       aria-hidden="true"
                     />
@@ -208,21 +208,21 @@ export function SelectMenu({
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     <span className="font-medium truncate">{opt.label}</span>
                     {opt.badge && (
-                      <span className="rounded-full border border-accent/40 bg-accent/10 px-1.5 py-0.2 text-[10px] font-medium text-accent">
+                      <span className="rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-xs font-medium leading-4 text-accent">
                         {opt.badge}
                       </span>
                     )}
                   </div>
                   {opt.description && (
-                    <p className="mt-0.5 text-[11px] text-muted line-clamp-2">
+                    <p className="mt-1 text-xs text-muted line-clamp-2">
                       {opt.description}
                     </p>
                   )}
                   {opt.meta && (
-                    <p className="mt-0.5 font-mono text-[10px] text-muted">
+                    <p className="mt-1 font-mono text-xs text-muted">
                       {opt.meta}
                     </p>
                   )}

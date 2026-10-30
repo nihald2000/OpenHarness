@@ -146,13 +146,13 @@ export function SecretsSection() {
                         {sec.name}
                       </span>
                       {sec.updatedAt && (
-                        <span className="ml-2 text-[11px] text-muted">
+                        <span className="ml-2 text-xs text-muted">
                           Updated {relativeTime(sec.updatedAt)}
                         </span>
                       )}
                     </div>
 
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-2">
                       <button
                         type="button"
                         onClick={() => {

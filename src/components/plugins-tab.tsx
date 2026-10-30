@@ -1,13 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Blocks,
   Check,
   Cloud,
   Lock,
   OctagonAlert,
   Plus,
   Server,
-  Sparkles,
 } from "lucide-react";
 import { Link } from "@/lib/router";
 import { client } from "@/lib/client";
@@ -17,12 +17,12 @@ import { useAdmin } from "@/lib/use-admin";
 import { Badge, Spinner } from "./ui";
 
 export const buttonBase =
-  "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-40";
+  "touch-target inline-flex h-8 items-center gap-2 rounded-lg px-3 text-xs font-medium transition-colors duration-150 ease-out disabled:pointer-events-none disabled:opacity-40";
 export const buttonPrimary = `${buttonBase} bg-accent text-accent-fg hover:bg-accent-strong`;
 export const buttonSecondary = `${buttonBase} border border-border bg-elev hover:bg-hover text-fg`;
-export const dangerButton = `${buttonBase} border border-danger/40 bg-danger/10 text-danger hover:bg-danger/20`;
+export const dangerButton = `${buttonBase} border border-danger/35 bg-danger/10 text-danger hover:bg-danger/15`;
 export const inputCls =
-  "w-full rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-fg placeholder:text-muted/70 focus-visible:border-accent aria-[invalid=true]:border-danger/60";
+  "w-full rounded-lg border border-border bg-bg px-3 py-2 text-xs text-fg placeholder:text-muted focus-visible:border-accent aria-[invalid=true]:border-danger/60";
 
 const PLUGIN_NAME_RE = /^[a-zA-Z0-9-_]+$/;
 
@@ -90,15 +90,15 @@ export function ConfirmDialog({
         e.preventDefault();
         onCancel();
       }}
-      className="m-auto w-full max-w-md rounded-2xl border border-border bg-elev p-4 text-xs text-fg shadow-2xl backdrop:bg-black/50"
+      className="m-auto w-full max-w-md rounded-2xl border border-border bg-bg p-4 text-xs text-fg shadow-menu backdrop:bg-overlay"
     >
       <div className="flex items-start gap-3">
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-warning/40 bg-warning/10 text-warning">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-warning/35 bg-warning/10 text-warning">
           <OctagonAlert className="size-5" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-semibold text-fg">{title}</h3>
-          <p className="mt-1 text-xs leading-relaxed text-muted">
+          <p className="mt-1 text-xs leading-normal text-muted">
             {description}
           </p>
         </div>
@@ -264,7 +264,7 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
             />
             <span>Remember (save to config)</span>
           </label>
-          <p className="mt-0.5 text-[11px] text-muted">
+          <p className="mt-1 text-xs text-muted">
             {remember
               ? "Attach, detach and default-runtime changes are written to the project config."
               : "Changes apply until the server restarts."}
@@ -273,38 +273,35 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
       )}
 
       <div>
-        <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted">
-          PLUGINS - {plugins.length}
+        <div className="mb-2 text-xs font-medium text-muted">
+          Plugins · {plugins.length}
         </div>
 
         {pluginError && (
-          <div className="mb-2 rounded-lg border border-danger/40 bg-danger/10 p-2 text-danger">
+          <div className="mb-2 rounded-lg border border-danger/35 bg-danger/10 p-2 text-danger">
             {pluginError}
           </div>
         )}
 
-        <div className="space-y-2">
+        <div className="overflow-hidden rounded-xl border border-border bg-bg divide-y divide-border">
           {plugins.map((p) => {
             const isAttached = p.status === "attached";
             const isFailed = p.status === "failed";
             const isConfirming = confirmDetach === p.name;
 
             return (
-              <div
-                key={p.name}
-                className="rounded-lg border border-border bg-bg px-3 py-2.5 space-y-2"
-              >
+              <div key={p.name} className="px-4 py-3 space-y-2">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="font-semibold text-fg">{p.name}</span>
                       {p.version && (
-                        <span className="font-mono text-[11px] text-muted">
+                        <span className="font-mono text-xs text-muted">
                           v{p.version}
                         </span>
                       )}
                       {p.module && (
-                        <span className="font-mono text-[11px] text-muted">
+                        <span className="font-mono text-xs text-muted">
                           ({p.module})
                         </span>
                       )}
@@ -322,18 +319,18 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
                       {p.configured && <Badge tone="neutral">configured</Badge>}
                     </div>
                     {p.description && (
-                      <p className="mt-1 text-[11px] text-muted">
+                      <p className="mt-1 text-xs text-muted">
                         {p.description}
                       </p>
                     )}
                   </div>
 
                   {admin && (
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-2">
                       {isAttached ? (
                         isConfirming ? (
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[11px] text-muted">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted">
                               Detach {p.name}?
                             </span>
                             <button
@@ -404,22 +401,22 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
                 {p.contributions && (
                   <div className="flex flex-wrap gap-1">
                     {Boolean(p.contributions.runtimes?.length) && (
-                      <span className="rounded border border-border bg-code px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                      <span className="rounded border border-border bg-code px-2 py-0.5 font-mono text-xs text-muted">
                         runtimes
                       </span>
                     )}
                     {Boolean(p.contributions.providers?.length) && (
-                      <span className="rounded border border-border bg-code px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                      <span className="rounded border border-border bg-code px-2 py-0.5 font-mono text-xs text-muted">
                         providers
                       </span>
                     )}
                     {Boolean(p.contributions.tools) && (
-                      <span className="rounded border border-border bg-code px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                      <span className="rounded border border-border bg-code px-2 py-0.5 font-mono text-xs text-muted">
                         {p.contributions.tools} tools
                       </span>
                     )}
                     {Boolean(p.contributions.hooks) && (
-                      <span className="rounded border border-border bg-code px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                      <span className="rounded border border-border bg-code px-2 py-0.5 font-mono text-xs text-muted">
                         hooks
                       </span>
                     )}
@@ -427,7 +424,7 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
                 )}
 
                 {p.health && (
-                  <div className="flex items-center gap-1.5 text-[11px]">
+                  <div className="flex items-center gap-2 text-xs">
                     {p.health.ok ? (
                       <>
                         <Check
@@ -435,7 +432,7 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
                           aria-hidden="true"
                         />
                         <span className="text-muted">
-                          Healthy{p.health.detail ? ` - ${p.health.detail}` : ""}
+                          Healthy{p.health.detail ? ` · ${p.health.detail}` : ""}
                         </span>
                       </>
                     ) : (
@@ -455,7 +452,7 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
                 {p.error && (
                   <div
                     role="alert"
-                    className="rounded-md border border-danger/30 bg-danger/10 px-2.5 py-1.5 text-[11px] text-danger"
+                    className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"
                   >
                     {p.error}
                   </div>
@@ -466,12 +463,12 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
         </div>
 
         {admin && (
-          <div className="mt-2.5">
+          <div className="mt-3">
             {!showAdd ? (
               <button
                 type="button"
                 onClick={() => setShowAdd(true)}
-                className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2 text-xs font-medium text-muted hover:border-accent hover:text-fg"
+                className="touch-target flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border py-2 text-xs font-medium text-muted transition-colors duration-150 ease-out hover:border-accent hover:text-fg"
               >
                 <Plus className="size-3.5" aria-hidden="true" />
                 <span>Add plugin</span>
@@ -479,7 +476,7 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
             ) : (
               <form
                 onSubmit={handleAttachSubmit}
-                className="space-y-2.5 rounded-xl border border-border bg-bg p-3"
+                className="space-y-3 rounded-xl border border-border bg-bg p-3"
               >
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-fg">Attach plugin</span>
@@ -497,15 +494,15 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
                         })
                       );
                     }}
-                    className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/20"
+                    className="touch-target inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2 py-1 text-xs font-medium text-accent hover:bg-accent/15"
                   >
-                    <Sparkles className="size-3" aria-hidden="true" />
+                    <Blocks className="size-3" aria-hidden="true" />
                     <span>Modal sandbox</span>
                   </button>
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-muted">
+                  <label className="mb-1 block text-xs font-medium text-muted">
                     Name
                   </label>
                   <input
@@ -518,7 +515,7 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-muted">
+                  <label className="mb-1 block text-xs font-medium text-muted">
                     Module (optional)
                   </label>
                   <input
@@ -528,13 +525,13 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
                     placeholder="@openharness/plugin-modal"
                     className={`${inputCls} font-mono`}
                   />
-                  <p className="mt-0.5 text-[10px] text-muted">
+                  <p className="mt-1 text-xs text-muted">
                     Must be permitted by the server pluginAllowlist.
                   </p>
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-muted">
+                  <label className="mb-1 block text-xs font-medium text-muted">
                     Options (JSON object)
                   </label>
                   <textarea
@@ -546,7 +543,7 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
                 </div>
 
                 {addError && (
-                  <p role="alert" className="text-[11px] text-danger">
+                  <p role="alert" className="text-xs text-danger">
                     {addError}
                   </p>
                 )}
@@ -578,24 +575,24 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
       </div>
 
       <div>
-        <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted">
-          RUNTIMES - {runtimes.length}
+        <div className="mb-2 text-xs font-medium text-muted">
+          Runtimes · {runtimes.length}
         </div>
 
         {runtimeError && (
-          <div className="mb-2 rounded-lg border border-danger/40 bg-danger/10 p-2 text-danger">
+          <div className="mb-2 rounded-lg border border-danger/35 bg-danger/10 p-2 text-danger">
             {runtimeError}
           </div>
         )}
 
-        <div className="space-y-2">
+        <div className="overflow-hidden rounded-xl border border-border bg-bg divide-y divide-border">
           {runtimes.map((r) => (
             <div
               key={r.id}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-bg px-3 py-2.5"
+              className="flex flex-wrap items-center justify-between gap-2 px-4 py-3"
             >
               <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-2">
                   {r.remote ? (
                     <Cloud
                       className="size-3.5 text-accent"
@@ -614,7 +611,7 @@ export function PluginsTab({ inSettings = false }: { inSettings?: boolean }) {
                     {r.plugin ? `plugin: ${r.plugin}` : "Built-in"}
                   </Badge>
                 </div>
-                <p className="mt-1 text-[11px] text-muted">
+                <p className="mt-1 text-xs text-muted">
                   {r.description || "Starts on first command."}
                 </p>
               </div>

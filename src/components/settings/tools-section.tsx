@@ -231,7 +231,7 @@ export function ToolsSection() {
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left text-xs">
             <thead>
-              <tr className="border-b border-border text-[11px] uppercase text-muted">
+              <tr className="border-b border-border text-xs uppercase text-muted">
                 <th className="py-2 pr-3">Tool</th>
                 <th className="py-2 pr-3">Description</th>
                 <th className="py-2 pr-3">Plugin / runtime</th>
@@ -252,7 +252,7 @@ export function ToolsSection() {
                     {t.plugin ? (
                       <Badge tone="accent">plugin: {t.plugin}</Badge>
                     ) : (
-                      <span className="font-mono text-[11px]">
+                      <span className="font-mono text-xs">
                         {t.source || "built-in"}
                       </span>
                     )}
