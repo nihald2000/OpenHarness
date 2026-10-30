@@ -48,14 +48,16 @@ image = (
         "npm install -g @anthropic-ai/sandbox-runtime",
     )
     .pip_install("playwright")
-    .run_commands(
-        "python -m playwright install --with-deps chromium",
-    )
+    # The env must be set before `playwright install`, otherwise the browsers
+    # land in /root/.cache/ms-playwright and the runtime path is empty.
     .env(
         {
             "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright",
             "PYTHONUNBUFFERED": "1",
         }
+    )
+    .run_commands(
+        "python -m playwright install --with-deps chromium",
     )
 )
 
@@ -132,7 +134,7 @@ def main():
             sb,
             "environment",
             "set -x; uname -a; id; bwrap --version; srt --version; "
-            "python --version; node --version; python -c 'import playwright; print(playwright.__version__)'",
+            "python --version; node --version; python -c 'import playwright; print(\"playwright import ok\")'",
             results,
         )
 
@@ -161,7 +163,7 @@ ls -l /etc/srt
         _run(
             sb,
             "srt_offline_blocked",
-            "srt --settings /etc/srt/offline.json "
+            "srt --settings /etc/srt/offline.json -- "
             "curl -sS -m 10 -o /dev/null -w '%{http_code}' https://example.com",
             results,
         )
@@ -169,7 +171,7 @@ ls -l /etc/srt
         _run(
             sb,
             "srt_connected_allowed",
-            "srt --settings /etc/srt/connected.json "
+            "srt --settings /etc/srt/connected.json -- "
             "curl -sS -m 20 -o /dev/null -w '%{http_code}' https://example.com",
             results,
         )
@@ -177,7 +179,7 @@ ls -l /etc/srt
         _run(
             sb,
             "srt_connected_other_blocked",
-            "srt --settings /etc/srt/connected.json "
+            "srt --settings /etc/srt/connected.json -- "
             "curl -sS -m 10 -o /dev/null -w '%{http_code}' https://www.google.com",
             results,
         )
