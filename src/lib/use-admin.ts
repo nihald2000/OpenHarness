@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { isDemoMode } from "./client";
 
 export interface AuthenticatedUser {
   id: string;
@@ -6,59 +7,122 @@ export interface AuthenticatedUser {
   email: string;
 }
 
-const STORAGE_KEY_AUTH = "oh_admin_authenticated";
+export interface AdminLoginResult {
+  ok: boolean;
+  error?: string;
+}
+
+export async function loginAdminWithToken(
+  token: string,
+  baseUrl = "",
+  fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)
+): Promise<AdminLoginResult> {
+  if (!token.trim()) {
+    return { ok: false, error: "Please enter an administrator token." };
+  }
+  try {
+    const res = await fetchImpl(`${baseUrl}/v1/admin/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ token: token.trim() }),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
 
 export function useAdmin() {
-  const [admin, setAdmin] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_AUTH);
-      return saved === null ? true : saved === "true"; // Default to open in local mode
-    } catch {
+  const [admin, setAdmin] = useState<boolean>(isDemoMode);
+  const [loading, setLoading] = useState<boolean>(!isDemoMode);
+  const [expired, setExpired] = useState(false);
+  const [user, setUser] = useState<AuthenticatedUser | null>(
+    isDemoMode
+      ? {
+          id: "usr_demo",
+          name: "Demo User",
+          email: "demo@openharness.local",
+        }
+      : null
+  );
+  const [authDisabled, setAuthDisabled] = useState<boolean>(true);
+
+  const refresh = useCallback(async (): Promise<boolean> => {
+    if (isDemoMode) {
+      setAdmin(true);
+      setLoading(false);
       return true;
     }
-  });
-
-  const [loading, setLoading] = useState(false);
-  const [expired, setExpired] = useState(false);
-  const [user, setUser] = useState<AuthenticatedUser | null>({
-    id: "usr_admin",
-    name: "Admin User",
-    email: "admin@openharness.local",
-  });
-  const [authDisabled] = useState(true);
-
-  const login = useCallback(async (token: string): Promise<{ ok: true } | { ok: false; error: string }> => {
-    if (!token.trim()) {
-      return { ok: false, error: "Please enter an administrator token." };
-    }
     try {
-      localStorage.setItem(STORAGE_KEY_AUTH, "true");
-      setAdmin(true);
-      setExpired(false);
-      return { ok: true };
+      const res = await fetch("/v1/admin/session", { credentials: "include" });
+      if (!res.ok) {
+        setAdmin(false);
+        setLoading(false);
+        return false;
+      }
+      const data = (await res.json()) as {
+        admin?: boolean;
+        authDisabled?: boolean;
+        user?: AuthenticatedUser | null;
+      };
+      const isAdmin = Boolean(data.admin);
+      setAdmin(isAdmin);
+      setAuthDisabled(data.authDisabled ?? true);
+      setUser(data.user ?? null);
+      setLoading(false);
+      return isAdmin;
     } catch {
-      return { ok: false, error: "Storage error occurred." };
+      setAdmin(false);
+      setLoading(false);
+      return false;
     }
   }, []);
 
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const login = useCallback(
+    async (token: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+      const result = await loginAdminWithToken(token);
+      if (!result.ok) {
+        setAdmin(false);
+        return { ok: false, error: result.error ?? "Invalid administrator token." };
+      }
+      setAdmin(true);
+      setExpired(false);
+      setUser({
+        id: "usr_admin",
+        name: "Admin User",
+        email: "admin@openharness.local",
+      });
+      return { ok: true };
+    },
+    []
+  );
+
   const logout = useCallback(async (): Promise<void> => {
     try {
-      localStorage.setItem(STORAGE_KEY_AUTH, "false");
-      setAdmin(false);
-      setUser(null);
+      await fetch("/v1/admin/session", {
+        method: "DELETE",
+        credentials: "include",
+      });
     } catch {
-      // ignore
+      // ignore network error on logout
     }
+    setAdmin(false);
+    setUser(null);
   }, []);
 
   const markSignedOut = useCallback((isExpired = true) => {
     setAdmin(false);
     setExpired(isExpired);
   }, []);
-
-  const refresh = useCallback(async (): Promise<boolean> => {
-    return admin;
-  }, [admin]);
 
   return {
     admin,

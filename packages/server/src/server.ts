@@ -621,6 +621,30 @@ export class OpenHarnessServer {
     const pathname = parsedUrl.pathname;
     const tenantId = identity.tenantId;
 
+    if (method === "GET" && pathname === "/v1/admin/session") {
+      const hasAdminCfg = Boolean(this.config.adminToken ?? process.env.OPENHARNESS_ADMIN_TOKEN);
+      return {
+        status: 200,
+        body: {
+          admin: identity.admin,
+          authDisabled: !hasAdminCfg && this.config.loopback !== false,
+          user: identity.admin
+            ? { id: identity.userId, name: "Admin User", email: "admin@openharness.local" }
+            : null,
+        },
+      };
+    }
+
+    if (method === "DELETE" && pathname === "/v1/admin/session") {
+      return {
+        status: 200,
+        body: { ok: true, admin: false },
+        headers: {
+          "set-cookie": "oh_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict",
+        },
+      };
+    }
+
     // Admin session exchange endpoint (sets HttpOnly cookie after verifying admin token)
     if (method === "POST" && pathname === "/v1/admin/session") {
       const configuredAdmin = this.config.adminToken ?? process.env.OPENHARNESS_ADMIN_TOKEN;
@@ -663,6 +687,107 @@ export class OpenHarnessServer {
           defaultRuntime: this.defaultRuntime,
         },
       };
+    }
+
+    if (method === "GET" && pathname === "/v1/agents") {
+      return {
+        status: 200,
+        body: [
+          { name: "assistant", description: "General software engineering assistant.", mode: "primary", builtIn: true },
+          { name: "plan", description: "Read-only planning architect.", mode: "primary", builtIn: true },
+          { name: "code", description: "Implementation and refactoring specialist.", mode: "primary", builtIn: true },
+          { name: "reviewer", description: "Independent code and diff auditor.", mode: "primary", builtIn: true },
+        ],
+      };
+    }
+
+    if (method === "GET" && pathname === "/v1/commands") {
+      return {
+        status: 200,
+        body: [
+          { name: "help", description: "Show available commands and agent tools", agent: "assistant" },
+          { name: "plan", description: "Switch to plan mode", agent: "plan" },
+          { name: "verify", description: "Run verification suite", agent: "assistant" },
+          { name: "compact", description: "Compact conversation context", agent: "assistant" },
+        ],
+      };
+    }
+
+    if (method === "GET" && pathname === "/v1/skills") {
+      return { status: 200, body: [] };
+    }
+
+    if (method === "GET" && pathname === "/v1/mcp") {
+      return { status: 200, body: [] };
+    }
+
+    if (method === "GET" && pathname === "/v1/tools") {
+      const tools = this.deps.toolRouter.listTools({
+        runId: "catalog",
+        sessionId: "catalog",
+        tenantId,
+        agent: parsedUrl.searchParams.get("agent") ?? "assistant",
+        model: this.config.defaultModel ?? "mock/demo",
+        mode: "chat",
+        phase: "building",
+        iteration: 0,
+        taskIteration: 0,
+        transcriptCursor: 0,
+        budgets: { maxIterations: 25, maxRunDurationSec: 600, maxOutputTokensPerCall: 4096, maxCommandSec: 120, warnedResources: [], extensionsCount: 0 },
+        usage: { input: 0, output: 0 },
+        cost: 0,
+        plan: null,
+        todos: [],
+        features: [],
+        featureId: null,
+        pendingApproval: null,
+        lastCheckpoint: null,
+        sandboxHandleId: null,
+        inFlightToolCalls: [],
+        completedToolCalls: {},
+        verifyFailures: [],
+        malformedCallStreak: 0,
+        compactionStreak: 0,
+        stuckWarningsIssued: 0,
+        tainted: false,
+        taintSources: [],
+        preTaintAllowedDomains: [],
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      return { status: 200, body: tools };
+    }
+
+    if (method === "GET" && pathname === "/v1/plugins") {
+      return { status: 200, body: [] };
+    }
+
+    if (method === "POST" && pathname === "/v1/reload") {
+      return { status: 200, body: { reloaded: true } };
+    }
+
+    if (method === "GET" && pathname === "/v1/admin/settings") {
+      return {
+        status: 200,
+        body: {
+          config: {},
+          effective: { defaultRuntime: this.defaultRuntime, defaultModel: this.config.defaultModel ?? "mock/demo" },
+          file: "openharness.json",
+          exists: false,
+        },
+      };
+    }
+
+    if (method === "PATCH" && pathname === "/v1/admin/settings") {
+      return { status: 200, body: {} };
+    }
+
+    if (method === "GET" && pathname === "/v1/admin/mcp") {
+      return { status: 200, body: [] };
+    }
+
+    if (method === "GET" && pathname === "/v1/admin/mcp/presets") {
+      return { status: 200, body: [] };
     }
 
     if (method === "GET" && pathname === "/v1/models") {

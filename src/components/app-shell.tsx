@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
 import { usePathname, useRouter } from "@/lib/router";
 import { AppProvider } from "@/lib/app-context";
+import { isDemoMode } from "@/lib/client";
 import { useAdmin } from "@/lib/use-admin";
 import { Sidebar } from "./sidebar";
 import { Toasts } from "./toast";
@@ -57,6 +58,15 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
   return (
     <AppProvider>
+      {isDemoMode && (
+        <div
+          role="region"
+          aria-label="Demo mode notice"
+          className="bg-amber-500/15 border-b border-amber-500/30 px-3 py-1 text-center text-xs font-medium text-amber-300"
+        >
+          Demo mode - no real agent
+        </div>
+      )}
       <a
         href="#oh-composer"
         className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-lg focus:bg-accent focus:px-3 focus:py-2 focus:text-xs focus:font-medium focus:text-accent-fg"

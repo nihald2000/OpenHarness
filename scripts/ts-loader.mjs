@@ -24,6 +24,7 @@ const WORKSPACE_MAP = {
   "openharness/sandboxd": path.join(ROOT_DIR, "packages/sandboxd/src/index.ts"),
   "openharness/cli": path.join(ROOT_DIR, "packages/cli/src/index.ts"),
   "modal": path.join(ROOT_DIR, "scripts/modal-stub.mjs"),
+  "react": path.join(ROOT_DIR, "scripts/react-stub.mjs"),
 };
 
 export async function resolve(specifier, context, nextResolve) {
