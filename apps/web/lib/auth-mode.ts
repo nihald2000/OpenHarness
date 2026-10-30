@@ -1,8 +1,8 @@
 /**
- * Temporary demo mode: skips the sign-in screen and the proxy's admin-cookie gate.
- * This is intentionally server-side only and must never be enabled on a deployment
- * that exposes an administrative backend to untrusted visitors.
+ * Local development stays easy to use. Production still requires an
+ * authenticated session unless the explicit override is enabled.
  */
 export function authDisabled(): boolean {
-  return process.env.OPENHARNESS_WEB_AUTH_DISABLED === "true";
+  if (process.env.OPENHARNESS_WEB_AUTH_DISABLED === "true") return true;
+  return process.env.NODE_ENV !== "production" && !process.env.OIDC_ISSUER?.trim();
 }

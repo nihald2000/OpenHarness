@@ -12,7 +12,7 @@ Use `.env.example` as the environment variable template. The server reads JSON s
 | `OPENHARNESS_DATA_DIR` | `.openharness` | Persistent settings, sessions, events, MCP state, and secrets directory. |
 | `OPENHARNESS_WORKSPACE` | Current directory | Workspace root for repository tools and context discovery. |
 | `OPENHARNESS_SERVER_TOKEN` | Unset | Optional bearer token required for `/v1/**`. |
-| `OPENHARNESS_ADMIN_TOKEN` | Unset | Separate token required for `/v1/admin/**`. Admin routes remain closed when it is unset. |
+| `OPENHARNESS_ADMIN_TOKEN` | Unset | Optional separate admin token for `/v1/admin/**`. The server token also authorizes admin routes; with both tokens unset and OIDC disabled, development mode opens admin routes for initial Settings setup while production remains closed. |
 | `DATABASE_URL` | Unset | Postgres connection for OIDC tenant/user provisioning. Run `bun run oh migrate` with `OPENHARNESS_DATABASE_URL` configured before enabling OIDC. |
 | `REDIS_URL` | Unset | Optional shared backend for API/provider token buckets and expiring run quota leases. |
 | `OIDC_ISSUER` / `OIDC_AUDIENCE` | Unset | Enable bearer JWT verification and tenant identity provisioning. |

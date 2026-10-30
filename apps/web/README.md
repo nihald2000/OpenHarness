@@ -105,7 +105,7 @@ apps/web/
 | `OPENHARNESS_URL` | `http://127.0.0.1:4096` | Upstream URL of the OpenHarness server (server-side only). |
 | `OPENHARNESS_SERVER_TOKEN` | *(empty)* | Optional bearer token injected by the Next.js proxy on upstream requests. |
 | `OPENHARNESS_WEB_SESSION_SECRET` | *(random per process)* | Secret used to derive the AES-256-GCM key for the `oh_admin` session cookie. Set a stable secret in production. |
-| `OPENHARNESS_WEB_AUTH_DISABLED` | `false` | Skips the sign-in screen and proxy admin gate for temporary demos. Do not enable on a public deployment. |
+| `OPENHARNESS_WEB_AUTH_DISABLED` | `false` | Explicitly skips the sign-in screen and proxy admin gate. Local development also opens Settings automatically unless OIDC is configured. Use authentication for network-accessible deployments. |
 | `OPENHARNESS_WEB_URL` | Local request origin in development | Public origin used to build the fixed OAuth callback URLs. |
 | `OPENHARNESS_ADMIN_TOKEN` | *(empty)* | Server administrator token; must match the API server token. |
 | `OPENHARNESS_AUTH_DATA_DIR` | `OPENHARNESS_DATA_DIR` or `.openharness-auth` | Persistent web account profile directory. |

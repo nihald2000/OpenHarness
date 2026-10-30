@@ -330,8 +330,14 @@ export function createServer(options: { hostname?: string; port?: number } = {})
         if (subject.kind === "break-glass" || secureEqual(req.headers.get("x-openharness-admin") ?? undefined, adminToken ?? undefined)) logError("auth.break_glass_used", new Error("Admin break-glass token used"), { requestId: headers.get("x-request-id"), path });
       }
       if (publicToken && path !== "/v1/admin/verify" && !secureEqual(bearer(req), publicToken) && !(oidcEnabled && subject)) return json({ error: "unauthorized" }, 401);
-      if (path.startsWith("/v1/admin/") && path !== "/v1/admin/verify" && !secureEqual(req.headers.get("x-openharness-admin") ?? bearer(req), adminToken) && subject?.kind !== "break-glass") {
-        return json({ error: "admin token required" }, 401);
+      if (path.startsWith("/v1/admin/") && path !== "/v1/admin/verify" && subject?.kind !== "break-glass") {
+        // An unconfigured development server is open so Settings can be used
+        // to add provider credentials. Production keeps admin routes closed.
+        const supplied = req.headers.get("x-openharness-admin") ?? bearer(req);
+        const isAdmin = (!!adminToken && secureEqual(supplied, adminToken))
+          || (!!publicToken && secureEqual(bearer(req), publicToken))
+          || (!adminToken && !publicToken && !oidcEnabled && process.env.NODE_ENV !== "production");
+        if (!isAdmin) return json({ error: "admin token required" }, 401);
       }
       if (oidcEnabled && subject) {
         const earlySession = path.match(/^\/v1\/sessions\/([^/]+)(?:\/|$)/);
@@ -395,7 +401,9 @@ export function createServer(options: { hostname?: string; port?: number } = {})
 
       if (path === "/v1/admin/verify" && method === "POST") {
         const supplied = req.headers.get("x-openharness-admin") ?? bearer(req);
-        return secureEqual(supplied, adminToken) ? json({ ok: true }) : json({ error: "invalid admin token" }, 401);
+        const isValid = (!!adminToken && secureEqual(supplied, adminToken))
+          || (!!publicToken && secureEqual(supplied, publicToken));
+        return isValid ? json({ ok: true }) : json({ error: "invalid admin token" }, 401);
       }
       if (path === "/v1/admin/reload" && method === "POST") {
         await stopActiveRuns();

@@ -33,22 +33,20 @@ async function handle(
 
   const isMutating = MUTATING.has(req.method);
   const originOk = sameOrigin(req);
-  const demoMode = authDisabled();
-  // In demo mode, optionally act as the server administrator so the settings UI
-  // works without a sign-in. Only set OPENHARNESS_ADMIN_TOKEN when every visitor
-  // is allowed to administer the backend.
+  const openMode = authDisabled();
+  // Unconfigured local installs can use Settings without a sign-in. When auth
+  // is configured, forward only a validated admin session credential.
   const adminToken =
     adminTokenFrom(req) ??
-    (demoMode ? process.env.OPENHARNESS_ADMIN_TOKEN?.trim() || undefined : undefined);
+    (openMode
+      ? process.env.OPENHARNESS_ADMIN_TOKEN?.trim() || process.env.OPENHARNESS_SERVER_TOKEN?.trim() || undefined
+      : undefined);
 
-  if (targetPath !== "/health" && !adminToken && !demoMode) {
+  if (targetPath !== "/health" && !adminToken && !openMode) {
     return json({ error: "authentication required" }, 401);
   }
 
   if (isMutating && !originOk) {
-    return json({ error: "bad origin" }, 403);
-  }
-  if (adminToken && !originOk) {
     return json({ error: "bad origin" }, 403);
   }
 

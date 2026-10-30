@@ -171,18 +171,23 @@ export function clearSessionCookie(res: NextResponse): void {
 
 export function sameOrigin(req: Request): boolean {
   const secFetchSite = req.headers.get("sec-fetch-site");
+  // The browser's Sec-Fetch-Site header is authoritative and tamper-proof.
+  // Trust it when present: same-origin / same-site are safe, cross-site is not.
   if (secFetchSite === "cross-site") return false;
+  if (secFetchSite === "same-origin" || secFetchSite === "same-site") return true;
+  // Sec-Fetch-Site is absent (non-browser client or older browser) – fall back
+  // to comparing the Origin header against the host.
   const origin = req.headers.get("origin");
   if (!origin) return true;
   let originHost: string;
   try {
-    originHost = new URL(origin).host.toLowerCase();
+    originHost = new URL(origin).hostname.toLowerCase();
   } catch {
     return false;
   }
   const forwardedHost = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim().toLowerCase();
   const host = req.headers.get("host")?.trim().toLowerCase();
-  const expected = forwardedHost || host;
+  const expected = (forwardedHost || host)?.replace(/:\d+$/, "");
   if (!expected) return false;
   return originHost === expected;
 }

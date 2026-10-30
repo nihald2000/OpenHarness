@@ -83,6 +83,9 @@ image = (
             # real OpenAI-compatible endpoint.
             "OPENHARNESS_PROVIDER": "mock",
             "OPENHARNESS_MODEL": "mock/demo",
+            # Increase admin API burst to avoid 429 when the settings UI
+            # fires several concurrent requests on page load.
+            "ADMIN_BURST": "30",
         }
     )
     .workdir("/repo")
@@ -96,14 +99,20 @@ server_secret = modal.Secret.from_name(SECRET_NAME)
     image=image,
     volumes={"/data": data_volume},
     secrets=[server_secret],
-    min_containers=0,
+    # Keep one warm container to avoid cold-start TransferEncodingErrors
+    # caused by Modal's ASGI proxy sending requests before Bun is fully ready.
+    min_containers=1,
     # The JSON state store assumes a single writer. Keep one container and rely
     # on input concurrency for simultaneous SSE streams.
     max_containers=1,
-    scaledown_window=180,
+    scaledown_window=300,
     timeout=3600,
 )
 @modal.concurrent(max_inputs=100)
 @modal.web_server(PORT, startup_timeout=60)
 def server() -> None:
+    import time
     subprocess.Popen(["/usr/local/bin/openharness"], cwd="/repo")
+    # Give the Bun server a moment to finish loading state from disk
+    # before Modal starts routing requests to the port.
+    time.sleep(2)

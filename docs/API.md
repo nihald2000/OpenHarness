@@ -5,7 +5,7 @@ The Bun server defaults to `http://127.0.0.1:4096`. JSON routes return `{ "error
 ## Authentication
 
 - If `OPENHARNESS_SERVER_TOKEN` is set, send `Authorization: Bearer <token>` for `/v1/**` routes except `/v1/admin/verify`.
-- Every `/v1/admin/**` route requires the separate `OPENHARNESS_ADMIN_TOKEN`, sent as `X-OpenHarness-Admin: <token>` or as a bearer token. `/v1/admin/verify` accepts the admin token as a bearer token.
+- `/v1/admin/**` routes accept either the configured `OPENHARNESS_ADMIN_TOKEN` in `X-OpenHarness-Admin` or as a bearer token, or the configured `OPENHARNESS_SERVER_TOKEN` as a bearer token. With both tokens unset and OIDC disabled, development mode leaves admin routes open so Settings can be used to configure providers; production remains closed. `/v1/admin/verify` accepts either configured token.
 - CORS origins are controlled by `OPENHARNESS_CORS_ORIGINS`. The server sets `x-request-id`, `x-content-type-options`, and `referrer-policy` response headers.
 
 ## Health and catalogs
@@ -49,7 +49,7 @@ Tool permissions are enforced by the server. An `always` grant is scoped to the 
 
 ## Administration
 
-All routes below require admin authentication.
+When server/admin auth is configured, routes below require one of those bearer tokens. With no auth tokens and OIDC disabled, development mode leaves them open for local setup; production keeps them closed.
 
 | Method | Route | Purpose |
 | --- | --- | --- |

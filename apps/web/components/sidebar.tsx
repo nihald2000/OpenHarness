@@ -16,10 +16,8 @@ import {
 import { client } from "@/lib/client";
 import { errorMessage, isStatus, relativeTime } from "@/lib/format";
 import { useApp, useCatalog, useSessions } from "@/lib/hooks";
-import { useAdmin } from "@/lib/use-admin";
 import { Kbd } from "./kbd";
 import {
-  Badge,
   BrandLogo,
   ConnectionIndicator,
   IconButton,
@@ -41,7 +39,6 @@ export function Sidebar() {
   } = useApp();
   const { sessions, loading } = useSessions();
   const { info } = useCatalog();
-  const { admin, authDisabled } = useAdmin();
 
   const [query, setQuery] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -262,7 +259,6 @@ export function Sidebar() {
               <Settings className="size-4 text-muted" aria-hidden="true" />
               <span>Settings</span>
             </span>
-            {admin && !authDisabled && <Badge tone="accent">Admin</Badge>}
           </Link>
 
           <div className="flex items-center justify-between px-2.5 py-1.5 text-xs text-muted">

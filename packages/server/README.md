@@ -22,7 +22,7 @@ The server listens on `127.0.0.1:4096` by default. Start the web UI separately w
 | `OPENHARNESS_DATA_DIR` | `.openharness` | Local directory for persisted state. |
 | `OPENHARNESS_WORKSPACE` | current directory | Root for workspace file tools. |
 | `OPENHARNESS_SERVER_TOKEN` | unset | Optional bearer token for `/v1/**`; when set, clients must send it. |
-| `OPENHARNESS_ADMIN_TOKEN` | unset | Admin token; admin endpoints fail closed until configured. |
+| `OPENHARNESS_ADMIN_TOKEN` | unset | Optional separate admin token. The server token also authorizes admin routes; if both are unset and OIDC is disabled, development admin routes are open for initial setup and production routes remain closed. |
 | `OPENHARNESS_PROVIDER` | `mock` | `mock` for offline responses or `openai` for the OpenAI-compatible streaming adapter. |
 | `OPENHARNESS_MODEL` | provider default | Model identifier sent to the provider. |
 | `OPENAI_API_KEY` | unset | Required for `OPENHARNESS_PROVIDER=openai`; never returned by the API. |
