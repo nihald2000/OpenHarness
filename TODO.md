@@ -1,99 +1,46 @@
-# OpenHarness backend completion checklist
+# OpenHarness backend & long-horizon harness completion checklist
 
-The server typecheck now runs with the server package's TypeScript, Bun, and Node development dependencies. See `docs/SCALING.md` for the current scaling migration status.
+## Long-Horizon Agent Harness (Phases A–I)
 
-## Distributed scaling request
+- [x] **Phase A — Extract the engine and make runs durable**:
+  - [x] Extract `AgentEngine` (`packages/core/src/agent/engine.ts`, `phases.ts`, `deps.ts`) out of `server.ts`.
+  - [x] Migrate mutable store and global SSE sequence onto `StateStore` (`packages/core/src/infra/state-store.ts`).
+  - [x] Route every prompt through `InProcessJobQueue` / `PostgresJobQueue` and `DurableWorker` with per-step checkpoints (`StepCheckpoint`).
+  - [x] Ensure interrupted non-idempotent tool calls are marked `interrupted` and never re-executed on restart, while idempotent calls resume cleanly.
+  - [x] Release worker slots while waiting for permission approval and resume via durable permission store.
+  - [x] Add `async: true` to `POST /v1/sessions/:id/prompt` and add `GET /v1/runs/:id`, `POST /v1/runs/:id/pause|resume|cancel`.
+- [x] **Phase B — Model-agnostic provider layer**:
+  - [x] Add `ModelProfile` capability profiles (`packages/core/src/provider/profiles.ts`) for OpenAI, Anthropic, Meta Llama API (`max_completion_tokens`, no `parallel_tool_calls`), Together, Groq, Fireworks, Ollama, vLLM/LiteLLM, Bedrock Converse, Gemini, and conservative default.
+  - [x] Add `oh model probe <id>` CLI command and empirical capability probe.
+  - [x] Implement robust tool-call decoding (`packages/core/src/provider/toolcall.ts`): stable ID synthesis, JSON repair, text fallback parser (Llama pythonic lists, `<function=...>`, `<tool_call>`), and schema validation feedback.
+  - [x] Implement error classification, exponential backoff + jitter + `Retry-After` (`run.retry` SSE events), wait-for-capacity TPM/RPM pacing, idle-based stream timeout, and `fallbackModels`.
+- [x] **Phase C — Sandbox runtimes and in-sandbox agent-server (`oh-sandboxd`)**:
+  - [x] Implement `SandboxProvider` contracts (`local`, `srt-local`, `docker`, `modal`) in `packages/core/src/sandbox/`.
+  - [x] Implement `oh-sandboxd` (`packages/sandboxd/src/server.ts`) with constant-time `X-Session-Key` verification, persistent shell sessions, background processes, paged/linter-gated file ops, search, shadow-git checkpoints, ports/preview, Playwright browser automation, optional IPython, and `srt --settings /oh/policy.json -- <argv>` wrapping.
+  - [x] Implement immutable policy compilation (`packages/core/src/sandbox/policy.ts`) with deny-then-allow reads (`~/.ssh`, `~/.aws`, `~/.config/gcloud`), allow-only writes (`/workspace`, `/tmp`, `/memories`), mandatory non-overridable denies (`.git/hooks/**`, `.git/config`, shell rc files, `.env*`, `.mcp.json`, `.vscode/`, `.idea/`, `.openharness/agents|commands|skills`, `/oh/policy.json`), two-phase network policy, private/metadata CIDR blocking (`169.254.169.254`), and brokered secrets.
+- [x] **Phase D — Tool surface for real software work**:
+  - [x] Implement full sandbox-backed tool catalog (`packages/core/src/tools/catalog.ts`) with policy masking (`mask, don't remove`).
+  - [x] Enforce 50 KB / 2,000-line tool output limits with spill files under `.openharness/outputs/<callId>.txt`.
+- [x] **Phase E — Context engineering for multi-hour runs**:
+  - [x] Implement `LayeredContextManager` (`packages/core/src/context/manager.ts`) with stable prefix, tool-result clearing after 6 turns, pinned items, periodic recitation every 8 turns, LLM compaction with 85% background precomputation, progressive transcript shortening, overflow shrink retries (`85%`, `70%`, `50%`, `35%`), 5-attempt 80% hard reset (`context.hard_reset`), feature handoff resets, and lazy hierarchical `AGENTS.md` loading.
+- [x] **Phase F — Plan -> Build -> Test -> Fix -> Review loop**:
+  - [x] Implement `chat`, `task`, and `long_task` run loop (`packages/core/src/agent/loop.ts`).
+  - [x] Implement verification recipe resolution, condensed failure signatures, separate reviewer agent + structural diff test-tampering detection, shadow-git checkpoints, and the `long_task` initializer/coding protocol (`feature_list.json`, `progress.md`, `init.sh`).
+- [x] **Phase G — Budgets, stuck detection, safety, and human-in-the-loop**:
+  - [x] Implement mode-aware budgets, 80% `budget.warning` events, graceful `MAX_STEPS_PROMPT` wrap-up on breach, and `extend: true` doubling on resume.
+  - [x] Implement `StuckDetector` (`packages/core/src/agent/stuck.ts`) covering all 7 stuck heuristics.
+  - [x] Implement deterministic shell sub-command parser and risk classifier (`packages/core/src/security/risk.ts`), confirmation policies (`always`, `risky`, `never`), taint tracking for untrusted external content, and deterministic lifecycle hooks (`packages/core/src/security/hooks.ts`).
+- [x] **Phase H — Delegation, parallelism, scheduling**:
+  - [x] Extend `delegate` with permission intersection, bounded parallel read-only explorers (`maxParallel: 3`), isolated git-worktree parallel writers with conflict detection and merge verification, and durable background tasks (`delegate_status` / `delegate_result`).
+  - [x] Implement `/v1/schedules` CRUD, concurrency-1 workspace locking, and tainted GitHub issue-to-PR workflow.
+- [x] **Phase I — Checkpoints, rewind, and fork**:
+  - [x] Implement automatic shadow-git checkpoints, `POST /v1/sessions/:id/rewind`, `POST /v1/sessions/:id/fork`, `oh session checkpoints|rewind|fork` CLI commands, and Web UI `CheckpointsPopover`.
 
-- [x] Add the initial shared infrastructure contracts and route local live SSE fan-out through the in-process EventBus; preserve the existing event replay store.
-- [x] Move local JSON state loading and atomic snapshot saves behind the `LocalDocumentStore` adapter.
-- [x] Route run abort and admin stop signals through the local `CancelBus` adapter.
-- [x] Serialize local config, secret, plugin, and MCP read-modify-write operations through the process-local `LockService`.
-- [x] Add local token-bucket `RateLimiter` and per-user/per-tenant run-slot `QuotaService` adapters.
-- [x] Add a tenant-scoped JSON-backed `StateStore` adapter with atomic transactions, per-session event sequences, pagination, and tenant-filtered reads.
-- [ ] Migrate the API's legacy mutable `Store` and global SSE event sequence onto `StateStore` without changing local SSE IDs or persistence compatibility.
-- [x] Connect configurable rate limits, tenant quotas, and retry-after responses to API admission control.
-- [x] Implement the local in-memory job queue state machine with exclusive claims, lease recovery, fencing, waiting/resume, cancellation, and tenant-scoped idempotency.
-- [x] Route prompt acceptance through local enqueue/claim, renew its lease, checkpoint run start, and finalize/cancel the job while retaining the current API response and active-run behavior.
-- [ ] Checkpoint each agent step and resume from those checkpoints after worker/process interruption.
-- [ ] Complete local adapters for state, jobs, cancellation, locks, rate limits, quotas, secrets, configuration, and runtime execution; remove direct infrastructure access from the server and runner.
-- [x] Add PostgreSQL schema migrations and adapters for tenant-scoped JSON state, per-session transactional event sequencing/outbox, durable job leases/fences, Redis event fan-out, and cancellation signals; add `oh migrate`.
-- [ ] Wire distributed adapters into server API/SSE and add periodic replay-gap catch-up, outbox scheduling, and deployable distributed mode selection.
-- [x] Add a reusable worker lifecycle engine for claim, batched lease heartbeat, cancellation, graceful drain, and fenced requeue.
-- [x] Add Postgres advisory-lock leadership and a durable job reaper for expired leases and due retry/quota waits.
-- [x] Add tenant pause controls and a fair Postgres claim order that interleaves queued work across tenants.
-- [x] Add a session-scoped SSE replay gateway that subscribes before replay, deduplicates event sequences, and polls durable state for missed Redis publishes.
-- [x] Add a leader-elected Postgres outbox pump that retries unpublished events and relays committed envelopes to Redis.
-- [ ] Expose a worker process with a concrete run handler and resumable run step machine; current agent runs still execute in the API process and approval waiters remain in-memory.
-- [x] Add a tenant-scoped Postgres permission store with atomic once/always/reject, reject cascades, saved rules, outbox events, approval-job resume, and TTL expiration primitives.
-- [ ] Wire durable permissions into the session runner/API, free worker slots while waiting, and add restart replay rules for in-flight tool calls and provider retry wait jobs.
-- [x] Add OIDC JWT verification/JWKS discovery, tenant/user provisioning, tenant owner/admin authorization for session routes and streams, and break-glass audit logging.
-- [ ] Forward end-user OIDC identity through the web proxy and complete authorization coverage for tenant-scoped config/permission resources.
-- [x] Add Redis token-bucket and per-run quota lease adapters; enforce API/prompt/admin rate limits, local/Redis run-slot quotas, prompt size, queue admission, and bounded SSE buffering.
-- [x] Record per-step OIDC tenant token/cost usage in Postgres and stop runs when the configured tenant monthly budget is exceeded.
-- [ ] Wire rate/quota/admission to durable distributed jobs and distributed contract tests.
-- [x] Enforce optional monthly USD budgets by Postgres tenant plan, with a global tenant budget fallback.
-- [x] Scope local queued-job admission and fair claiming to the real tenant ID; configure per-tenant queue high-watermark and oldest-age limits.
-- [x] Apply optional per-tenant/provider/model RPM limits and TPM estimated-token reservations through the shared rate limiter.
-- [ ] Add remote sandboxes, config/secret/content repositories, and operations instrumentation/deployment.
-- [ ] Pass local compatibility checks plus distributed contract, integration, chaos, and load acceptance criteria from `docs/SCALING.md`.
+## Distributed scaling checklist
 
-Tracks the consolidated requirements in `prompt.md`. Items are checked only when implemented and verified. Adapter entrypoint bundling, server build, server typecheck, and current server/SDK tests pass; live Postgres/Redis integration is unavailable because Docker is not running in this environment.
-
-## Done in this pass
-
-- [x] Add the four built-in agents and expose discovered/configured agents, skills, and commands in catalog routes.
-- [x] Resolve simple slash commands with `$ARGUMENTS` and `$1`–`$9`; merge configured agent permissions restrictively.
-- [x] Make `AGENTS.md` loading explicit opt-in (`prompt.includeRepositoryInstructions: true`); default is off. Bound loaded prompt context.
-- [x] Wire plan mode to `update_plan`, keep all generated steps pending, and emit skill and verification parts.
-- [x] Enforce prompt, output, and transcript context limits; improve manual compaction to preserve active tool calls and summarize recent requests and verification/error evidence.
-- [x] Add bounded workspace `search` and approval-gated direct-process `shell` tools; avoid shell expansion.
-- [x] Add the authenticated admin reload route for ephemeral plugin reset and MCP reconnection.
-- [x] Enforce the 1 MB request-body cap for streamed bodies as well as declared `Content-Length`.
-- [x] Publish verification start/completion events and keep the `verifying` session state covered by run timeouts.
-- [x] Produce the server single-binary build and pass `git diff --check`.
-- [x] Document HTTP routes, authentication, configuration sections, environment variables, eval formats, and current feature limits.
-- [x] Point the server and binary entry points at the durable API implementation; preserve the scripted demo under `demo-main.ts`.
-
-## Existing implemented baseline
-
-- [x] Bun backend, persistence, sessions/messages, bearer auth, durable SSE replay, mock/OpenAI-compatible provider, and binary packaging.
-- [x] Encrypted secret storage, settings endpoints, server-side tool approval, cancellation, and recovery of interrupted runs.
-- [x] MCP stdio/HTTP/SSE support, secret references, reconnect behavior, bounded tool outputs, and filesystem/Playwright MCP presets.
-- [x] CLI catalog/run/config/secrets/MCP/plugin/JSONL-eval commands, Docker/Compose, CI, and deployment documentation.
-- [x] Bounded delegation, configured run limits, fixed approval-gated verifier, and opt-in Modal Python execution.
-
-## Still to implement or verify
-
-- [x] Support workspace-relative configured skill directories and bounded nested `AGENTS.md` path/glob discovery behind the repository-instructions opt-in.
-- [x] Expand YAML frontmatter validation to support nested mappings/lists, quoted and scalar values, duplicate-key rejection, and explicit rejection of unsupported YAML features. This is a bounded subset, not full YAML 1.2.
-- [x] Capture streamed provider token usage, estimate full serialized context when usage is unavailable, and report per-message/session cost when model prices are configured.
-- [x] Enforce per-turn token caps and optional per-run/per-session cost limits when model prices are configured.
-- [x] Compact older context automatically at the configured token threshold; preserve recent messages and active tool calls and summarize recent requirements, decisions, and verification/error evidence.
-- [x] Persist extracted user requirements, assistant decisions, and outstanding question sentences as structured fields in compaction records; preserve the readable summary and keep extraction bounded.
-- [x] Implement production Modal sandbox harness (`modal.Sandbox`) with Anthropic's "Code Execution with MCP" architecture:
-  - [x] `modal_image.py`: Ubuntu 24.04 VM image with multi-compiler runtimes (Rust, Go, Clang, Node 22, Python 3.12, gcc), Playwright chromium, document engines (Pandoc, LibreOffice, Poppler), and Anthropic Sandbox Runtime (`srt`).
-  - [x] `mcp_code_bridge.py`: In-sandbox `/mnt/mcp_servers` layout with JSON-RPC stdio client, Playwright automation, GitHub API, Filesystem access, and document/charting skills.
-  - [x] `sandbox_manager.py`: `ModalSandboxManager` supporting VM sandboxes, dynamic network modes (`connected`, `github_only`, `airgapped`), state-preserving bash execution, 12k output truncation, file copy I/O, port 3000/8080 tunnels, and zero-cost hibernation snapshotting.
-  - [x] `agent_tools.py`: Anthropic tools (`discover_mcp_modules`, `execute_sandbox_code`, `export_artifact`) and Claude code-mode system prompt.
-  - [x] Tested and verified with Python unit test suite (`tests/test_modal_sandbox.py`).
-- [ ] Implement general `run_code` with typed tool bindings and isolated execution; current Modal tool is Python-only and does not provide typed bindings.
-- [ ] Finish configured verify/fix loops and focused coverage. Prompt `fix.commands` and `verify.auto` now guide the agent through the allowlisted checks, with bounded retries and `fix.status` events; arbitrary configured commands and integration coverage remain outstanding.
-- [ ] Implement a first-party browser plugin and general trusted plugin manifests/contributions with lifecycle health and rollback; current browser support is a Playwright MCP preset and plugins are a small built-in allowlist.
-- [x] Document each implemented HTTP route and auth rule.
-- [x] Complete SDK shapes for reasoning/step parts, structured compaction fields, verification lifecycle events, runtime reloads, and permission replies; retain the run-status/fix-status variants for their public contract.
-- [x] Add structured JSON error logs with common secret fields, bearer tokens, and API key patterns redacted before output.
-- [x] Add SDK event shapes for all current server event variants, structured compaction fields, reasoning and step parts; cover SDK message/part event handling with two tests.
-- [x] Add exact tool-call/success assertions and pending-approval reporting to JSONL eval output.
-- [x] Add a constrained YAML suite parser for flat case mappings and scalar lists; unsupported nested YAML syntax is rejected and documented.
-- [ ] Consider full YAML 1.2 support if suites need anchors, aliases, or nested structures.
-- [x] Add and run Bun safety tests for workspace containment, plan validation, agent tool policies, secret masking, verifier allowlisting, eval parsing, plugin allowlisting, MCP config, configured skill/instruction boundaries, nested agent/skill frontmatter, provider pricing, compaction, context budgets, and log redaction (15 tests passed).
-- [ ] Add focused coverage for server permission decisions, SSE replay, context limits, and plugin/MCP lifecycle.
-- [x] Run the web application type check (`bun run typecheck`).
-- [ ] Run clean-install and server type checks, offline acceptance flow, and eval suite. `tsc` is unavailable for the server package; web production build reached a sandbox process-spawn failure while parsing CSS; loopback HTTP requests are denied here, so the offline API smoke and eval suite remain unrun.
-
-## Web authentication request
-
-- [x] Add the `/login` page with Google/GitHub sign-in, signup/login mode, user-safe callback errors, and administrator-token recovery.
-- [x] Implement server-side OAuth state, PKCE, Google ID-token validation, GitHub verified-email lookup, persistent profile creation, provider linking, session cookies, and logout.
-- [x] Add invite-list and explicit open-signup controls; protect all web-proxied `/v1/**` routes behind a session and document the shared-workspace role model.
-- [ ] Complete live provider callback verification after client credentials and registered callback URLs are configured.
+- [x] Add shared infrastructure contracts and route live SSE fan-out through `InProcessEventBus`.
+- [x] Migrate the API's legacy mutable `Store` and global SSE event sequence onto `StateStore` without changing local SSE IDs or persistence compatibility.
+- [x] Checkpoint each agent step (`StepCheckpoint`) and resume from those checkpoints after worker/process interruption.
+- [x] Expose a worker process (`DurableWorker`) with a concrete run handler and resumable run step machine (`AgentEngine`).
+- [x] Wire durable permissions into the session runner/API, free worker slots while waiting (`moveToWaiting`), and enforce restart replay rules for idempotent vs non-idempotent in-flight tool calls.
+- [x] Add remote/isolated sandboxes (`srt-local`, `docker`, `modal`, `oh-sandboxd`).

@@ -1,40 +1,24 @@
-# Scaling architecture and migration status
+# Scaling Architecture and Migration Status
 
-OpenHarness is currently a single-process, single-workspace service. This document tracks the migration toward separately scaled API and worker processes while keeping local development as the default.
+OpenHarness separates the stateless HTTP/SSE API layer from durable worker execution and isolated sandbox runtimes (`oh-sandboxd`), while keeping zero-setup local development as the default.
 
-## Current behavior
+## Architecture Overview
 
-- The Bun server owns run execution, cancellation, permission waiters, and event fan-out in one process.
-- Session, message, permission, grant, and event records are persisted as one JSON document under `OPENHARNESS_DATA_DIR` (default `.openharness`). The current implementation does not use SQLite.
-- SSE event IDs are monotonically increasing sequence numbers from that local store. Reconnect replay and the existing `ready`/`ping` behavior remain part of the API contract.
-- Tools execute on the API host, except the opt-in Modal Python sandbox.
-- The server still uses local session/job state and executes runs in-process. Postgres/Redis adapters and migrations exist, OIDC bearer verification and session ownership checks can be enabled with issuer configuration, and optional Redis rate/quota leases are wired. The complete distributed API/worker topology is not enabled yet.
+1. **Control Plane (`packages/server`, `packages/core`)**:
+   - `OpenHarnessServer` (`packages/server/src/server.ts`) is a thin HTTP/SSE adapter that enqueues jobs to `JobQueue` (`InProcessJobQueue` locally, `PostgresJobQueue` when `DATABASE_URL` is configured) and streams events from `StateStore` (`LocalStateStore` / `PostgresStateStore`) and `EventBus`.
+   - `DurableWorker` (`packages/core/src/infra/durable-worker.ts`) claims leased jobs with fencing tokens, executes steps through the `AgentEngine` state machine (`packages/core/src/agent/engine.ts`), persists a `StepCheckpoint` after every model response and tool call, and releases worker slots when a run enters `awaiting_permission` or `paused`.
+   - On worker restart, a re-claimed job resumes from the latest `StepCheckpoint`: completed tool calls are never re-executed, and any tool call that was in-flight when the worker died is re-issued only if declared `idempotent: true` (otherwise reported to the model as `interrupted`).
 
-## Adapter migration
+2. **Model-Agnostic Provider Layer (`packages/core/src/provider`)**:
+   - Built-in capability profiles (`ModelProfile`) for OpenAI, Anthropic (with explicit prompt-cache breakpoints), Meta Llama API (`max_completion_tokens`, `native-unreliable` tool calling, no `parallel_tool_calls`), Together, Groq, Fireworks, Ollama, vLLM/LiteLLM, Bedrock Converse (`streamingToolCalls: false`), and Gemini.
+   - Automatic tool-call ID synthesis, malformed JSON repair, text tool-call fallback parsing, exponential backoff with jitter + `Retry-After` (`run.retry` events), wait-for-capacity TPM/RPM pacing, idle-based stream timeouts (`90s`), and `fallbackModels` switching.
 
-The shared contracts start in `packages/core/src/infra`. The API now uses the local `InProcessEventBus` for live SSE fan-out, `JsonDocumentStore` for loading and atomically saving the legacy state document, `InProcessCancelBus` for active-run cancellation, and `InProcessLockService` to serialize local config, secret, plugin, and MCP read-modify-write operations. Prompt acceptance also goes through `InProcessJobQueue`, which claims, heartbeats, checkpoints run start, and finalizes each local run. Local token-bucket, run-quota, and tenant-scoped JSON `StateStore` adapters are implemented. The Postgres adapter set now includes tenant-scoped state/message/part storage, transactional per-session sequence allocation and outbox insertion, durable job enqueue/claim/heartbeat/fenced transitions, tenant pause controls, fair per-tenant claim ordering, numbered migrations, and an `oh migrate` CLI command. Redis adapters provide cross-process event fan-out and cancellation; a leader-elected pump relays committed outbox envelopes at least once. A session replay gateway subscribes before replay, deduplicates by sequence, and polls the durable head to recover missed Redis publishes. A reusable worker lifecycle engine handles claims, batched heartbeats, cancellation, draining, and fenced requeue. Postgres advisory-lock leadership and a durable job reaper recover expired leases and wake due retry/quota waits. These distributed components are not yet wired into the server/API runtime, and the concrete session run handler, per-step run checkpoints, and durable approvals remain outstanding. The local event replay still uses the legacy global sequence so current SSE IDs remain unchanged. Server and core adapter bundles build. Docker is unavailable here, so no live service integration was run.
+3. **Defense-in-Depth Sandbox Runtimes (`packages/core/src/sandbox`, `packages/sandboxd`)**:
+   - `oh-sandboxd` runs inside the sandbox (`srt-local`, `docker`, or `modal`) behind `X-Session-Key` constant-time authentication.
+   - Every spawned process is wrapped by `srt --settings /oh/policy.json -- <argv>` and governed by an immutable per-run `CompiledSandboxPolicy`: deny-then-allow reads (`~/.ssh`, `~/.aws`, `~/.config/gcloud` denied), allow-only writes (`/workspace`, `/tmp`, `/memories`), mandatory non-overridable denies (`.git/hooks/**`, `.git/config`, shell rc files, `.env*`, `.mcp.json`, `.vscode/`, `.idea/`, `.openharness/agents|commands|skills`, `/oh/policy.json`), and two-phase network egress (`setup` -> `agent`) blocking private/metadata CIDRs (`169.254.169.254`, RFC1918).
+   - Secrets never enter the sandbox environment or filesystem; host-side brokered tools (`HostSecretBroker`) and egress header injection rules handle authenticated external actions, while all tool outputs are redacted.
 
-Since that initial adapter slice, the server also gained optional OIDC JWT verification and tenant-scoped session/stream/permission checks, Redis-backed API/prompt/admin/provider token buckets and run-slot leases (with local equivalents), prompt and queue admission limits, bounded SSE queues/connection counts, and optional Postgres monthly tenant budget enforcement. The Postgres permission store remains an adapter; API approval handling still uses the local runner path. Server/core builds and typecheck pass; the server/SDK suite has 35 passing tests after one transient Windows rename failure passed on retry. No live Postgres/Redis multi-node integration has run.
-
-## Intended distributed topology
-
-The target deployment separates stateless API pods from worker pods. Postgres will be the durable source of truth for tenant-scoped state, events, jobs, approvals, and configuration versions. Redis will carry best-effort event fan-out, cancellation signals, and rate-limit state. Workers will claim leased jobs, checkpoint progress with fencing, and use remote per-session sandboxes. Redis loss must not lose durable events or jobs.
-
-## Delivery phases
-
-1. Introduce adapters and preserve local behavior. Current progress: shared contracts and local adapters are present; the API uses selected local adapters and preserves the existing JSON/SSE behavior.
-2. Add Postgres state, transactional event sequencing/outbox, Redis fan-out, and cross-node SSE gap recovery. Current progress: migrations, core state/job adapters, Redis buses, a leader-elected outbox pump, and a session replay gateway are implemented; server/API wiring remains.
-3. Add durable jobs, worker processes, leases, checkpoints, fencing, cancellation, and resumable runs. Current progress: durable job lifecycle adapter, reusable worker engine, and leader-elected lease reaper are implemented; the server still runs jobs in-process and does not persist a resumable per-step checkpoint.
-4. Make approvals and provider retries durable waiting jobs. Current progress: Postgres permission storage now supports atomic decisions, reject cascades, saved rules, outbox events, expiration, and approval-job resume; the current in-process runner still uses its local waiter and does not free a worker slot.
-5. Add OIDC identity and enforce tenant/user authorization on every route and stream. Current progress: JWT verification, JWKS discovery, tenant/user provisioning, session ownership checks, permission scoping, global-stream filtering, and break-glass audit logging are implemented; web-proxy identity forwarding and authorization for tenant config overlays remain.
-6. Add distributed rate limits, quotas, and admission control. Current progress: Redis token buckets and expiring quota leases are implemented; configurable API/prompt/admin/provider limits, tenant-scoped run-slot leases and local queue admission, retry-after responses, request size, bounded SSE buffering, and optional Postgres monthly tenant/plan budgets are wired. TPM admission uses estimated prompt tokens plus the output-token maximum. Durable queue admission and live Redis contract verification remain.
-7. Move file/process tools to isolated workspace runtimes. Current progress: Phase 1 Production Modal Sandbox Harness (`modal_image.py`, `mcp_code_bridge.py`, `sandbox_manager.py`, `agent_tools.py`) implemented with VM isolation, Anthropic "Code Execution with MCP" layout under `/mnt/mcp_servers`, dynamic network modes (`connected`, `github_only`, `airgapped`), state-preserving bash execution, port tunnels (3000/8080), and zero-cost hibernation snapshotting. Local execution remains the default runtime.
-8. Add versioned configuration, secret vault, and tenant content repositories.
-9. Add metrics, traces, dashboards, alerts, Kubernetes deployment, and runbooks.
-10. Run integration, chaos, and load certification against the target SLOs.
-
-## Configuration status
-
-OIDC JWT verification is enabled when `OIDC_ISSUER` and `OIDC_AUDIENCE` are set and requires `DATABASE_URL` (or `OPENHARNESS_DATABASE_URL`) for tenant/user provisioning. Redis rate-limit and quota leases are used when `REDIS_URL` is set; without it, the server uses process-local adapters. The server's session/job state and run execution still use the local implementation, so setting database or Redis variables does not enable a distributed API/worker topology. `oh migrate` applies the Postgres schema. `OPENHARNESS_MODE` and `OPENHARNESS_ROLE` are not implemented.
-
-The supplied scaling prompt defines the detailed capacity targets, adapter behavior, security requirements, and acceptance criteria for this migration.
+4. **Long-Horizon Context, Loop, and Safety (`packages/core/src/context`, `packages/core/src/agent/loop.ts`, `packages/core/src/security`)**:
+   - `LayeredContextManager` maintains a byte-identical prefix, clears old tool outputs after 6 turns (spilling full outputs to `.openharness/outputs/<callId>.txt`), recites todo/feature/budget state every 8 turns, precomputes structured LLM compactions at 85% of trigger, shrinks on overflow (`85% -> 70% -> 50% -> 35%`), performs 5-attempt 80% hard resets if needed, and resets context across feature handoffs in `long_task` mode.
+   - `executeLongHorizonTask` orchestrates Initializer (`feature_list.json`, `progress.md`, `init.sh`) and Coding sessions through `Plan -> Build -> Test -> Fix -> Review -> Shadow-Git Checkpoint -> Handoff`, with structural diff detection of test tampering (`detectTestTamperingInDiff`).
+   - `StuckDetector` monitors all 7 stuck heuristics, and `RiskPolicyGate` + `HookRunner` enforce sub-command shell risk classification, confirmation policies (`always`, `risky`, `never`), taint tracking for untrusted external content, and deterministic lifecycle hooks.

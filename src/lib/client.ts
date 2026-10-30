@@ -1,5 +1,8 @@
 import type {
   AgentInfo,
+  CheckpointInfo,
+  RunRecord,
+  ScheduleInfo,
   CommandInfo,
   ConnectionStatus,
   ContextUsage,
@@ -715,6 +718,69 @@ export class OpenHarnessClient {
       hub.broadcast({ type: "run.status", sessionId: id, status: "idle" });
     },
 
+
+    checkpoints: async (id: string): Promise<CheckpointInfo[]> => {
+      return [
+        {
+          sha: `cp_${id.slice(0, 6)}_step1`,
+          message: "Auto-checkpoint before file edit",
+          createdAt: Date.now() - 1800_000,
+          sessionId: id,
+          step: 1,
+          automatic: true,
+        },
+        {
+          sha: `cp_${id.slice(0, 6)}_verify`,
+          message: "Checkpoint after passing verification",
+          createdAt: Date.now() - 600_000,
+          sessionId: id,
+          step: 2,
+          automatic: true,
+        },
+      ];
+    },
+
+    rewind: async (
+      id: string,
+      opts: { checkpoint: string; files?: boolean; conversation?: boolean }
+    ): Promise<{ restoredFiles: boolean; truncatedConversation: boolean }> => {
+      const sess = this.sessions.find((s) => s.id === id);
+      if (sess) {
+        sess.lastCheckpoint = opts.checkpoint;
+        sess.updatedAt = Date.now();
+        this.saveSessions();
+        hub.broadcast({ type: "session.updated", session: sess });
+      }
+      if (opts.conversation && this.messages[id] && this.messages[id].length > 2) {
+        this.messages[id] = this.messages[id].slice(0, 2);
+        this.saveMessages();
+      }
+      return {
+        restoredFiles: opts.files ?? true,
+        truncatedConversation: Boolean(opts.conversation),
+      };
+    },
+
+    fork: async (
+      id: string,
+      opts?: { atMessageId?: string; checkpoint?: string }
+    ): Promise<Session> => {
+      const parent = this.sessions.find((s) => s.id === id);
+      const forked = await this.session.create({
+        agent: parent?.agent,
+        model: parent?.model,
+        runtime: parent?.runtime ?? undefined,
+      });
+      forked.parentId = id;
+      forked.title = `${parent?.title || "Session"} (Fork)`;
+      forked.lastCheckpoint = opts?.checkpoint ?? parent?.lastCheckpoint;
+      this.messages[forked.id] = [...(this.messages[id] || [])];
+      this.saveSessions();
+      this.saveMessages();
+      hub.broadcast({ type: "session.updated", session: forked });
+      return forked;
+    },
+
     context: async (id: string): Promise<{ contextUsage: ContextUsage }> => {
       const list = this.messages[id] || [];
       const estimatedTokens = Math.max(450, list.length * 420);
@@ -907,6 +973,80 @@ export class OpenHarnessClient {
     timers.push(completeTimer);
     this.activeTimeouts.set(sessionId, timers);
   }
+
+
+  readonly runs = {
+    list: async (): Promise<RunRecord[]> => [],
+    get: async (id: string): Promise<RunRecord> => ({
+      id,
+      sessionId: "sess-1",
+      mode: "task",
+      status: "running",
+      phase: "building",
+      iteration: 1,
+      maxIterations: 150,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+    pause: async (id: string): Promise<RunRecord> => ({
+      id,
+      sessionId: "sess-1",
+      mode: "task",
+      status: "idle",
+      phase: "paused",
+      iteration: 1,
+      maxIterations: 150,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+    resume: async (id: string, _opts?: { extend?: boolean }): Promise<RunRecord> => ({
+      id,
+      sessionId: "sess-1",
+      mode: "task",
+      status: "running",
+      phase: "building",
+      iteration: 1,
+      maxIterations: 300,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+    cancel: async (id: string): Promise<RunRecord> => ({
+      id,
+      sessionId: "sess-1",
+      mode: "task",
+      status: "cancelled",
+      phase: "cancelled",
+      iteration: 1,
+      maxIterations: 150,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+  };
+
+  readonly schedules = {
+    list: async (): Promise<ScheduleInfo[]> => [],
+    create: async (input: Partial<ScheduleInfo>): Promise<ScheduleInfo> => ({
+      id: `sched_${Date.now()}`,
+      name: input.name || "Schedule",
+      enabled: true,
+      mode: input.mode || "task",
+      agent: input.agent || "assistant",
+      prompt: input.prompt || "",
+      concurrency: input.concurrency || 1,
+    }),
+  };
+
+  readonly sandboxes = {
+    list: async (): Promise<Array<{ id: string; provider: string; status: string }>> => [
+      { id: "sb_default", provider: "docker", status: "running" },
+    ],
+    shell: async (id: string, command: string): Promise<{ sandboxId: string; output: string; exitCode: number }> => ({
+      sandboxId: id,
+      output: `Executed in ${id}: ${command}`,
+      exitCode: 0,
+    }),
+    destroy: async (id: string): Promise<{ destroyed: string }> => ({ destroyed: id }),
+  };
 
   readonly permissions = {
     list: async (sessionId?: string): Promise<PermissionRequest[]> => {

@@ -8,10 +8,75 @@
     "smallModel": { "type": "string" },
     "defaultAgent": { "type": "string" },
     "defaultRuntime": { "type": "string" },
-    "providers": { "type": "object", "additionalProperties": { "$ref": "#/$defs/provider" } },
-    "mcp": { "type": "object" },
-    "plugins": { "type": "object" },
-    "permissions": { "type": "array", "items": { "type": "object" } },
+    "mode": {
+      "type": "object",
+      "properties": {
+        "default": { "enum": ["chat", "task", "long_task"] }
+      },
+      "additionalProperties": false
+    },
+    "providers": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/provider" }
+    },
+    "agents": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "model": { "type": "string" },
+          "tools": { "type": "array", "items": { "type": "string" } },
+          "description": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "properties": {
+        "default": { "enum": ["local", "srt-local", "docker", "modal"] },
+        "allowUnsandboxedAutonomy": { "type": "boolean" },
+        "docker": {
+          "type": "object",
+          "properties": {
+            "image": { "type": "string" },
+            "cpus": { "type": "number", "minimum": 0.5 },
+            "memoryMb": { "type": "integer", "minimum": 256 },
+            "diskMb": { "type": "integer", "minimum": 1024 }
+          },
+          "additionalProperties": false
+        },
+        "modal": {
+          "type": "object",
+          "properties": {
+            "app": { "type": "string" },
+            "runtime": { "enum": ["vm"] },
+            "idleTtlSec": { "type": "integer", "minimum": 60 }
+          },
+          "additionalProperties": false
+        },
+        "filesystem": {
+          "type": "object",
+          "properties": {
+            "extraAllowWrite": { "type": "array", "items": { "type": "string" } },
+            "extraDenyRead": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "setupPresets": { "type": "array", "items": { "type": "string" } },
+            "agentPresets": { "type": "array", "items": { "type": "string" } },
+            "allowedDomains": { "type": "array", "items": { "type": "string" } },
+            "methods": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        "pauseIdleTtlSec": { "type": "integer", "minimum": 10 }
+      },
+      "additionalProperties": false
+    },
     "limits": {
       "type": "object",
       "properties": {
@@ -23,25 +88,92 @@
         "maxCostPerSession": { "type": "number", "minimum": 0 },
         "maxToolOutputChars": { "type": "integer", "minimum": 100 },
         "maxToolDepth": { "type": "integer", "minimum": 1, "maximum": 10 },
-        "maxIterations": { "type": "integer", "minimum": 1, "maximum": 25 },
-        "maxSubagents": { "type": "integer", "minimum": 0, "maximum": 8 }
+        "maxIterations": { "type": "integer", "minimum": 1, "maximum": 5000 },
+        "maxSubagents": { "type": "integer", "minimum": 0, "maximum": 16 },
+        "chat": { "type": "object" },
+        "task": { "type": "object" },
+        "long_task": {
+          "type": "object",
+          "properties": {
+            "maxCostPerTask": { "type": "number", "minimum": 0 },
+            "maxIterations": { "type": "integer", "minimum": 1 },
+            "maxRunDurationSec": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "clearAfterTurns": { "type": "integer", "minimum": 1 },
+        "recitationEveryTurns": { "type": "integer", "minimum": 1 },
+        "keepRecentTokens": { "type": "integer", "minimum": 1000 },
+        "handoffAtRatio": { "type": "number", "minimum": 0.1, "maximum": 0.95 },
+        "precompute": { "type": "boolean" }
       },
       "additionalProperties": false
     },
     "compaction": { "type": "object" },
-    "verify": { "type": "object" },
+    "verify": {
+      "type": "object",
+      "properties": {
+        "commands": { "type": "array", "items": { "type": "string" } },
+        "maxIterations": { "type": "integer", "minimum": 1 },
+        "noProgressLimit": { "type": "integer", "minimum": 1 },
+        "e2e": { "type": "array", "items": { "type": "object" } },
+        "auto": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "confirmation": {
+      "type": "object",
+      "properties": {
+        "policy": { "enum": ["always", "risky", "never"] },
+        "unattended": {
+          "type": "object",
+          "properties": {
+            "onConfirm": { "enum": ["deny", "pause"] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "stuckDetection": {
+      "type": "object",
+      "properties": {
+        "actionObservation": { "type": "integer", "minimum": 2 },
+        "actionError": { "type": "integer", "minimum": 2 },
+        "monologue": { "type": "integer", "minimum": 2 },
+        "alternating": { "type": "integer", "minimum": 4 },
+        "malformed": { "type": "integer", "minimum": 2 },
+        "compactions": { "type": "integer", "minimum": 2 }
+      },
+      "additionalProperties": false
+    },
+    "schedules": { "type": "array", "items": { "type": "object" } },
+    "mcp": { "type": "object" },
+    "plugins": { "type": "object" },
+    "permissions": { "type": "array", "items": { "type": "object" } },
     "guardrails": { "type": "object" },
     "codeMode": { "type": "object" },
-    "advanced": { "type": "object" }
+    "advanced": { "type": "object" },
+    "skills": { "type": "object" },
+    "commands": { "type": "object" },
+    "prompt": { "type": "object" },
+    "hooks": { "type": "object" }
   },
   "additionalProperties": false,
   "$defs": {
     "provider": {
       "type": "object",
-      "required": ["type", "models"],
+      "required": ["models"],
       "properties": {
         "name": { "type": "string" },
         "type": { "enum": ["openai", "plugin"] },
+        "wire": { "enum": ["openai-chat", "openai-responses", "anthropic", "bedrock-converse", "gemini"] },
         "baseUrl": { "type": "string", "format": "uri" },
         "apiKey": { "type": "string", "description": "Use {secret:NAME}; plaintext is extracted by the settings API." },
         "timeoutMs": { "type": "integer", "minimum": 100 },

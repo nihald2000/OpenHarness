@@ -167,22 +167,8 @@ def build_harness_image():
         .run_commands(
             f"mkdir -p {SANDBOX_WORKDIR} {MCP_SERVERS_DIR} {ARTIFACTS_DIR} /etc/srt /tmp /var/log/harness && "
             "chmod 777 /mnt/data /mnt/artifacts /tmp && "
-            # Set up srt connected profile (blocks link-local / cloud metadata endpoints)
-            "cat << 'EOF' > /etc/srt/connected.json\n"
-            "{\n"
-            '  "deny_ips": ["169.254.169.254", "100.100.100.200", "127.0.0.0/8"],\n'
-            '  "allow_dns": true,\n'
-            '  "filesystem": "isolate_temp"\n'
-            "}\n"
-            "EOF\n"
-            # Set up srt airgapped profile (complete network isolation)
-            "cat << 'EOF' > /etc/srt/airgapped.json\n"
-            "{\n"
-            '  "deny_ips": ["0.0.0.0/0", "::/0"],\n'
-            '  "allow_dns": false,\n'
-            '  "filesystem": "isolate_temp"\n'
-            "}\n"
-            "EOF\n"
+            "printf '%s' '{\"network\":{\"allowedDomains\":[\"api.github.com\",\"cdnjs.cloudflare.com\"],\"deniedDomains\":[],\"deniedResolvedAddresses\":[\"169.254.0.0/16\",\"100.100.100.200/32\",\"127.0.0.0/8\"]},\"filesystem\":{\"denyRead\":[\"~/.ssh\"],\"allowRead\":[],\"allowWrite\":[\"/mnt/data\",\"/mnt/artifacts\",\"/tmp\"],\"denyWrite\":[\"/mnt/data/.git/hooks\",\"/mnt/data/.git/config\"]}}' > /etc/srt/connected.json && "
+            "printf '%s' '{\"network\":{\"allowedDomains\":[],\"deniedDomains\":[\"*\"]},\"filesystem\":{\"denyRead\":[\"~/.ssh\"],\"allowRead\":[],\"allowWrite\":[\"/mnt/data\",\"/mnt/artifacts\",\"/tmp\"],\"denyWrite\":[\"/mnt/data/.git/hooks\",\"/mnt/data/.git/config\"]}}' > /etc/srt/airgapped.json"
         )
     )
 

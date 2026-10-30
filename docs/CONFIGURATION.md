@@ -68,3 +68,38 @@ The settings endpoint accepts JSON objects for `model`, `smallModel`, `defaultAg
 See [the JSON schema](config.schema.json) and [API route reference](API.md) for the current contract.
 
 Server errors are emitted as JSON records. Secret-like fields and common bearer/API key strings are redacted before output; logs avoid request bodies, prompts, and full provider payloads.
+
+
+## Long-Horizon Environment Variables & CLI Commands
+
+- `LLAMA_API_KEY`: API key for Meta Llama API (`https://api.llama.com/compat/v1`).
+- `GROQ_API_KEY`, `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `ANTHROPIC_API_KEY`: Provider API credentials.
+- `oh model probe <id> [--json]`: Empirically probes a model for tool calling, `max_completion_tokens`, streaming tool calls, and usage reporting, and stores the measured `ModelProfile`.
+- `oh session checkpoints <session-id> [--json]`: Lists shadow-git checkpoints for a session.
+- `oh session rewind <session-id> --checkpoint <sha> [--files] [--conversation] [--json]`: Rewinds workspace files (and optionally conversation transcript) to a checkpoint.
+- `oh session fork <session-id> [--checkpoint <sha>] [--at-message <msg-id>] [--json]`: Forks a session from a message or checkpoint.
+
+
+## Long-Horizon `openharness.json` Settings Reference (§14)
+
+Unknown keys in `openharness.json` or `/v1/admin/settings` are rejected fail-closed (`validateOpenHarnessConfig` & `docs/config.schema.json`).
+
+- `mode.default`: `"chat" | "task" | "long_task"` (default `"chat"`).
+- `providers.<id>`: `{ wire, baseUrl, apiKey, models }` — e.g. `llama` (`wire: "openai-chat"`, `baseUrl: "https://api.llama.com/compat/v1"`, `apiKey: "{secret:LLAMA_API_KEY}"`).
+- `agents.<name>`: `{ model, tools, description }` — e.g. `reviewer` (`model: "openai/gpt-5"`, `tools: ["read_file", "search", "glob", "list"]`).
+- `sandbox`:
+  - `default`: `"local" | "srt-local" | "docker" | "modal"`
+  - `allowUnsandboxedAutonomy`: `boolean` (default `false`; refuses autonomous runs on `local` when `false`).
+  - `docker`: `{ image, cpus, memoryMb, diskMb }`
+  - `modal`: `{ app, runtime: "vm", idleTtlSec }`
+  - `filesystem`: `{ extraAllowWrite: string[], extraDenyRead: string[] }`
+  - `network`: `{ setupPresets: string[], agentPresets: string[], allowedDomains: string[], methods: string[] }`
+  - `pauseIdleTtlSec`: Idle seconds before a paused sandbox is snapshotted and released (default `900`).
+- `limits`: Mode-scoped budget overrides (`chat`, `task`, `long_task.maxCostPerTask`).
+- `context`: `{ clearAfterTurns: 6, recitationEveryTurns: 8, keepRecentTokens: 20000, handoffAtRatio: 0.6, precompute: true }`.
+- `verify`: `{ commands: string[], maxIterations: 6, noProgressLimit: 2, e2e: object[] }`.
+- `confirmation`: `{ policy: "always" | "risky" | "never", unattended: { onConfirm: "deny" | "pause" } }`.
+- `stuckDetection`: `{ actionObservation: 4, actionError: 3, monologue: 3, alternating: 6, malformed: 5 }`.
+- `schedules`: Array of cron/webhook schedule definitions.
+
+See also [Sandbox Architecture](SANDBOX.md) and [Long-Horizon Tasks Guide](LONG_TASKS.md).

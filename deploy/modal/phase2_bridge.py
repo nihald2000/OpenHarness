@@ -120,7 +120,7 @@ class Phase2SandboxBridge:
         run_cmd = f"python3 {check_file}"
 
         t0 = time.perf_counter()
-        exec_res = self.manager.exec_bash(run_cmd, timeout=90)
+        exec_res = self.manager.exec(run_cmd, timeout=90)
         duration_ms = round((time.perf_counter() - t0) * 1000, 2)
 
         # Attempt to parse json from stdout

@@ -1,0 +1,12 @@
+FROM node:24-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv git ripgrep bubblewrap ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN useradd -m -u 1000 sandbox && mkdir -p /workspace /memories /tmp /oh && chown -R sandbox:sandbox /workspace /memories /tmp
+USER 1000:1000
+WORKDIR /workspace
+EXPOSE 4097 3000
+CMD ["oh-sandboxd"]
