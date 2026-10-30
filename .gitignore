@@ -1,0 +1,13 @@
+node_modules
+.openharness/
+.openharness-auth/
+dist/
+.DS_Store
+*.log
+.env
+.env.local
+*.tsbuildinfo
+
+.vercel
+__pycache__/
+*.pyc
