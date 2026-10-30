@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Harness Form</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        background: #fff;
+        color: #111;
+        max-width: 40rem;
+        margin: 3rem auto;
+      }
+      .low {
+        color: #bbb;
+        background: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Harness Form</h1>
+    <form
+      onsubmit="event.preventDefault(); document.getElementById('out').textContent = 'hello ' + document.getElementById('name').value;"
+    >
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" />
+      <button type="submit">Greet</button>
+    </form>
+    <p id="out"></p>
+    <!-- Deliberately missing alt text: axe should flag image-alt. -->
+    <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" />
+    <p class="low">Low contrast text for the accessibility audit.</p>
+  </body>
+</html>
