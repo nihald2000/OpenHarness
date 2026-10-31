@@ -70,7 +70,7 @@ export function ProvidersSection() {
     setId("");
     setName("");
     setType("openai");
-    setBaseUrl("https://api.openai.com/v1");
+    setBaseUrl("");
     setTimeoutMs("");
     setPluginKind("");
     setPluginOpts("{}");
@@ -367,7 +367,7 @@ export function ProvidersSection() {
                 readOnly={Boolean(editingId)}
                 value={id}
                 onChange={(e) => setId(e.target.value)}
-                placeholder="openai"
+                placeholder="my-provider"
                 className={`${inputCls} font-mono ${
                   editingId ? "opacity-60" : ""
                 }`}
@@ -382,7 +382,7 @@ export function ProvidersSection() {
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="OpenAI"
+                placeholder="My provider"
                 className={inputCls}
               />
             )}
@@ -399,7 +399,7 @@ export function ProvidersSection() {
                 }
                 className={selectCls}
               >
-                <option value="openai">OpenAI-compatible API</option>
+                <option value="openai">Compatible chat API</option>
                 <option value="plugin">Plugin provider</option>
               </select>
             )}
@@ -436,7 +436,7 @@ export function ProvidersSection() {
                 type="url"
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder="https://api.openai.com/v1"
+                placeholder="https://provider.example/v1"
                 className={`${inputCls} font-mono`}
               />
             )}
@@ -542,7 +542,7 @@ export function ProvidersSection() {
                     )
                   );
                 }}
-                placeholder="Model ID (e.g. gpt-4o)"
+                placeholder="Model ID"
                 aria-label="Model ID"
                 className={`${inputCls} col-span-4 font-mono`}
               />

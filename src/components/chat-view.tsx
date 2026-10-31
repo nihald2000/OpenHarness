@@ -18,7 +18,7 @@ import { useSession } from "@/lib/use-session";
 import { CapabilitiesPanel } from "./capabilities-panel";
 import { ChatHeader } from "./chat-header";
 import { Composer, type ComposerHandle } from "./composer";
-import { EmptyState, type SuggestionItem } from "./empty-state";
+import { EmptyState } from "./empty-state";
 import { PermissionPrompt } from "./permission-prompt";
 import { PlanDock } from "./plan-dock";
 import { Transcript } from "./transcript";
@@ -44,6 +44,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
 
   const {
     commands,
+    models,
+    runtimes,
     defaultAgent,
     defaultModel,
     defaultRuntime,
@@ -56,7 +58,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   const [compacting, setCompacting] = useState(false);
   const [stickTrigger, setStickTrigger] = useState(0);
 
-  const [runMode, setRunMode] = useState<"task" | "ask">("task");
+  const [runMode, setRunMode] = useState<"task" | "ask">("ask");
   const [pendingQuestion, setPendingQuestion] = useState<{
     runId: string;
     questionId: string;
@@ -153,8 +155,25 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
 
   const readOnly = Boolean(session?.parentId);
   const selectedAgent = session?.agent ?? draft.agent ?? defaultAgent;
-  const selectedModel = session?.model ?? draft.model ?? defaultModel;
+  const sessionModelConfigured =
+    !session || models.some((model) => model.id === session.model);
+  const draftModel = draft.model && models.some((model) => model.id === draft.model)
+    ? draft.model
+    : "";
+  const selectedModel =
+    session?.model && sessionModelConfigured
+      ? session.model
+      : draftModel || defaultModel;
+  const selectedModelConfigured =
+    sessionModelConfigured && models.some((model) => model.id === selectedModel);
   const selectedRuntime = session?.runtime ?? draft.runtime ?? defaultRuntime;
+  const selectedRuntimeInfo = runtimes.find((runtime) => runtime.id === selectedRuntime);
+  const runtimeReady =
+    runMode === "ask" ||
+    Boolean(
+      selectedRuntimeInfo?.active &&
+        selectedRuntimeInfo.capabilities?.osEnforced
+    );
 
   useEffect(() => {
     setActiveSessionId(sessionId ?? null);
@@ -244,7 +263,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         setSending(false);
       }
     },
-    [notify, resetFix]
+    [notify, resetFix, runMode]
   );
 
   useEffect(() => {
@@ -263,6 +282,27 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     fixOpts?: { commands: string[] },
     overrideAgent?: string
   ) => {
+    if (!selectedModelConfigured) {
+      notify(
+        "info",
+        models.length === 0
+          ? "Configure a model provider in Settings before starting a chat."
+          : "Choose a configured model before starting a chat."
+      );
+      return;
+    }
+    if (!runtimeReady) {
+      notify(
+        "info",
+        !selectedRuntime
+          ? "Choose an available runtime or configure a default runtime in Settings."
+          : runMode === "task"
+            ? "Code mode requires an active sandbox runtime. Configure Modal, Docker, or SRT before starting a task."
+            : "The selected runtime is unavailable. Choose an active runtime or configure one in Settings."
+      );
+      return;
+    }
+
     if (sessionId) {
       await sendPromptToSession(sessionId, text, {
         agent: overrideAgent,
@@ -376,20 +416,6 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     }
   };
 
-  const handlePickSuggestion = (s: SuggestionItem) => {
-    if (s.fixCommand) {
-      composerRef.current?.enableVerifyWith(s.fixCommand);
-    }
-    if (s.agent) {
-      setDraftField("agent", s.agent);
-    }
-    void handleSend(
-      s.prompt,
-      s.fixCommand ? { commands: [s.fixCommand] } : undefined,
-      s.agent
-    );
-  };
-
   const { plan, stale: planStale } = useMemo(
     () => latestPlan(messages),
     [messages]
@@ -485,11 +511,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
             <span>Loading conversation...</span>
           </div>
         ) : messages.length === 0 && !optimisticPrompt ? (
-          <EmptyState
-            selectedModel={selectedModel}
-            onSelectModel={(m) => void handleSelectModel(m)}
-            onPickSuggestion={handlePickSuggestion}
-          />
+          <EmptyState />
         ) : (
           <Transcript
             messages={messages}
@@ -661,17 +683,50 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                 </div>
               </div>
             ) : (
-              <Composer
-                ref={composerRef}
-                agentName={selectedAgent}
-                isPlanMode={selectedAgent === "plan"}
-                commands={commands}
-                active={activeRun}
-                sending={sending}
-                stopping={stopping}
-                onSend={(t, f) => void handleSend(t, f)}
-                onStop={() => void handleStop()}
-              />
+              <>
+                {!selectedModelConfigured && messages.length > 0 && (
+                  <div
+                    className="mx-auto mb-3 w-full max-w-[720px] rounded-xl border border-border bg-elev px-4 py-3 text-xs text-muted"
+                    role="status"
+                  >
+                    {models.length === 0
+                      ? "No model provider is configured. Add a provider in Settings to continue this chat."
+                      : "This chat’s model is unavailable. Choose a configured model from the Model menu to continue."}
+                    {" "}
+                    <Link href="/settings" className="font-medium text-accent hover:underline">
+                      Open model settings
+                    </Link>
+                  </div>
+                )}
+                {!runtimeReady && selectedModelConfigured && (
+                  <div
+                    className="mx-auto mb-3 w-full max-w-[720px] rounded-xl border border-border bg-elev px-4 py-3 text-xs text-muted"
+                    role="status"
+                  >
+                    {!selectedRuntime
+                      ? "No runtime is selected. Configure a default runtime in Settings → General or choose an available runtime above."
+                      : runMode === "task"
+                        ? "Code mode needs an active sandbox runtime. Configure Modal, Docker, or SRT before running tasks."
+                        : "The selected runtime is unavailable. Choose an active runtime or configure it in Settings."}
+                    {" "}
+                    <Link href="/settings" className="font-medium text-accent hover:underline">
+                      Open runtime settings
+                    </Link>
+                  </div>
+                )}
+                <Composer
+                  ref={composerRef}
+                  agentName={selectedAgent}
+                  isPlanMode={selectedAgent === "plan"}
+                  commands={commands}
+                  active={activeRun}
+                  sending={sending}
+                  stopping={stopping}
+                  disabled={!selectedModelConfigured || !runtimeReady}
+                  onSend={(t, f) => void handleSend(t, f)}
+                  onStop={() => void handleStop()}
+                />
+              </>
             )}
           </div>
         )}

@@ -24,7 +24,7 @@ Secret values use AES-256-GCM. When `OPENHARNESS_SECRET_KEY` is unset, the serve
 
 ## Modal backend
 
-`deploy/modal/app.py` runs the API server on Modal. The image installs from the frozen lockfile, compiles `packages/server/src/main.ts` into a single Bun binary, and drops `node_modules` and the web app before the runtime layer. The function is exposed with `@modal.web_server(4096)`, so Modal's proxy streams SSE responses.
+`deploy/modal/web_server.py` runs the API server on Modal. The image installs the repository dependencies and starts `packages/server/src/main.ts` with Node. The function is exposed with `@modal.web_server(4096)`, so Modal's proxy streams SSE responses.
 
 1. Create the persistent volume and the token secret once per workspace:
 
@@ -38,10 +38,10 @@ Secret values use AES-256-GCM. When `OPENHARNESS_SECRET_KEY` is unset, the serve
 2. Deploy:
 
    ```bash
-   modal deploy deploy/modal/app.py
+   modal deploy deploy/modal/web_server.py
    ```
 
-The server keeps state on the `openharness-data` volume at `/data`, uses `/repo` as the agent workspace, and runs the offline `mock` provider by default. The function is capped at one container because the JSON state store assumes a single writer; simultaneous SSE streams are handled with `@modal.concurrent`. Do not scale `max_containers` until the Postgres/Redis adapters are in use (see [Scaling](SCALING.md)).
+The server keeps state on the `openharness-data` volume at `/data`, uses `/app` as the agent workspace, and runs the offline `mock` provider by default. Configure `OPENHARNESS_SERVER_TOKEN` and `OPENHARNESS_ADMIN_TOKEN` in the `openharness-server` Modal secret before deployment; the function attaches that secret at runtime and does not use fallback credentials. The web deployment sets `OPENHARNESS_WEB_DISABLE_SANDBOX=1`, so Ask mode can call a configured model without provisioning a sandbox and no runtime is selected by default. Code mode remains available when an active runtime is explicitly selected. The function is capped at one container because the JSON state store assumes a single writer; simultaneous SSE streams are handled with `@modal.concurrent`. Do not scale `max_containers` until the Postgres/Redis adapters are in use (see [Scaling](SCALING.md)).
 
 To use a real OpenAI-compatible model, add `OPENHARNESS_PROVIDER=openai`, `OPENHARNESS_MODEL=<model>`, and `OPENAI_API_KEY=<key>` to the Modal secret (or `env` on the function), then redeploy. Secret values override the image defaults.
 
@@ -49,37 +49,17 @@ SSE keep-alive pings are sent every 5 seconds and the Bun server uses a 120-seco
 
 ## Vercel frontend
 
-The Next.js UI can be deployed to Vercel independently of the Bun API server. The project installs from the Bun workspace root and uses `apps/web` as its Root Directory.
+The React UI is a Vite single-page app at the repository root. The linked `openharness-web` project uses the root directory, Vite, `npm run build:web`, and `dist`. `vercel.json` serves the UI and proxies `/v1/*` and `/health` to the Modal backend, keeping browser API requests, login cookies, and SSE on the Vercel origin. Leave `VITE_OPENHARNESS_URL` unset for this deployment; setting it to the Modal URL bypasses the same-origin proxy. The proxy does not attach a server or admin token; users authenticate through the UI with the configured administrator token.
 
-1. Link the project from the repository root:
+Deploy from the repository root:
 
-   ```bash
-   vercel link --yes --project openharness-web
-   vercel project update openharness-web --root-directory apps/web --framework nextjs --node-version 22.x
-   ```
+```bash
+vercel deploy --prod
+```
 
-2. Set the runtime environment variables:
+The API remains on Modal with the persistent `openharness-data` volume. Keep `OPENHARNESS_SERVER_TOKEN` and `OPENHARNESS_ADMIN_TOKEN` in the `openharness-server` Modal secret. Do not place either token in a `VITE_*` variable, since Vite embeds those values into public browser assets. The offline mock model is for local development and evaluation; the web UI hides it and blocks chat until a real provider and model are configured in Settings.
 
-   ```bash
-   vercel env add OPENHARNESS_WEB_SESSION_SECRET production --value "<stable-random-secret>" --sensitive
-   vercel env add OPENHARNESS_URL production --value "https://<backend-host>"
-   vercel env add OPENHARNESS_SERVER_TOKEN production --value "<server-token>"   # only if the API requires it
-   vercel env add OPENHARNESS_WEB_URL production --value "https://<vercel-production-domain>"
-   ```
-
-3. Deploy:
-
-   ```bash
-   vercel deploy --prod
-   ```
-
-`OPENHARNESS_URL` must be a public HTTPS origin reachable from Vercel Functions. The Bun server cannot run as a Vercel Function because it needs a long-lived process, local disk state, and SSE. Run it on Modal with a persistent volume and stream-friendly ingress, then point `OPENHARNESS_URL` at the deployed `*.modal.run` URL. Set `OPENHARNESS_SERVER_TOKEN` on Vercel to the same value stored in the `openharness-server` Modal secret.
-
-Do not set `OPENHARNESS_ADMIN_TOKEN` on a public deployment. Settings, secrets, MCP configuration, and reload are under `/v1/admin/**`; forwarding the admin token through the web proxy would grant every visitor administrator access. Chat, sessions, models, tools, and permissions work with the server token alone.
-
-For a temporary UI-only demo, set `OPENHARNESS_WEB_AUTH_DISABLED=true`. This skips the sign-in screen and the proxy's admin-cookie requirement. If `OPENHARNESS_ADMIN_TOKEN` is also set, the proxy forwards it upstream, which gives every visitor administrator access; only do that for a private demo. Remove the variable and redeploy to restore sign-in.
-
-Hobby notes: functions allow up to 300 seconds, builds are capped at 45 minutes, and deployment size is limited. The repository `.vercelignore` keeps the local `dist/` server binary out of CLI uploads. Git auto-deploy requires connecting GitHub under Vercel Account Settings -> Login Connections, then running `vercel git connect`.
+Open the Vercel production domain listed for the project. Generated deployment URLs can be covered by Vercel Deployment Protection and may return Vercel's sign-in page instead of the app; they are not interchangeable with the production domain.
 
 ## CI
 

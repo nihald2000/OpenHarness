@@ -48,6 +48,20 @@ export function CapabilitiesPanel({
   const [selectedFile, setSelectedFile] = useState<{ path: string; content: string } | null>(null);
   const [diffState, setDiffState] = useState<{ changed: string[]; diff: string }>({ changed: [], diff: "" });
 
+  const { capabilitiesOpen, setCapabilitiesOpen } = useApp();
+  const {
+    skills,
+    agents,
+    mcp,
+    commands,
+    loading: catalogLoading,
+    refresh,
+  } = useCatalog();
+
+  const [activeTab, setActiveTab] = useState<CapabilityTabName>(
+    () => requestedCapabilityTab
+  );
+
   useEffect(() => {
     if (!sessionId) return;
     if (activeTab === "Files") {
@@ -62,19 +76,7 @@ export function CapabilitiesPanel({
         .catch(() => {});
     }
   }, [sessionId, activeTab]);
-  const { capabilitiesOpen, setCapabilitiesOpen } = useApp();
-  const {
-    skills,
-    agents,
-    mcp,
-    commands,
-    loading: catalogLoading,
-    refresh,
-  } = useCatalog();
 
-  const [activeTab, setActiveTab] = useState<CapabilityTabName>(
-    () => requestedCapabilityTab
-  );
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const baseId = useId();
 

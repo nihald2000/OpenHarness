@@ -33,8 +33,8 @@ Use `.env.example` as the environment variable template. The server reads JSON s
 | `PROVIDER_TPM` | Unset | Optional per-tenant, provider/model estimated token limit per minute. Admission reserves estimated prompt tokens plus the output-token maximum. |
 | `SSE_MAX_BUFFER` / `SSE_MAX_PER_USER` | `1000` / `10` | Bounded queued SSE envelopes and per-user stream limit. |
 | `OPENHARNESS_SECRET_KEY` | Generated local key | Optional secret-store encryption key material; set a stable high-entropy value for portable deployments. |
-| `OPENHARNESS_PROVIDER` | `mock` | Provider selection; `mock` supports offline use. |
-| `OPENHARNESS_MODEL` | `mock/demo` | Default model ID. |
+| `OPENHARNESS_PROVIDER` | `mock` (local development) | Provider selection; `mock` supports offline use in local development and evaluation. |
+| `OPENHARNESS_MODEL` | `mock/demo` (local development) | Default model ID for local offline use; production web UI requires a configured provider. |
 | `OPENAI_API_KEY` | Unset | OpenAI-compatible API credential when provider configuration uses this environment value. |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible provider endpoint. |
 | `OPENHARNESS_CONFIG_DIR` | Platform config directory | Global discovery root for agents, skills, and commands. |
@@ -51,6 +51,7 @@ Use `.env.example` as the environment variable template. The server reads JSON s
 | `MODAL_TOKEN_SECRET` | Unset | Modal credential required by the opt-in Modal sandbox plugin. |
 | `MODAL_APP_NAME` | `openharness` | Modal app name for isolated Python sandboxes. |
 | `OPENHARNESS_MODAL_PYTHON` | `python` on Windows, `python3` elsewhere | Local Python interpreter used to launch the Modal SDK runner. |
+| `OPENHARNESS_WEB_DISABLE_SANDBOX` | Unset | When `1` on a non-loopback server, ignores a saved default runtime so hosted Ask runs do not provision a sandbox. Users can still select a runtime for an individual Code session. |
 
 ## Settings sections
 
@@ -115,4 +116,3 @@ See also [Sandbox Architecture](SANDBOX.md) and [Long-Horizon Tasks Guide](LONG_
 | `OPENHARNESS_ADMIN_TOKEN` | Admin token required for `/v1/admin/*` and `POST /v1/admin/session` (`>= 24` chars; auto-generated in `<dataDir>/admin-token` on loopback). |
 | `OPENHARNESS_POSTGRES` | Set to `1` alongside `DATABASE_URL` to enable `PostgresStateStore` and `PostgresJobQueue`. |
 | `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | Modal credentials for `ModalSandboxProvider` (`modal` runtime). |
-| `VITE_OPENHARNESS_DEMO` | Set to `1` to run the web UI in offline demo mode (`DemoOpenHarnessClient`). |

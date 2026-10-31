@@ -14,7 +14,6 @@ import { Spinner } from "./ui";
 export interface ComposerHandle {
   focus: () => void;
   setText: (text: string) => void;
-  enableVerifyWith: (cmd: string) => void;
 }
 
 const VERIFY_STORAGE_KEY = "oh-verifyCommand";
@@ -91,10 +90,6 @@ export const Composer = forwardRef<
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
       });
-    },
-    enableVerifyWith: (cmd: string) => {
-      updateVerifyEnabled(true);
-      updateVerifyCommand(cmd);
     },
   }));
 

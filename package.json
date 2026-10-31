@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.12 <23"
   },
   "workspaces": [
     "packages/*"
@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "lucide-react": "^1.16.0",
-    "modal": "^0.4.2",
+    "modal": "^0.11.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",

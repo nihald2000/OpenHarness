@@ -18,7 +18,6 @@ import type {
   Session,
 } from "@openharness/sdk";
 import {
-  BUILT_IN_MODEL_PROFILES,
   compileSandboxPolicy,
   createJobQueue,
   DockerSandboxProvider,
@@ -54,6 +53,10 @@ import {
   type SnapshotRef,
   type StateStore,
 } from "@openharness/core";
+import {
+  CONSERVATIVE_DEFAULT_PROFILE,
+  type ModelProfile,
+} from "../../core/src/provider/profiles.ts";
 import { EncryptedSecretStore } from "./secrets.ts";
 import { OidcVerifier, type OidcConfig } from "./oidc/auth.ts";
 import { CookieSessionStore } from "./auth/oauth.ts";
@@ -258,8 +261,16 @@ export class OpenHarnessServer {
     if (this.config.oidc) {
       this.oidc = new OidcVerifier(this.config.oidc);
     }
-    this.defaultRuntime = this.config.defaultRuntime ?? "local";
     this.settingsPath = path.join(dataDir, "settings.json");
+    const savedDefaultRuntime = this.readUserSettings().defaultRuntime;
+    const webSandboxDisabled =
+      this.config.loopback === false &&
+      process.env.OPENHARNESS_WEB_DISABLE_SANDBOX === "1";
+    this.defaultRuntime = webSandboxDisabled
+      ? ""
+      : savedDefaultRuntime ??
+        this.config.defaultRuntime ??
+        (this.config.loopback === false ? "" : "local");
 
     this.providers =
       this.config.providers ??
@@ -355,6 +366,17 @@ export class OpenHarnessServer {
     });
 
     const provider = (providerRef = new ModelAgnosticProviderAdapter({
+      profileOverrides: new Proxy({} as Record<string, Partial<ModelProfile>>, {
+        get: (_target, modelId) => {
+          if (typeof modelId !== "string") return undefined;
+          const providers = this.readUserSettings().providers;
+          if (!providers || typeof providers !== "object") return undefined;
+          const configured = Object.values(providers as Record<string, any>).some(
+            (entry) => entry?.type === "openai" && entry.models && Object.hasOwn(entry.models, modelId)
+          );
+          return configured ? CONSERVATIVE_DEFAULT_PROFILE : undefined;
+        },
+      }),
       onRetryEvent: async (ev) => {
         const env = await this.stateStore.appendEvent("default", ev.sessionId, {
           type: "run.retry",
@@ -376,50 +398,40 @@ export class OpenHarnessServer {
             usage: { prompt_tokens: 64, completion_tokens: 24 },
           };
         };
-        const httpTransport = createHttpTransport(async (profile, model) => {
+        const httpTransport = createHttpTransport(async (_profile, model) => {
           const userCfg = this.readUserSettings();
           const providers = (userCfg.providers && typeof userCfg.providers === "object" ? userCfg.providers : {}) as Record<string, any>;
           let customBaseUrl: string | undefined;
           let customApiKey: string | undefined;
           for (const [provId, prov] of Object.entries(providers)) {
             const modelsMap = prov?.models && typeof prov.models === "object" ? prov.models : {};
-            if (modelsMap[model] || provId === model.split("/")[0]) {
+            if (prov?.type === "openai" && modelsMap[model]) {
               if (typeof prov.baseUrl === "string" && prov.baseUrl.trim()) {
                 customBaseUrl = prov.baseUrl.trim();
               }
               if (typeof prov.apiKey === "string") {
                 const secMatch = prov.apiKey.match(/^\{secret:([A-Za-z0-9_]+)\}$/);
                 if (secMatch && secMatch[1]) {
-                  customApiKey = this.secretStore.getSecret(secMatch[1]) ?? process.env[secMatch[1]];
+                  customApiKey = this.secretStore.getDecrypted(secMatch[1]) ?? process.env[secMatch[1]];
                 } else if (prov.apiKey.trim()) {
                   customApiKey = prov.apiKey.trim();
                 }
               }
               if (!customApiKey) {
                 const autoName = `PROVIDER_${provId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
-                customApiKey = this.secretStore.getSecret(autoName) ?? process.env[autoName];
+                customApiKey = this.secretStore.getDecrypted(autoName) ?? process.env[autoName];
               }
               break;
             }
           }
-          const keyName = profile.apiKeyEnv;
-          const apiKey =
-            customApiKey ??
-            (keyName
-              ? this.secretStore.getSecret(keyName) ?? process.env[keyName]
-              : undefined) ??
-            (model.startsWith("gemini")
-              ? this.secretStore.getSecret("GEMINI_API_KEY") ??
-                this.secretStore.getSecret("PROVIDER_GEMINI_API_KEY") ??
-                process.env.GEMINI_API_KEY
-              : undefined);
-          const baseUrl = customBaseUrl ?? profile.baseUrl;
+          const apiKey = customApiKey;
+          const baseUrl = customBaseUrl;
           if (!baseUrl) {
-            throw new ProviderHttpError(400, `no baseUrl configured for ${model}`);
+            throw new ProviderHttpError(400, `model ${model} is not configured with a provider endpoint`);
           }
           if (!baseUrl.startsWith("http://127.0.0.1") && !baseUrl.startsWith("http://localhost")) {
             if (!apiKey) {
-              throw new ProviderHttpError(401, `missing API key ${keyName ?? "API_KEY"} for ${model}`);
+              throw new ProviderHttpError(401, `missing API key for configured model ${model}`);
             }
           }
           return { baseUrl, apiKey };
@@ -506,7 +518,7 @@ export class OpenHarnessServer {
           id: sessionId,
           title: `Scheduled: ${req.prompt.slice(0, 40)}`,
           agent: req.agent,
-          model: this.config.defaultModel ?? "mock/demo",
+          model: this.readUserSettings().model ?? this.config.defaultModel ?? "",
           runtime: this.defaultRuntime,
           status: "queued",
           mode: req.mode,
@@ -521,7 +533,7 @@ export class OpenHarnessServer {
           tenantId,
           prompt: textOrEmpty(req.prompt),
           agent: req.agent,
-          model: this.config.defaultModel ?? "mock/demo",
+          model: this.readUserSettings().model ?? this.config.defaultModel ?? "",
           mode: req.mode,
         });
         return { runId: req.runId, sessionId };
@@ -797,6 +809,20 @@ export class OpenHarnessServer {
         body: { id: artifactMatch[1]!, dataBase64: b64, mimeType: "image/png" },
       };
     }
+    if (method === "POST" && parsedUrl.pathname === "/v1/admin/session") {
+      const loginIdentity: Identity = {
+        tenantId: this.config.serviceTenantId ?? "default",
+        userId: "admin_login",
+        admin: false,
+      };
+      return this.handleAuthenticatedRequest(
+        loginIdentity,
+        method,
+        parsedUrl,
+        headers,
+        body
+      );
+    }
     const identity = await this.authenticate(headers);
     if (!identity) {
       return { status: 401, body: { error: "Unauthorized" } };
@@ -877,7 +903,7 @@ export class OpenHarnessServer {
           version: "0.2.0",
           workspace: this.deps.workspaceRoot,
           defaultAgent: this.config.defaultAgent ?? "assistant",
-          defaultModel: this.config.defaultModel ?? "mock/demo",
+          defaultModel: this.config.defaultModel,
           defaultRuntime: this.defaultRuntime,
         },
       };
@@ -921,7 +947,7 @@ export class OpenHarnessServer {
         sessionId: "catalog",
         tenantId,
         agent: parsedUrl.searchParams.get("agent") ?? "assistant",
-        model: this.config.defaultModel ?? "mock/demo",
+        model: "",
         mode: "chat",
         phase: "building",
         iteration: 0,
@@ -962,14 +988,15 @@ export class OpenHarnessServer {
 
     if (method === "GET" && pathname === "/v1/admin/settings") {
       const cfg = this.readUserSettings();
+      const visibleCfg = { ...cfg, defaultRuntime: this.defaultRuntime };
       return {
         status: 200,
         body: {
-          config: cfg,
+          config: visibleCfg,
           effective: {
-            ...cfg,
-            defaultRuntime: cfg.defaultRuntime ?? this.defaultRuntime,
-            defaultModel: cfg.model ?? this.config.defaultModel ?? "mock/demo",
+            ...visibleCfg,
+            defaultRuntime: this.defaultRuntime,
+            defaultModel: cfg.model ?? this.config.defaultModel ?? "",
           },
           file: this.settingsPath,
           exists: fs.existsSync(this.settingsPath),
@@ -986,6 +1013,12 @@ export class OpenHarnessServer {
         } else {
           cfg[section] = body.value;
         }
+        if (section === "defaultRuntime") {
+          this.defaultRuntime =
+            typeof cfg.defaultRuntime === "string"
+              ? cfg.defaultRuntime
+              : this.config.defaultRuntime ?? (this.config.loopback === false ? "" : "local");
+        }
         this.writeUserSettings(cfg);
       }
       return { status: 200, body: { config: cfg } };
@@ -1001,22 +1034,28 @@ export class OpenHarnessServer {
 
     if (method === "GET" && pathname === "/v1/models") {
       const userCfg = this.readUserSettings();
-      const defaultModelId = userCfg.model ?? this.config.defaultModel ?? "mock/demo";
+      const defaultModelId = userCfg.model ?? this.config.defaultModel;
       const modelMap = new Map<string, any>();
-      for (const [id, prof] of Object.entries(BUILT_IN_MODEL_PROFILES)) {
-        modelMap.set(id, {
-          id,
-          name: id,
-          provider: prof.wire,
-          contextWindow: prof.contextWindow,
-          isDefault: id === defaultModelId,
-        });
-      }
+      const isLocalUrl = (url: unknown): boolean =>
+        typeof url === "string" && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(?:\/|$)/i.test(url.trim());
       const providers = (userCfg.providers && typeof userCfg.providers === "object" ? userCfg.providers : {}) as Record<string, any>;
       for (const [provId, prov] of Object.entries(providers)) {
-        if (!prov || typeof prov !== "object") continue;
+        if (!prov || typeof prov !== "object" || prov.type !== "openai") continue;
         const provName = typeof prov.name === "string" && prov.name.trim() ? prov.name.trim() : provId;
         const modelsObj = (prov.models && typeof prov.models === "object" ? prov.models : {}) as Record<string, any>;
+        let configuredKey: string | undefined;
+        if (typeof prov.apiKey === "string") {
+          const secMatch = prov.apiKey.match(/^\{secret:([A-Za-z0-9_]+)\}$/);
+          configuredKey = secMatch?.[1]
+            ? this.secretStore.getDecrypted(secMatch[1]) ?? process.env[secMatch[1]]
+            : prov.apiKey.trim() || undefined;
+        }
+        if (!configuredKey) {
+          const autoName = `PROVIDER_${provId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+          configuredKey = this.secretStore.getDecrypted(autoName) ?? process.env[autoName];
+        }
+        const baseUrl = prov.baseUrl ?? prov.base_url;
+        if (!baseUrl || (!configuredKey && !isLocalUrl(baseUrl))) continue;
         for (const [mId, mVal] of Object.entries(modelsObj)) {
           if (!mId) continue;
           modelMap.set(mId, {
@@ -1043,15 +1082,28 @@ export class OpenHarnessServer {
 
     if (method === "POST" && pathname === "/v1/sessions") {
       const payload = body ?? {};
+      const userCfg = this.readUserSettings();
+      const selectedModel = typeof payload.model === "string"
+        ? payload.model
+        : userCfg.model ?? this.config.defaultModel;
+      if (!selectedModel) {
+        return {
+          status: 400,
+          body: { error: "Configure a model provider and choose a model in Settings before starting a chat." },
+        };
+      }
+      if (selectedModel.startsWith("mock/") && this.config.loopback === false) {
+        return {
+          status: 400,
+          body: { error: "Mock models are available only for local development and evaluation." },
+        };
+      }
       const id = `sess_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
       const session: Session = {
         id,
         title: typeof payload.title === "string" ? payload.title.slice(0, 200) : "New chat",
         agent: typeof payload.agent === "string" ? payload.agent : "assistant",
-        model:
-          typeof payload.model === "string"
-            ? payload.model
-            : (this.config.defaultModel ?? "mock/demo"),
+        model: selectedModel,
         runtime:
           typeof payload.runtime === "string" ? payload.runtime : this.defaultRuntime,
         mode: (payload.mode as "chat" | "task" | "long_task") ?? "chat",
@@ -1271,6 +1323,11 @@ export class OpenHarnessServer {
         parts: [{ type: "text", text }],
       };
       await this.stateStore.saveMessage(tenantId, sessionId, userMsg);
+      await this.emitter.emit(tenantId, sessionId, {
+        type: "message.updated",
+        sessionId,
+        message: userMsg,
+      });
 
       session.runId = runId;
       session.mode = mode;
@@ -1285,7 +1342,7 @@ export class OpenHarnessServer {
         tenantId,
         prompt: text,
         agent: typeof payload.agent === "string" ? payload.agent : session.agent,
-        model: session.model ?? "mock/demo",
+        model: session.model ?? "",
         mode,
       });
 

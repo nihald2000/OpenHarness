@@ -20,10 +20,12 @@ function DefaultsCard() {
 
   const cfg = view.config;
   const eff = view.effective;
+  const configuredModel = asString(cfg.model);
+  const configuredSmallModel = asString(cfg.smallModel);
 
   const initial = {
-    model: asString(cfg.model),
-    smallModel: asString(cfg.smallModel),
+    model: configuredModel.startsWith("mock/") ? "" : configuredModel,
+    smallModel: configuredSmallModel.startsWith("mock/") ? "" : configuredSmallModel,
     defaultAgent: asString(cfg.defaultAgent),
     defaultRuntime: asString(cfg.defaultRuntime),
   };
@@ -94,17 +96,26 @@ function DefaultsCard() {
     }
   };
 
-  const effModel = asString(eff.model, "First available model");
-  const effSmall = asString(eff.smallModel, "Uses the default model");
+  const effectiveModel = asString(eff.model);
+  const effectiveSmallModel = asString(eff.smallModel);
+  const effModel = effectiveModel.startsWith("mock/")
+    ? models[0]?.id ?? "No model configured"
+    : effectiveModel || (models[0]?.id ?? "No model configured");
+  const effSmall = effectiveSmallModel.startsWith("mock/")
+    ? "Uses the default model"
+    : effectiveSmallModel || "Uses the default model";
   const effAgent = asString(eff.defaultAgent, "assistant");
-  const effRuntime = asString(eff.defaultRuntime, "local");
+  const effRuntime = asString(eff.defaultRuntime) || "Not configured";
 
   const modelAvailable = !model || models.some((m) => m.id === model);
   const smallAvailable = !smallModel || models.some((m) => m.id === smallModel);
   const agentAvailable =
     !defaultAgent || primaryAgents.some((a) => a.name === defaultAgent);
   const runtimeAvailable =
-    !defaultRuntime || runtimes.some((r) => r.id === defaultRuntime);
+    !defaultRuntime || runtimes.some((r) => r.id === defaultRuntime && r.active);
+  const sandboxRuntimeAvailable = runtimes.some(
+    (r) => r.active && r.capabilities?.osEnforced
+  );
 
   return (
     <Card
@@ -122,6 +133,16 @@ function DefaultsCard() {
         />
       }
     >
+      {models.length === 0 && (
+        <p className="mb-4 rounded-xl border border-border bg-bg px-4 py-3 text-sm text-muted" role="status">
+          No model provider is configured. Add one under Models &amp; providers before starting a chat.
+        </p>
+      )}
+      {!sandboxRuntimeAvailable && (
+        <p className="mb-4 rounded-xl border border-border bg-bg px-4 py-3 text-sm text-muted" role="status">
+          No active sandbox runtime is configured. Code mode needs an active sandbox runtime before it can run tasks.
+        </p>
+      )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <Field label="Default model" hint="Format: provider/model.">
           {(props) => (
@@ -218,7 +239,7 @@ function DefaultsCard() {
               )}
               {runtimes.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.id}
+                  {r.id}{r.active ? "" : " (unavailable)"}
                 </option>
               ))}
             </select>

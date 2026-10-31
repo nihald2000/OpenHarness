@@ -21,6 +21,10 @@ export function useSessions() {
 
 export function useCatalog() {
   const { catalog, reloadCatalog } = useApp();
+  const models = useMemo(
+    () => catalog.models.filter((model) => !model.id.toLowerCase().startsWith("mock/")),
+    [catalog.models]
+  );
 
   const primaryAgents = useMemo(
     () => catalog.agents.filter((a) => a.mode !== "subagent"),
@@ -28,11 +32,14 @@ export function useCatalog() {
   );
 
   const defaultModel = useMemo(() => {
-    const flagged = catalog.models.find((m) => m.isDefault);
+    const flagged = models.find((m) => m.isDefault);
     if (flagged) return flagged.id;
-    if (catalog.info?.defaultModel) return catalog.info.defaultModel;
-    return catalog.models[0]?.id ?? "";
-  }, [catalog.models, catalog.info]);
+    const serverDefault = catalog.info?.defaultModel;
+    if (serverDefault && !serverDefault.toLowerCase().startsWith("mock/")) {
+      return serverDefault;
+    }
+    return models[0]?.id ?? "";
+  }, [models, catalog.info]);
 
   const defaultAgent = useMemo(() => {
     if (catalog.info?.defaultAgent) return catalog.info.defaultAgent;
@@ -44,11 +51,12 @@ export function useCatalog() {
     const def = catalog.runtimes.find((r) => r.isDefault);
     if (def) return def.id;
     if (catalog.info?.defaultRuntime) return catalog.info.defaultRuntime;
-    return catalog.runtimes[0]?.id ?? "in-process";
+    return "";
   }, [catalog.runtimes, catalog.info]);
 
   return {
     ...catalog,
+    models,
     primaryAgents,
     defaultModel,
     defaultAgent,

@@ -25,7 +25,7 @@
 - [x] **Step 8 — Wire the engine to real sandboxes (R4, R5, S3, S4, S8)**:
   - [x] Implement `createRunHooks` (`packages/server/src/run-hooks.ts`), wire `ensureSandbox` into `AgentEngine.runStep`, report honest `/v1/runtimes` health and `osEnforced`, and enforce `404`/`409` validation in `rewindSession` (`tests/run-hooks.test.ts`).
 - [x] **Step 9 — Real web client (R3)**:
-  - [x] Implement `HttpOpenHarnessClient` (`src/lib/http-client.ts`) over `/v1/*` and `/v1/events` SSE, gate `src/lib/demo-client.ts` behind `VITE_OPENHARNESS_DEMO=1` with a banner, and authenticate admin sessions via `POST /v1/admin/session` HttpOnly cookies (`tests/web-client.test.ts`).
+  - [x] Implement `HttpOpenHarnessClient` (`src/lib/http-client.ts`) over `/v1/*` and `/v1/events` SSE, require a configured model in the web UI, and authenticate admin sessions via `POST /v1/admin/session` HttpOnly cookies (`tests/web-client.test.ts`).
 - [x] **Step 10 — Remove fabrications and update documentation (F1, F2, F3, F4, F6)**:
   - [x] Add `packages/sandboxd/browser-worker.mjs` and fail closed (`503`) on `/browser/*` when Playwright is required and unavailable (`tests/step-10-browser-compaction.test.ts`).
   - [x] Wire LLM `summarizer` into `LayeredContextManager` for non-`mock/*` models (`tests/step-10-browser-compaction.test.ts`).

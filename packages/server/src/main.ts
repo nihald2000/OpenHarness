@@ -114,6 +114,35 @@ export function createHttpServer(
       const authHeaders = queryKey
         ? { ...req.headers, "x-oh-key": queryKey }
         : req.headers;
+      if (req.method === "GET" && url.pathname === "/v1/admin/session") {
+        const identity = await app.authenticate(authHeaders as Record<string, string | undefined>);
+        if (identity) {
+          const out = await app.handleAuthenticatedRequest(
+            identity,
+            req.method,
+            url,
+            authHeaders as Record<string, string | undefined>
+          );
+          return send(res, out.status, out.body, out.headers);
+        }
+        const hasAdminCfg = Boolean(cfg?.adminToken ?? process.env.OPENHARNESS_ADMIN_TOKEN);
+        const isOpenMode = (cfg?.authMode ?? process.env.OH_AUTH_MODE) === "open";
+        return send(res, 200, {
+          admin: false,
+          authDisabled: isOpenMode || (!hasAdminCfg && cfg?.loopback !== false),
+          user: null,
+        });
+      }
+      if (req.method === "POST" && url.pathname === "/v1/admin/session") {
+        const body = await readJson(req, maxBodyBytes);
+        const out = await app.handleRequest(
+          req.method,
+          url.pathname + url.search,
+          authHeaders as Record<string, string | undefined>,
+          body
+        );
+        return send(res, out.status, out.body, out.headers);
+      }
       const identity = await app.authenticate(authHeaders);
       if (!identity) {
         return send(res, 401, { error: "unauthorized" });

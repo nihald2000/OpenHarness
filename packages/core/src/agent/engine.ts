@@ -337,10 +337,12 @@ export async function runStep(
     return { state, events };
   }
 
-  // Ensure sandbox is provisioned when mode !== "chat" or runtime !== "local" (Step 8 R4, R5)
+  // Ask mode is a model-only conversation and must work without a sandbox.
+  // Provision one for task modes, or when a chat explicitly selects a remote runtime.
   if (
     !state.sandboxHandleId &&
     deps.ensureSandbox &&
+    state.mode !== "ask" &&
     (state.mode !== "chat" || (state.runtime && state.runtime !== "local"))
   ) {
     const h = await deps.ensureSandbox(state);

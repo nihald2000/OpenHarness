@@ -16,7 +16,8 @@ OpenHarness is a model-agnostic, long-horizon AI agent harness and developer wor
   - `modal`: Cloud microVM provider (`ModalSandboxProvider`) with two-phase `setup` → `agent` image caching, Modal `cidr_allowlist` / `block_network` egress enforcement, short-lived `connectToken` HTTPS transport (`HttpDaemonTransport`) with `x-oh-request-id` idempotency, AES-256-GCM encrypted session keys in `SandboxRecordStore`, `snapshotFilesystem` pause/resume preserving `handleId`, 23-hour rollover, and orphan reaping.
 - **HTTP Server, Auth & Real Web Client (`packages/server`, `src/lib`)**:
   - HTTP server entry point (`packages/server/src/main.ts`) with fail-closed non-loopback auth guards (`loadServerConfig`), OIDC JWT verification, `CookieSessionStore` (`HttpOnly; SameSite=Strict` cookies via `POST /v1/admin/session`), server bearer tokens, and `PATCH /v1/sessions/:id` field allowlisting.
-  - Web client (`src/lib/http-client.ts`) communicates with `/v1/*` and replays `/v1/events` SSE streams using `after` sequence cursors. The offline simulator (`src/lib/demo-client.ts`) is only used when `VITE_OPENHARNESS_DEMO=1` is set and displays a visible `"Demo mode - no real agent"` banner.
+  - Web client (`src/lib/http-client.ts`) communicates with `/v1/*` and replays `/v1/events` SSE streams using `after` sequence cursors. The UI requires a configured provider and shows setup guidance instead of scripted sample prompts when no model is available. Offline mock transport remains for local development and evaluation.
+  - Ask mode is the default in the hosted web app and calls the configured model without provisioning a sandbox. Code mode still requires an explicitly selected, active sandbox runtime.
 
 ## Development, Building & Testing
 

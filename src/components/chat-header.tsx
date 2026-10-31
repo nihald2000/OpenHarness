@@ -115,8 +115,10 @@ export function ChatHeader({
   const runtimeOptions: SelectOption[] = [
     {
       id: "_default_",
-      label: `Default (${defaultRuntime})`,
-      description: "Follow the server's default runtime.",
+      label: defaultRuntime ? `Default (${defaultRuntime})` : "No default runtime",
+      description: defaultRuntime
+        ? "Follow the server's default runtime."
+        : "Choose a runtime or set a default in Settings.",
       icon: <Server className="size-3.5 text-muted" aria-hidden="true" />,
     },
     ...runtimes.map((r) => ({
@@ -124,7 +126,7 @@ export function ChatHeader({
       label: r.id,
       description: r.description || "Starts on first command.",
       meta: r.plugin ? `plugin: ${r.plugin}` : "built-in",
-      badge: r.isDefault ? "Default" : undefined,
+      badge: !r.active ? "Unavailable" : r.isDefault ? "Default" : undefined,
       icon: r.remote ? (
         <Cloud className="size-3.5 text-accent" aria-hidden="true" />
       ) : (

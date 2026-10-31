@@ -61,7 +61,10 @@ export function createRunHooks(ctx: RunHooksContext) {
       state.sandboxHandleId = existing.id;
       return existing;
     }
-    const runtime = state.runtime ?? session?.runtime ?? "local";
+    const runtime = state.runtime || session?.runtime || "";
+    if (!runtime) {
+      throw new Error("No runtime is selected. Configure a default runtime or choose one for this chat.");
+    }
 
     if (
       (state.mode === "task" || state.mode === "long_task") &&
