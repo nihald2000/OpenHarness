@@ -137,6 +137,7 @@ export interface ProviderTurnRequest {
   }>;
   maxOutputTokens?: number;
   signal?: AbortSignal;
+  onDelta?: (delta: { text?: string; reasoning?: string }) => void;
 }
 
 export interface ProviderTurnResponse {
@@ -304,6 +305,19 @@ export interface EngineDeps {
   policyGate: PolicyGate;
   contextManager: ContextManager;
   workspaceRoot: string;
+  onTextDelta?: (
+    tenantId: string,
+    sessionId: string,
+    messageId: string,
+    delta: string
+  ) => void;
+  onReasoningDelta?: (
+    tenantId: string,
+    sessionId: string,
+    messageId: string,
+    delta: string
+  ) => void;
+  onFlushDelta?: (sessionId: string) => Promise<void>;
   ensureSandbox?: (state: RunState) => Promise<{ id: string; workspacePath: string }>;
   onRunVerification?: (state: RunState) => Promise<VerificationResult>;
   onRunReviewer?: (state: RunState) => Promise<ReviewerResult>;

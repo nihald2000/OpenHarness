@@ -6,7 +6,14 @@ export class RunEventEmitter {
   private readonly eventBus: InProcessEventBus;
   private readonly deltaBuffers = new Map<
     string,
-    { tenantId: string; sessionId: string; messageId?: string; delta: string; timer: NodeJS.Timeout }
+    {
+      tenantId: string;
+      sessionId: string;
+      messageId?: string;
+      textDelta: string;
+      reasoningDelta: string;
+      timer: NodeJS.Timeout;
+    }
   >();
   private readonly batchWindowMs: number;
 
@@ -51,46 +58,59 @@ export class RunEventEmitter {
     tenantId: string,
     sessionId: string,
     delta: string,
-    messageId?: string
+    messageId?: string,
+    partType: "text" | "reasoning" = "text"
   ): void {
     if (!delta) return;
-    const existing = this.deltaBuffers.get(sessionId);
+    const key = `${sessionId}\u0000${messageId ?? ""}`;
+    const existing = this.deltaBuffers.get(key);
     if (existing) {
-      existing.delta += delta;
+      if (partType === "reasoning") existing.reasoningDelta += delta;
+      else existing.textDelta += delta;
       if (messageId) existing.messageId = messageId;
       return;
     }
     const timer = setTimeout(() => {
       void this.flushDelta(sessionId);
     }, this.batchWindowMs);
-    this.deltaBuffers.set(sessionId, {
+    this.deltaBuffers.set(key, {
       tenantId,
       sessionId,
       messageId,
-      delta,
+      textDelta: partType === "text" ? delta : "",
+      reasoningDelta: partType === "reasoning" ? delta : "",
       timer,
     });
   }
 
   async flushDelta(sessionId: string): Promise<void> {
-    const entry = this.deltaBuffers.get(sessionId);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    this.deltaBuffers.delete(sessionId);
-    const lastSeq = await this.stateStore.getLastSeq(entry.tenantId, entry.sessionId);
-    const syntheticEnvelope: EventEnvelope = {
-      seq: lastSeq,
-      tenantId: entry.tenantId,
-      sessionId: entry.sessionId,
-      createdAt: Date.now(),
-      event: {
-        type: "part.delta",
-        sessionId: entry.sessionId,
-        messageId: entry.messageId,
-        delta: entry.delta,
+    const pending = [...this.deltaBuffers.entries()].filter(
+      ([, entry]) => entry.sessionId === sessionId
+    );
+    for (const [key, entry] of pending) {
+      clearTimeout(entry.timer);
+      this.deltaBuffers.delete(key);
+    }
+    for (const [, entry] of pending) {
+      const lastSeq = await this.stateStore.getLastSeq(entry.tenantId, entry.sessionId);
+      const syntheticEnvelope: EventEnvelope = {
         seq: lastSeq,
-      },
-    };
-    this.eventBus.publish(syntheticEnvelope);
+        tenantId: entry.tenantId,
+        sessionId: entry.sessionId,
+        createdAt: Date.now(),
+        event: {
+          type: "part.delta",
+          sessionId: entry.sessionId,
+          messageId: entry.messageId,
+          delta: entry.textDelta,
+          deltas: {
+            ...(entry.textDelta ? { text: entry.textDelta } : {}),
+            ...(entry.reasoningDelta ? { reasoning: entry.reasoningDelta } : {}),
+          },
+          seq: lastSeq,
+        },
+      };
+      this.eventBus.publish(syntheticEnvelope);
+    }
   }
 }

@@ -367,9 +367,18 @@ export class DurableRunWorker implements RunWorker {
             if (ctrl.signal.aborted) {
               throw ctrl.signal.reason ?? Object.assign(new Error("Cancelled"), { code: "CANCELLED" });
             }
+            let firstDeltaSeen = false;
             const res = await this.deps.provider.generateTurn({
               ...req,
               signal: ctrl.signal,
+              onDelta: (delta) => {
+                if (!firstDeltaSeen) {
+                  firstDeltaSeen = true;
+                  void this.stateMachine.heartbeat(runId, true);
+                  clearTimeout(firstActivityTimer);
+                }
+                req.onDelta?.(delta);
+              },
             });
             await this.stateMachine.heartbeat(runId, true);
             clearTimeout(firstActivityTimer);

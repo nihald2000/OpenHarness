@@ -491,6 +491,11 @@ export class OpenHarnessServer {
       policyGate,
       contextManager,
       workspaceRoot,
+      onTextDelta: (tenantId, sessionId, messageId, delta) =>
+        this.emitter.emitDelta(tenantId, sessionId, delta, messageId, "text"),
+      onReasoningDelta: (tenantId, sessionId, messageId, delta) =>
+        this.emitter.emitDelta(tenantId, sessionId, delta, messageId, "reasoning"),
+      onFlushDelta: (sessionId) => this.emitter.flushDelta(sessionId),
       ensureSandbox: hooks.ensureSandbox,
       onCreateCheckpoint: hooks.onCreateCheckpoint,
       onRunVerification: hooks.onRunVerification,
@@ -753,8 +758,9 @@ export class OpenHarnessServer {
     let replaying = true;
     const pending: EventEnvelope[] = [];
     const write = (e: EventEnvelope) => {
-      if (e.seq <= last) return;
-      last = e.seq;
+      const ephemeralDelta = e.event.type === "part.delta";
+      if (!ephemeralDelta && e.seq <= last) return;
+      if (!ephemeralDelta) last = e.seq;
       res.write(
         `id: ${e.seq}\ndata: ${JSON.stringify({ ...e.event, seq: e.seq })}\n\n`
       );

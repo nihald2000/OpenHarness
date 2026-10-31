@@ -479,7 +479,15 @@ export type OpenHarnessEvent =
   | { type: "permission.replied"; requestId: string; reply?: PermissionReply }
   | { type: "message.updated"; sessionId: string; message: Message; seq?: number }
   | { type: "part.updated"; sessionId: string; messageId: string; part: Part; seq?: number }
-  | { type: "part.delta"; sessionId: string; messageId?: string; delta: string; seq?: number };
+  | {
+      type: "part.delta";
+      sessionId: string;
+      messageId?: string;
+      delta: string;
+      partType?: "text" | "reasoning";
+      deltas?: { text?: string; reasoning?: string };
+      seq?: number;
+    };
 
 export class OpenHarnessError extends Error {
   readonly status: number;
@@ -650,11 +658,27 @@ export function applyEvent(
     const msg = messages[targetIdx]!;
     if (msg.info.role !== "assistant") return messages;
     const parts = [...msg.parts];
-    const lastPart = parts[parts.length - 1];
-    if (lastPart && lastPart.type === "text") {
-      parts[parts.length - 1] = { ...lastPart, text: lastPart.text + event.delta };
+    const appendDelta = (partType: "text" | "reasoning", delta: string) => {
+      if (!delta) return;
+      let partIdx = -1;
+      for (let i = parts.length - 1; i >= 0; i--) {
+        if (parts[i]?.type === partType) {
+          partIdx = i;
+          break;
+        }
+      }
+      const currentPart = partIdx >= 0 ? parts[partIdx] : undefined;
+      if (currentPart && (currentPart.type === "text" || currentPart.type === "reasoning")) {
+        parts[partIdx] = { ...currentPart, text: currentPart.text + delta };
+      } else {
+        parts.push({ type: partType, text: delta });
+      }
+    };
+    if (event.deltas) {
+      appendDelta("text", event.deltas.text ?? "");
+      appendDelta("reasoning", event.deltas.reasoning ?? "");
     } else {
-      parts.push({ type: "text", text: event.delta });
+      appendDelta(event.partType ?? "text", event.delta);
     }
     const copy = [...messages];
     copy[targetIdx] = { ...msg, parts };

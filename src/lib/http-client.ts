@@ -485,7 +485,8 @@ export class HttpOpenHarnessClient {
     es.onmessage = (m: { data: string; lastEventId?: string }) => {
       const ev = JSON.parse(m.data) as OpenHarnessEvent & { seq?: number };
       const seq = Number(m.lastEventId || ev.seq || 0);
-      if (seq && seq <= after) return;
+      // Token deltas are ephemeral and share the current durable event sequence.
+      if (seq && seq <= after && ev.type !== "part.delta") return;
       if (seq) after = seq;
       onEvent(ev);
     };

@@ -620,6 +620,26 @@ export async function runStep(
   }
 
   const availableTools = state.toolsDisabled ? [] : deps.toolRouter.listTools(state);
+  const assistantMsgId = `msg-a-${state.runId}-${state.iteration + 1}`;
+  state.assistantMessageId = assistantMsgId;
+  const assistantMsg: Message = {
+    info: {
+      id: assistantMsgId,
+      role: "assistant",
+      agent: state.agent,
+      model: state.model,
+    },
+    createdAt: deps.clock.now(),
+    parts: [],
+  };
+  await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
+  state.transcriptCursor += 1;
+  await emitAndPersist(deps, state, events, {
+    type: "message.updated",
+    sessionId: state.sessionId,
+    message: assistantMsg,
+  });
+
   const turnResponse = await deps.provider.generateTurn({
     runId: state.runId,
     sessionId: state.sessionId,
@@ -633,7 +653,21 @@ export async function runStep(
       masked: t.masked,
     })),
     maxOutputTokens: state.budgets.maxOutputTokensPerCall,
+    onDelta: (delta) => {
+      if (delta.text) {
+        deps.onTextDelta?.(state.tenantId, state.sessionId, assistantMsgId, delta.text);
+      }
+      if (delta.reasoning) {
+        deps.onReasoningDelta?.(
+          state.tenantId,
+          state.sessionId,
+          assistantMsgId,
+          delta.reasoning
+        );
+      }
+    },
   });
+  await deps.onFlushDelta?.(state.sessionId);
 
   state.iteration += 1;
   state.taskIteration += 1;
@@ -651,8 +685,6 @@ export async function runStep(
     state.cost += turnResponse.cost;
   }
 
-  const assistantMsgId = `msg-a-${state.runId}-${state.iteration}`;
-  state.assistantMessageId = assistantMsgId;
   const parts: Part[] = [];
   if (turnResponse.reasoning) {
     parts.push({ type: "reasoning", text: turnResponse.reasoning });
@@ -661,21 +693,15 @@ export async function runStep(
     parts.push({ type: "text", text: turnResponse.text });
   }
 
-  const assistantMsg: Message = {
-    info: {
-      id: assistantMsgId,
-      role: "assistant",
-      agent: state.agent,
-      model: turnResponse.modelUsed ?? state.model,
-      usage: turnResponse.usage,
-      cost: turnResponse.cost,
-    },
-    createdAt: deps.clock.now(),
-    parts,
+  assistantMsg.info = {
+    ...assistantMsg.info,
+    model: turnResponse.modelUsed ?? state.model,
+    usage: turnResponse.usage,
+    cost: turnResponse.cost,
   };
+  assistantMsg.parts = parts;
 
   await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
-  state.transcriptCursor += 1;
   await emitAndPersist(deps, state, events, {
     type: "message.updated",
     sessionId: state.sessionId,

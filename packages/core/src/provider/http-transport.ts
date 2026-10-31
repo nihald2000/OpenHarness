@@ -14,7 +14,11 @@ export class ProviderHttpError extends Error {
 
 export type Endpoint = { baseUrl: string; apiKey?: string };
 export type ResolvedEndpoint = (profile: ModelProfile, model: string) => Promise<Endpoint>;
-export type TransportOpts = { idleTimeoutMs?: number; signal?: AbortSignal };
+export type TransportOpts = {
+  idleTimeoutMs?: number;
+  signal?: AbortSignal;
+  onDelta?: (delta: { text?: string; reasoning?: string }) => void;
+};
 
 function combineAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal {
   const active = signals.filter((s): s is AbortSignal => Boolean(s));
@@ -159,9 +163,15 @@ async function openaiChat(
       }
       if (ev.usage) usage = ev.usage;
       const d = ev.choices?.[0]?.delta ?? {};
-      if (typeof d.content === "string") text += d.content;
+      if (typeof d.content === "string") {
+        text += d.content;
+        if (d.content.length > 0) opts.onDelta?.({ text: d.content });
+      }
       const r = d.reasoning_content ?? d.reasoning;
-      if (typeof r === "string") reasoning += r;
+      if (typeof r === "string") {
+        reasoning += r;
+        if (r.length > 0) opts.onDelta?.({ reasoning: r });
+      }
       for (const tc of d.tool_calls ?? []) {
         const k = tc.index ?? calls.size;
         const c = calls.get(k) ?? { name: "", args: "" };
@@ -211,8 +221,13 @@ async function anthropic(
           json: "",
         });
       } else if (ev.type === "content_block_delta") {
-        if (ev.delta?.type === "text_delta") text += ev.delta.text;
-        else if (ev.delta?.type === "thinking_delta") thinking += ev.delta.thinking;
+        if (ev.delta?.type === "text_delta") {
+          text += ev.delta.text;
+          if (ev.delta.text) opts.onDelta?.({ text: ev.delta.text });
+        } else if (ev.delta?.type === "thinking_delta") {
+          thinking += ev.delta.thinking;
+          if (ev.delta.thinking) opts.onDelta?.({ reasoning: ev.delta.thinking });
+        }
         else if (ev.delta?.type === "input_json_delta" && tools.has(ev.index)) {
           tools.get(ev.index)!.json += ev.delta.partial_json;
         }

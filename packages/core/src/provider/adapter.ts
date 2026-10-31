@@ -170,7 +170,11 @@ export interface ModelAgnosticProviderOptions {
   transport: (
     payload: ProviderRequestWirePayload,
     profile: ModelProfile,
-    opts: { idleTimeoutMs: number; signal?: AbortSignal }
+    opts: {
+      idleTimeoutMs: number;
+      signal?: AbortSignal;
+      onDelta?: ProviderTurnRequest["onDelta"];
+    }
   ) => Promise<RawProviderResponse>;
   profileOverrides?: Record<string, Partial<ModelProfile>>;
   fallbackModels?: string[];
@@ -234,7 +238,11 @@ export class ModelAgnosticProviderAdapter implements ProviderAdapter {
           { ...req, model: activeModel },
           profile
         );
-        return this.opts.transport(wirePayload, profile, { idleTimeoutMs, signal: req.signal });
+        return this.opts.transport(wirePayload, profile, {
+          idleTimeoutMs,
+          signal: req.signal,
+          onDelta: req.onDelta,
+        });
       },
       {
         maxAttempts: this.opts.maxRetryAttempts ?? 8,
