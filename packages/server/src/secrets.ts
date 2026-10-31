@@ -82,6 +82,45 @@ export class EncryptedSecretStore {
     return out.toString("utf8");
   }
 
+  /** Encrypt an opaque value for storage by adapters such as the Modal sandbox record store. */
+  encryptValue(plaintext: string): string {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", this.key, iv);
+    const ciphertext = Buffer.concat([
+      cipher.update(plaintext, "utf8"),
+      cipher.final(),
+    ]);
+    return [
+      "v1",
+      iv.toString("base64url"),
+      cipher.getAuthTag().toString("base64url"),
+      ciphertext.toString("base64url"),
+    ].join(".");
+  }
+
+  /** Decrypt a value produced by encryptValue; authentication failures are surfaced to the caller. */
+  decryptValue(encrypted: string): string {
+    const parts = encrypted.split(".");
+    if (parts.length !== 4 || parts[0] !== "v1" || !parts[1] || !parts[2]) {
+      throw new Error("Invalid encrypted secret value");
+    }
+
+    const iv = Buffer.from(parts[1], "base64url");
+    const tag = Buffer.from(parts[2], "base64url");
+    const ciphertext = Buffer.from(parts[3]!, "base64url");
+    if (iv.length !== 12 || tag.length !== 16) {
+      throw new Error("Invalid encrypted secret value");
+    }
+
+    const decipher = crypto.createDecipheriv("aes-256-gcm", this.key, iv);
+    decipher.setAuthTag(tag);
+    const plaintext = Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ]);
+    return plaintext.toString("utf8");
+  }
+
   delete(name: string): boolean {
     if (!(name in this.records)) return false;
     delete this.records[name];
