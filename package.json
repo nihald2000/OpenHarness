@@ -10,23 +10,26 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --port 3000",
-    "build": "npm run typecheck && (vite build 2>/dev/null || node scripts/verify-frontend.mjs --build)",
-    "server": "node --loader ./scripts/ts-loader.mjs packages/server/src/main.ts",
+    "dev": "vite --port 3000",
+    "build:web": "vite build",
+    "build": "npm run typecheck && npm run build:web",
+    "server": "tsx packages/server/src/main.ts",
     "sandboxd:build": "bun build --compile --target=bun-linux-x64 packages/sandboxd/src/main.ts --outfile dist/oh-sandboxd",
-    "modal:image": "python3 deploy/modal/build_image.py",
-    "modal:spike": "node --loader ./scripts/ts-loader.mjs scripts/modal-spike.ts",
-    "typecheck": "tsc -p tsconfig.json 2>/dev/null || node scripts/verify-frontend.mjs",
-    "typecheck:server": "tsc -p tsconfig.server.json 2>/dev/null || node scripts/verify-frontend.mjs --server",
-    "test": "node --loader ./scripts/ts-loader.mjs --test tests/*.test.ts",
-    "eval": "node --loader ./scripts/ts-loader.mjs packages/cli/src/index.ts eval examples/demo.eval.jsonl"
+    "modal:image": "python3 deploy/modal/build_sandbox_image.py",
+    "modal:spike": "tsx scripts/modal-spike.ts",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.server.json",
+    "typecheck:server": "tsc -p tsconfig.server.json",
+    "test": "node --import tsx --test --test-timeout=120000 \"tests/**/*.test.ts\"",
+    "eval": "tsx packages/cli/src/index.ts eval examples/demo.eval.jsonl"
   },
   "dependencies": {
     "lucide-react": "^1.16.0",
+    "modal": "^0.4.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "tsx": "^4.19.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.3",

@@ -56,6 +56,21 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   const [compacting, setCompacting] = useState(false);
   const [stickTrigger, setStickTrigger] = useState(0);
 
+  const [runMode, setRunMode] = useState<"task" | "ask">("task");
+  const [pendingQuestion, setPendingQuestion] = useState<{
+    runId: string;
+    questionId: string;
+    question: string;
+    options?: string[];
+  } | null>(null);
+  const [questionAnswer, setQuestionAnswer] = useState("");
+  const [runError, setRunError] = useState<{
+    runId?: string;
+    code?: string;
+    message: string;
+    recoverable?: boolean;
+  } | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [contextError, setContextError] = useState<string | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
@@ -78,6 +93,27 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
             `Fix loop ${ev.phase}${details ? `: ${details}` : ""}`
           );
         }
+      } else if (ev.type === "question.requested") {
+        setPendingQuestion({
+          runId: ev.runId,
+          questionId: ev.questionId,
+          question: ev.question,
+          options: ev.options,
+        });
+      } else if (ev.type === "question.answered") {
+        setPendingQuestion(null);
+        setQuestionAnswer("");
+      } else if (ev.type === "preview.ready") {
+        setPreviewUrl(ev.url);
+      } else if (ev.type === "run.completed") {
+        if (ev.previewUrl) setPreviewUrl(ev.previewUrl);
+      } else if (ev.type === "run.error") {
+        setRunError({
+          runId: ev.runId,
+          code: ev.code ?? ev.error?.code,
+          message: ev.message ?? ev.error?.message ?? "Run failed",
+          recoverable: ev.recoverable ?? ev.error?.recoverable ?? true,
+        });
       } else if (ev.type === "run.status") {
         if (!isActive(ev.status)) {
           setSettleTick((t) => t + 1);
@@ -192,9 +228,12 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
       resetFix();
       setSending(true);
       try {
+        setRunError(null);
         await client.session.prompt(targetId, {
           text,
           agent: opts?.agent,
+          mode: runMode,
+          clientTurnId: `turn_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
           fix: opts?.fix,
         });
       } catch (err) {
@@ -470,6 +509,127 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
               onReply={replyPermission}
             />
 
+            {pendingQuestion && (
+              <div className="mx-auto mb-3 w-full max-w-[720px] px-4">
+                <div className="rounded-xl border border-accent/40 bg-elev p-4 shadow-sm">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-accent">
+                    Clarifying Question
+                  </div>
+                  <p className="mt-1 text-sm text-fg">{pendingQuestion.question}</p>
+                  {pendingQuestion.options && pendingQuestion.options.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {pendingQuestion.options.map((opt) => (
+                        <button
+                          key={opt}
+                          type="button"
+                          onClick={() => {
+                            void client.runs
+                              .answer(pendingQuestion.runId, opt)
+                              .then(() => setPendingQuestion(null))
+                              .catch((err) => notify("error", errorMessage(err)));
+                          }}
+                          className="rounded-lg border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg hover:bg-hover"
+                        >
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <form
+                    className="mt-3 flex gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!questionAnswer.trim()) return;
+                      const ans = questionAnswer.trim();
+                      void client.runs
+                        .answer(pendingQuestion.runId, ans)
+                        .then(() => {
+                          setPendingQuestion(null);
+                          setQuestionAnswer("");
+                        })
+                        .catch((err) => notify("error", errorMessage(err)));
+                    }}
+                  >
+                    <input
+                      type="text"
+                      value={questionAnswer}
+                      onChange={(e) => setQuestionAnswer(e.target.value)}
+                      placeholder="Type your answer..."
+                      className="flex-1 rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg"
+                    />
+                    <button
+                      type="submit"
+                      className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-strong"
+                    >
+                      Reply
+                    </button>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {runError && (
+              <div className="mx-auto mb-3 w-full max-w-[720px] px-4">
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-xs">
+                  <div>
+                    <span className="font-semibold text-danger">
+                      {runError.code || "RUN_ERROR"}:{" "}
+                    </span>
+                    <span className="text-fg">{runError.message}</span>
+                  </div>
+                  {(runError.recoverable !== false && (runError.runId || session?.runId)) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const rId = runError.runId ?? session?.runId;
+                        if (!rId) return;
+                        setRunError(null);
+                        void client.runs
+                          .retry(rId)
+                          .catch((err) => notify("error", errorMessage(err)));
+                      }}
+                      className="shrink-0 rounded-lg border border-border bg-elev px-3 py-1.5 font-medium text-fg hover:bg-hover"
+                    >
+                      Retry Run
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="mx-auto mb-1 flex w-full max-w-[720px] items-center justify-between px-4 text-xs text-muted">
+              <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-elev p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setRunMode("task")}
+                  className={`rounded-md px-2.5 py-1 font-medium ${
+                    runMode === "task" ? "bg-accent text-accent-fg" : "text-muted hover:text-fg"
+                  }`}
+                >
+                  Code
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRunMode("ask")}
+                  className={`rounded-md px-2.5 py-1 font-medium ${
+                    runMode === "ask" ? "bg-accent text-accent-fg" : "text-muted hover:text-fg"
+                  }`}
+                >
+                  Ask
+                </button>
+              </div>
+              {previewUrl && (
+                <a
+                  href={previewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-accent hover:underline"
+                >
+                  Live Preview ↗
+                </a>
+              )}
+            </div>
+
             {plan && showApprovalBar && (
               <PlanDock
                 plan={plan}
@@ -517,7 +677,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         )}
       </div>
 
-      <CapabilitiesPanel activeAgent={selectedAgent} />
+      <CapabilitiesPanel activeAgent={selectedAgent} sessionId={sessionId} previewUrl={previewUrl} />
     </div>
   );
 }

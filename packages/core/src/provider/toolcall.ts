@@ -11,10 +11,11 @@ export interface DecodedToolCall {
  * Synthesizes stable IDs (`call_<runId>_<n>`) for calls without one (§4 B.2).
  */
 export function synthesizeToolCallId(runId: string, index: number, existingId?: string): string {
-  if (existingId && typeof existingId === "string" && existingId.trim().length > 0) {
-    return existingId.trim();
-  }
-  return `call_${runId}_${index}`;
+  const raw = existingId && typeof existingId === "string" && existingId.trim().length > 0
+    ? existingId.trim()
+    : `call_${runId}_${index}`;
+  const sanitized = raw.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+  return sanitized || `call_${index}`;
 }
 
 /**

@@ -49,6 +49,22 @@ export async function readJson(
   throw new HttpError(400, "body must be a JSON object");
 }
 
+function isOriginAllowed(origin: string): boolean {
+  const allowedList = process.env.OH_CORS_ORIGINS;
+  const allowedRegex = process.env.OH_CORS_ORIGIN_REGEX;
+  if (!allowedList && !allowedRegex) return true;
+  if (allowedList) {
+    const parts = allowedList.split(",").map((s) => s.trim()).filter(Boolean);
+    if (parts.includes("*") || parts.includes(origin)) return true;
+  }
+  if (allowedRegex) {
+    try {
+      if (new RegExp(allowedRegex).test(origin)) return true;
+    } catch {}
+  }
+  return false;
+}
+
 export function createHttpServer(
   app: OpenHarnessServer,
   cfg?: Partial<LoadedServerConfig>
@@ -60,12 +76,45 @@ export function createHttpServer(
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
       res.setHeader(k, v);
     }
+
+    // CORS headers for Vercel -> Modal cross-origin requests (M13)
+    const origin = req.headers.origin;
+    if (origin && isOriginAllowed(origin)) {
+      res.setHeader("access-control-allow-origin", origin);
+      res.setHeader("access-control-allow-credentials", "true");
+      res.setHeader("vary", "Origin");
+      res.setHeader(
+        "access-control-allow-headers",
+        "Content-Type, Authorization, X-OpenHarness-Admin, X-Oh-Key, Last-Event-ID"
+      );
+      res.setHeader(
+        "access-control-allow-methods",
+        "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      );
+    }
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
     try {
       const url = new URL(req.url ?? "/", "http://internal");
       if (url.pathname === "/health") {
         return send(res, 200, { ok: true, version: "0.2.0" });
       }
-      const identity = await app.authenticate(req.headers);
+      if (req.method === "GET" && url.pathname === "/v1/internal/hold") {
+        res.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" });
+        res.write("holding\n");
+        const timer = setTimeout(() => res.end("released\n"), 55 * 60_000);
+        req.on("close", () => clearTimeout(timer));
+        return;
+      }
+      const queryKey = url.searchParams.get("key");
+      const authHeaders = queryKey
+        ? { ...req.headers, "x-oh-key": queryKey }
+        : req.headers;
+      const identity = await app.authenticate(authHeaders);
       if (!identity) {
         return send(res, 401, { error: "unauthorized" });
       }
@@ -84,7 +133,7 @@ export function createHttpServer(
         identity,
         req.method ?? "GET",
         url,
-        req.headers,
+        authHeaders,
         body
       );
       send(res, out.status, out.body, out.headers);

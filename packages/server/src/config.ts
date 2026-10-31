@@ -2,6 +2,8 @@ export interface LoadedServerConfig {
   host: string;
   port: number;
   loopback: boolean;
+  authMode?: "open" | "token";
+  accessKey?: string;
   serverToken?: string;
   adminToken?: string;
   oidc?: { issuer: string; audience: string; hs256Secret?: string };
@@ -13,6 +15,8 @@ export interface LoadedServerConfig {
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): LoadedServerConfig {
   const host = env.OPENHARNESS_HOST ?? "127.0.0.1";
   const loopback = ["127.0.0.1", "::1", "localhost"].includes(host);
+  const authMode = env.OH_AUTH_MODE === "open" ? "open" : "token";
+  const accessKey = env.OH_ACCESS_KEY || undefined;
   const serverToken = env.OPENHARNESS_SERVER_TOKEN || undefined;
   const adminToken = env.OPENHARNESS_ADMIN_TOKEN || undefined;
   const oidc =
@@ -24,9 +28,9 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): LoadedSe
         }
       : undefined;
 
-  if (!loopback && !serverToken && !oidc) {
+  if (!loopback && authMode !== "open" && !accessKey && !serverToken && !oidc) {
     throw new Error(
-      "Refusing to listen on a non-loopback address without OPENHARNESS_SERVER_TOKEN or OIDC."
+      "Refusing to listen on a non-loopback address without OPENHARNESS_SERVER_TOKEN, OIDC, OH_ACCESS_KEY, or OH_AUTH_MODE=open."
     );
   }
   if (adminToken && adminToken.length < 32) {
@@ -42,6 +46,8 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): LoadedSe
     host,
     port: Number(env.OPENHARNESS_PORT ?? 4096),
     loopback,
+    authMode,
+    accessKey,
     serverToken,
     adminToken,
     oidc,

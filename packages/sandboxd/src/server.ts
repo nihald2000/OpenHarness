@@ -1,3 +1,5 @@
+import { BrowserBridge } from "./browser-bridge.ts";
+import { spawnSync } from "node:child_process";
 import { resolveInside } from "../../core/src/util/safe-path.ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -103,6 +105,7 @@ export class SandboxDaemon {
   private osEnforced = false;
   private enforcementError?: string;
   private srtSettingsPath: string;
+  private browserBridge = new BrowserBridge();
   private idempotencyCache = new Map<
     string,
     { expiresAt: number; promise: Promise<{ status: number; body: Record<string, unknown>; headers: Record<string, string> }> }
@@ -341,6 +344,24 @@ export class SandboxDaemon {
       return this.restoreCheckpoint(payload);
     }
 
+    // --- Workspace Archive Route ---
+    if (method === "GET" && pathname === "/workspace/archive") {
+      const tarRes = spawnSync(
+        "tar",
+        ["-czf", "-", "--exclude=node_modules", "--exclude=.git", "--exclude=.shadow-git", "."],
+        { cwd: this.config.workspacePath, maxBuffer: 50 * 1024 * 1024 }
+      );
+      if (tarRes.status !== 0) {
+        return { status: 500, body: { error: tarRes.stderr?.toString("utf8") || "tar failed" } };
+      }
+      return {
+        status: 200,
+        body: {
+          archiveBase64: (tarRes.stdout as Buffer).toString("base64"),
+        },
+      };
+    }
+
     // --- Ports Route ---
     if (method === "GET" && pathname === "/ports") {
       return {
@@ -355,14 +376,21 @@ export class SandboxDaemon {
     }
 
     // --- Browser Routes ---
-    if (pathname.startsWith("/browser/") && (this.config.requirePlaywright || this.config.requireSrt)) {
-      return {
-        status: 503,
-        body: {
-          ok: false,
-          error: "Playwright browser worker unavailable in this environment (fail closed)",
-        },
-      };
+    if (pathname.startsWith("/browser/")) {
+      const action = pathname.slice("/browser/".length);
+      const bridgeRes = await this.browserBridge.send(action, payload);
+      if (bridgeRes.status !== 503) {
+        return bridgeRes;
+      }
+      if (this.config.requirePlaywright || this.config.requireSrt) {
+        return {
+          status: 503,
+          body: {
+            ok: false,
+            error: "Playwright browser worker unavailable in this environment (fail closed)",
+          },
+        };
+      }
     }
     if (method === "POST" && pathname === "/browser/navigate") {
       return this.browserNavigate(payload);
@@ -1542,6 +1570,7 @@ export class SandboxDaemon {
   }
 
   async close(): Promise<void> {
+    await this.browserBridge.close().catch(() => {});
     for (const proc of this.processes.values()) {
       killConfinedProcessGroup(proc.child, "SIGTERM");
     }

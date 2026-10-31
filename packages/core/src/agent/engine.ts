@@ -238,6 +238,31 @@ export async function persistStepCheckpoint(
   return cp;
 }
 
+
+async function addressMessage(
+  deps: EngineDeps,
+  state: RunState,
+  events: OpenHarnessEvent[],
+  text: string
+): Promise<void> {
+  const msg: Message = {
+    info: {
+      id: `msg-sys-${state.runId}-${state.iteration}-${ state.verifyFailures.length }`,
+      role: "user",
+      summary: true,
+    },
+    createdAt: deps.clock.now(),
+    parts: [{ type: "text", text, synthetic: true }],
+  };
+  await deps.stateStore.saveMessage(state.tenantId, state.sessionId, msg);
+  state.transcriptCursor += 1;
+  await emitAndPersist(deps, state, events, {
+    type: "message.updated",
+    sessionId: state.sessionId,
+    message: msg,
+  });
+}
+
 async function checkBudgetsAndWarn(
   deps: EngineDeps,
   state: RunState,
@@ -494,6 +519,8 @@ export async function runStep(
       });
     }
     if (vResult.passed) {
+      state.verificationPassed = true;
+      state.toolsDisabled = false;
       if (deps.onRunReviewer) {
         await transitionPhase(deps, state, "reviewing", events);
       } else {
@@ -513,12 +540,32 @@ export async function runStep(
         await transitionPhase(deps, state, "completed", events);
       }
     } else {
+      const prev = state.verifyFailures[state.verifyFailures.length - 1];
       state.verifyFailures.push({
         iteration: state.verifyFailures.length + 1,
         signature: vResult.signature,
         condensedError: vResult.condensedError,
         failedCommands: vResult.results.filter((r) => !r.passed).map((r) => r.command),
       });
+      const maxFix = Number(process.env.OH_MAX_FIX_ATTEMPTS ?? 5);
+      const noProgress = Boolean(prev && prev.signature && prev.signature === vResult.signature);
+      const exhausted = state.verifyFailures.length >= maxFix || noProgress;
+      if (exhausted) {
+        state.toolsDisabled = true;
+        await addressMessage(
+          deps,
+          state,
+          events,
+          `Verification failed (${noProgress ? "identical error signature repeated" : `attempt ${state.verifyFailures.length}/${maxFix}`}):\n\n${vResult.condensedError}\n\nStop calling tools and clearly explain what is still failing and why.`
+        );
+      } else {
+        await addressMessage(
+          deps,
+          state,
+          events,
+          `Verification failed (attempt ${state.verifyFailures.length}/${maxFix}):\n\n${vResult.condensedError}\n\nFix the root cause and finish your turn so verification runs again.`
+        );
+      }
       await transitionPhase(deps, state, "fixing", events);
     }
     await persistStepCheckpoint(deps, state);
@@ -551,6 +598,12 @@ export async function runStep(
         condensedError: issueSummary,
         failedCommands: ["reviewer"],
       });
+      await addressMessage(
+        deps,
+        state,
+        events,
+        `Code review found issues:\n${issueSummary}\n\nFix them and finish your turn.`
+      );
       await transitionPhase(deps, state, "fixing", events);
     }
     await persistStepCheckpoint(deps, state);
@@ -564,7 +617,7 @@ export async function runStep(
     await emitAndPersist(deps, state, events, ev);
   }
 
-  const availableTools = deps.toolRouter.listTools(state);
+  const availableTools = state.toolsDisabled ? [] : deps.toolRouter.listTools(state);
   const turnResponse = await deps.provider.generateTurn({
     runId: state.runId,
     sessionId: state.sessionId,
@@ -925,7 +978,9 @@ export async function runStep(
   if (
     (state.phase === "building" || state.phase === "fixing") &&
     deps.onRunVerification &&
-    state.mode !== "chat"
+    state.mode !== "chat" &&
+    state.mode !== "ask" &&
+    !state.toolsDisabled
   ) {
     await transitionPhase(deps, state, "testing", events);
   } else {

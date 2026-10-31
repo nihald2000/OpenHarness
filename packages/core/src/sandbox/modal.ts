@@ -15,21 +15,23 @@ import type { SandboxRecord, SandboxRecordStore } from "./records.ts";
 import { materializeWorkspace, packLocal, sha256 } from "./workspace-io.ts";
 import { registerSandboxTransport, unregisterSandboxTransport } from "./providers.ts";
 
-const DAEMON_PORT = 8080;
+export const DAEMON_PORT = 8080;
+export const PREVIEW_PORTS = [5173, 3000, 8000];
 const DAY = 86_400_000;
 
 export type ModalProviderConfig = {
   baseImageId: string;
-  cpu: number;
-  memoryMiB: number;
-  timeoutMs: number;
-  bootTimeoutMs: number;
-  setupTimeoutMs: number;
-  snapshotTtlMs: number;
-  envCacheTtlMs: number;
-  encryptedPorts: number[];
+  cpu?: number;
+  memoryMiB?: number;
+  timeoutMs?: number;
+  bootTimeoutMs?: number;
+  setupTimeoutMs?: number;
+  snapshotTtlMs?: number;
+  envCacheTtlMs?: number;
+  encryptedPorts?: number[];
   allowUnencryptedPorts?: boolean;
-  inboundCidrAllowlist: string[];
+  inboundCidrAllowlist?: string[];
+  useTunnelTransport?: boolean;
   encrypt(s: string): string;
   decrypt(s: string): string;
   transportFactory?: (
@@ -37,6 +39,14 @@ export type ModalProviderConfig = {
     sessionKey: string,
     rec: Pick<SandboxRecord, "tenantId" | "runId" | "handleId">
   ) => SandboxTransport;
+};
+
+type ResolvedModalProviderConfig = Required<
+  Omit<ModalProviderConfig, "allowUnencryptedPorts" | "useTunnelTransport" | "transportFactory">
+> & {
+  allowUnencryptedPorts?: boolean;
+  useTunnelTransport?: boolean;
+  transportFactory?: ModalProviderConfig["transportFactory"];
 };
 
 export class SandboxGoneError extends Error {
@@ -56,15 +66,40 @@ export class ModalSandboxProvider implements SandboxProvider {
     browser: true,
     persistentShell: true,
   };
-  private live = new Map<string, { ref: ModalSandboxRef; transport: SandboxTransport }>();
+  private live = new Map<string, { ref: ModalSandboxRef; transport: SandboxTransport; handle?: SandboxHandle }>();
+  private lastActivity = new Map<string, number>();
   private api: ModalApi;
-  private cfg: ModalProviderConfig;
+  private cfg: ResolvedModalProviderConfig;
   private records: SandboxRecordStore;
 
   constructor(api: ModalApi, cfg: ModalProviderConfig, records: SandboxRecordStore) {
     this.api = api;
-    this.cfg = cfg;
+    this.cfg = {
+      baseImageId: cfg.baseImageId,
+      cpu: cfg.cpu ?? 2,
+      memoryMiB: cfg.memoryMiB ?? 4096,
+      timeoutMs: cfg.timeoutMs ?? 1_800_000,
+      bootTimeoutMs: cfg.bootTimeoutMs ?? 30_000,
+      setupTimeoutMs: cfg.setupTimeoutMs ?? 300_000,
+      snapshotTtlMs: cfg.snapshotTtlMs ?? DAY,
+      envCacheTtlMs: cfg.envCacheTtlMs ?? DAY,
+      encryptedPorts: cfg.encryptedPorts ?? [DAEMON_PORT, ...PREVIEW_PORTS],
+      inboundCidrAllowlist: cfg.inboundCidrAllowlist ?? [],
+      allowUnencryptedPorts: cfg.allowUnencryptedPorts,
+      useTunnelTransport: cfg.useTunnelTransport,
+      encrypt: cfg.encrypt,
+      decrypt: cfg.decrypt,
+      transportFactory: cfg.transportFactory,
+    };
     this.records = records;
+  }
+
+  touch(handleId: string): void {
+    this.lastActivity.set(handleId, Date.now());
+  }
+
+  getLastActivity(handleId: string): number {
+    return this.lastActivity.get(handleId) ?? 0;
   }
 
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
@@ -72,6 +107,8 @@ export class ModalSandboxProvider implements SandboxProvider {
     const imageId =
       ws?.kind === "snapshot"
         ? String(ws.imageId)
+        : ws?.kind === "empty" || ws?.type === "empty"
+        ? this.cfg.baseImageId
         : await this.environmentImage(spec);
     return this.boot(
       spec,
@@ -186,7 +223,7 @@ export class ModalSandboxProvider implements SandboxProvider {
       runId: spec.runId,
       phase: "agent",
       networkMode: rawNetMode,
-      additionalAllowedDomains: spec.policy?.network?.allowedDomains ?? [],
+      additionalAllowedDomains: spec.policy?.network?.allowedDomains ?? SETUP_DOMAINS,
       workspacePath: "/workspace",
       memoriesPath: "/memories",
       tmpPath: "/tmp/oh",
@@ -264,10 +301,8 @@ export class ModalSandboxProvider implements SandboxProvider {
     const tunnels = { ...(await ref.tunnels()) };
     delete tunnels[DAEMON_PORT];
     await this.records.update(handleId, { status: "running", ports: tunnels });
-    this.live.set(handleId, { ref, transport });
-    registerSandboxTransport(handleId, transport, sessionKey);
-
-    return {
+    this.touch(handleId);
+    const handle: SandboxHandle = {
       id: handleId,
       providerId: "modal",
       runId: spec.runId,
@@ -283,6 +318,10 @@ export class ModalSandboxProvider implements SandboxProvider {
       policy,
       transport,
     };
+    this.live.set(handleId, { ref, transport, handle });
+    registerSandboxTransport(handleId, transport, sessionKey);
+
+    return handle;
   }
 
   private transportFor(
@@ -293,12 +332,26 @@ export class ModalSandboxProvider implements SandboxProvider {
     if (this.cfg.transportFactory) {
       return this.cfg.transportFactory(ref, sessionKey, r);
     }
-    return new HttpDaemonTransport(sessionKey, () =>
-      ref.connectToken(DAEMON_PORT, {
-        tenant: r.tenantId,
-        run: r.runId,
-        handle: r.handleId,
-      })
+    return new HttpDaemonTransport(
+      sessionKey,
+      async () => {
+        if (!this.cfg.useTunnelTransport && typeof ref.connectToken === "function") {
+          try {
+            return await ref.connectToken(DAEMON_PORT, {
+              tenant: r.tenantId,
+              run: r.runId,
+              handle: r.handleId,
+            });
+          } catch {
+            // Fall through to tunnels()[DAEMON_PORT] on Modal Starter plan
+          }
+        }
+        const t = await ref.tunnels();
+        const url = t[DAEMON_PORT];
+        if (!url) throw new Error(`Modal tunnel for port ${DAEMON_PORT} not available`);
+        return { url, token: "" };
+      },
+      () => this.touch(r.handleId)
     );
   }
 
@@ -314,6 +367,7 @@ export class ModalSandboxProvider implements SandboxProvider {
         await this.records.update(handleId, { status: "terminated" });
         throw new SandboxGoneError(handleId);
       }
+      this.touch(handleId);
       return cached;
     }
     const rec = await this.records.get(handleId);
@@ -329,6 +383,7 @@ export class ModalSandboxProvider implements SandboxProvider {
     const transport = this.transportFor(ref, decryptedKey, rec);
     const entry = { ref, transport };
     this.live.set(handleId, entry);
+    this.touch(handleId);
     registerSandboxTransport(handleId, transport, decryptedKey);
     return entry;
   }
@@ -337,7 +392,7 @@ export class ModalSandboxProvider implements SandboxProvider {
   async pause(h: SandboxHandle): Promise<void> {
     const { ref, transport } = await this.attach(h.id);
     await transport.request("POST", "/processes/stop-all", {}).catch(() => {});
-    await transport.request("POST", "/checkpoints/create", { message: "Pause" });
+    await transport.request("POST", "/checkpoints/create", { message: "Pause" }).catch(() => {});
     const imageId = await ref.snapshotFilesystem(this.cfg.snapshotTtlMs);
     await ref.terminate();
     this.live.delete(h.id);
@@ -348,6 +403,24 @@ export class ModalSandboxProvider implements SandboxProvider {
     });
     h.status = "paused";
     h.snapshotId = imageId;
+  }
+
+  /** Snapshot and terminate any live sandboxes idle for longer than `idleMs` (H8). */
+  async snapshotIdle(idleMs = 600_000): Promise<string[]> {
+    const now = Date.now();
+    const pausedIds: string[] = [];
+    for (const [handleId, entry] of Array.from(this.live.entries())) {
+      const last = this.lastActivity.get(handleId) ?? 0;
+      if (now - last >= idleMs && entry.handle) {
+        try {
+          await this.pause(entry.handle);
+          pausedIds.push(handleId);
+        } catch {
+          // ignore individual pause error
+        }
+      }
+    }
+    return pausedIds;
   }
 
   /** Resume keeps the same handle id so RunState and checkpoints stay valid. */

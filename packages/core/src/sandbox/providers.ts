@@ -43,8 +43,7 @@ export function registerSandboxTransport(
   activeDaemons.set(handleId, {
     config: { sessionKey },
     handleRequest: async (method, urlPath, _headers, body) => {
-      const m = (method.toUpperCase() === "GET" ? "GET" : "POST") as "GET" | "POST";
-      return transport.request(m, urlPath, body);
+      return transport.request(method.toUpperCase(), urlPath, body);
     },
     close: async () => {},
   });

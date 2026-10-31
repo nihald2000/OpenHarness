@@ -1,3 +1,4 @@
+import { client } from "@/lib/client";
 import React, { useEffect, useId, useRef, useState } from "react";
 import { RefreshCw, X } from "lucide-react";
 import { useApp, useCatalog, useTools } from "@/lib/hooks";
@@ -5,6 +6,9 @@ import { PluginsTab } from "./plugins-tab";
 import { Badge, IconButton, Spinner } from "./ui";
 
 export const CAPABILITY_TABS = [
+  "Files",
+  "Changes",
+  "Preview",
   "Plugins",
   "Skills",
   "Agents",
@@ -31,7 +35,33 @@ export function getRequestedCapabilityTab(): CapabilityTabName {
   return requestedCapabilityTab;
 }
 
-export function CapabilitiesPanel({ activeAgent }: { activeAgent: string }) {
+export function CapabilitiesPanel({
+  activeAgent,
+  sessionId,
+  previewUrl,
+}: {
+  activeAgent: string;
+  sessionId?: string;
+  previewUrl?: string | null;
+}) {
+  const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
+  const [selectedFile, setSelectedFile] = useState<{ path: string; content: string } | null>(null);
+  const [diffState, setDiffState] = useState<{ changed: string[]; diff: string }>({ changed: [], diff: "" });
+
+  useEffect(() => {
+    if (!sessionId) return;
+    if (activeTab === "Files") {
+      void client.session
+        .files(sessionId)
+        .then((r) => setWorkspaceFiles(r.files ?? []))
+        .catch(() => {});
+    } else if (activeTab === "Changes") {
+      void client.session
+        .diff(sessionId)
+        .then((r) => setDiffState(r))
+        .catch(() => {});
+    }
+  }, [sessionId, activeTab]);
   const { capabilitiesOpen, setCapabilitiesOpen } = useApp();
   const {
     skills,
@@ -179,6 +209,115 @@ export function CapabilitiesPanel({ activeAgent }: { activeAgent: string }) {
           aria-labelledby={`${baseId}-tab-${activeTab}`}
           className="flex-1 overflow-y-auto p-4 text-xs"
         >
+          {activeTab === "Files" && (
+            <div className="space-y-3">
+              {sessionId && (
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-fg">
+                    Workspace ({workspaceFiles.length})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void client.session.archive(sessionId).then((res) => {
+                        if (!res.archiveBase64) return;
+                        const a = document.createElement("a");
+                        a.href = `data:application/gzip;base64,${res.archiveBase64}`;
+                        a.download = res.filename || `${sessionId}.tar.gz`;
+                        a.click();
+                      });
+                    }}
+                    className="rounded-lg border border-border bg-bg px-2.5 py-1 text-xs font-medium text-fg hover:bg-hover"
+                  >
+                    Download .tar.gz
+                  </button>
+                </div>
+              )}
+              {workspaceFiles.length === 0 ? (
+                <p className="py-4 text-center text-muted">No files loaded yet.</p>
+              ) : (
+                <div className="max-h-60 overflow-y-auto rounded-xl border border-border bg-bg divide-y divide-border">
+                  {workspaceFiles.map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => {
+                        if (!sessionId) return;
+                        void client.session.file(sessionId, f).then(setSelectedFile);
+                      }}
+                      className="block w-full px-3 py-1.5 text-left font-mono text-xs text-fg hover:bg-hover"
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {selectedFile && (
+                <div className="rounded-xl border border-border bg-code p-3">
+                  <div className="mb-1 font-mono text-xs font-semibold text-fg">
+                    {selectedFile.path}
+                  </div>
+                  <pre className="max-h-72 overflow-auto font-mono text-[11px] text-muted">
+                    {selectedFile.content}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === "Changes" && (
+            <div className="space-y-2">
+              <div className="font-semibold text-fg">
+                Changed files ({diffState.changed.length})
+              </div>
+              {diffState.changed.length > 0 && (
+                <ul className="rounded-xl border border-border bg-bg p-2 font-mono text-xs text-fg">
+                  {diffState.changed.map((c) => (
+                    <li key={c} className="py-0.5">
+                      {c}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {diffState.diff ? (
+                <pre className="max-h-80 overflow-auto rounded-xl border border-border bg-code p-3 font-mono text-[11px] text-muted">
+                  {diffState.diff}
+                </pre>
+              ) : (
+                <p className="py-4 text-center text-muted">No diff available yet.</p>
+              )}
+            </div>
+          )}
+
+          {activeTab === "Preview" && (
+            <div className="space-y-2">
+              {previewUrl ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="truncate font-mono text-xs text-muted">{previewUrl}</span>
+                    <a
+                      href={previewUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs font-medium text-accent hover:underline"
+                    >
+                      Open ↗
+                    </a>
+                  </div>
+                  <iframe
+                    title="Sandbox Live Preview"
+                    src={previewUrl}
+                    className="h-96 w-full rounded-xl border border-border bg-bg"
+                  />
+                </>
+              ) : (
+                <p className="py-6 text-center text-muted">
+                  No live preview server running yet.
+                </p>
+              )}
+            </div>
+          )}
+
           {activeTab === "Plugins" && <PluginsTab />}
 
           {activeTab === "Skills" && (

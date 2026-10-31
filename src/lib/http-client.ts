@@ -13,6 +13,7 @@ import type {
   PermissionReply,
   PermissionRequest,
   PluginInfo,
+  RunMode,
   RunRecord,
   RuntimeInfo,
   ScheduleRecord,
@@ -28,6 +29,7 @@ import { OpenHarnessError } from "@openharness/sdk";
 export interface HttpClientOptions {
   baseUrl?: string;
   token?: string;
+  accessKey?: string;
   fetchImpl?: typeof fetch;
   eventSourceFactory?: (url: string) => {
     onopen: (() => void) | null;
@@ -40,6 +42,7 @@ export interface HttpClientOptions {
 export class HttpOpenHarnessClient {
   private readonly base: string;
   private readonly token?: string;
+  private readonly accessKey?: string;
   private readonly fetchFn: typeof fetch;
   private readonly esFactory?: HttpClientOptions["eventSourceFactory"];
 
@@ -48,8 +51,17 @@ export class HttpOpenHarnessClient {
       typeof import.meta !== "undefined" && (import.meta as any).env
         ? ((import.meta as any).env.VITE_OPENHARNESS_URL as string | undefined)
         : undefined;
+    const envKey =
+      typeof import.meta !== "undefined" && (import.meta as any).env
+        ? ((import.meta as any).env.VITE_OH_ACCESS_KEY as string | undefined)
+        : undefined;
+    const storedKey =
+      typeof window !== "undefined" && window.localStorage
+        ? window.localStorage.getItem("oh_access_key") ?? undefined
+        : undefined;
     this.base = (opts.baseUrl ?? envUrl ?? "").replace(/\/$/, "");
     this.token = opts.token;
+    this.accessKey = opts.accessKey ?? envKey ?? storedKey;
     this.fetchFn = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.esFactory = opts.eventSourceFactory;
   }
@@ -66,6 +78,9 @@ export class HttpOpenHarnessClient {
     }
     if (this.token) {
       headers["authorization"] = `Bearer ${this.token}`;
+    }
+    if (this.accessKey) {
+      headers["x-oh-key"] = this.accessKey;
     }
     const res = await this.fetchFn(`${this.base}${path}`, {
       method,
@@ -124,7 +139,7 @@ export class HttpOpenHarnessClient {
       agent?: string;
       model?: string;
       runtime?: string;
-      mode?: "chat" | "task" | "long_task";
+      mode?: RunMode;
     }): Promise<Session> => {
       return this.request<Session>("POST", "/v1/sessions", input);
     },
@@ -140,7 +155,7 @@ export class HttpOpenHarnessClient {
         agent?: string;
         model?: string;
         runtime?: string | null;
-        mode?: "chat" | "task" | "long_task";
+        mode?: RunMode;
       }
     ): Promise<Session> => {
       return this.request<Session>(
@@ -154,8 +169,10 @@ export class HttpOpenHarnessClient {
       return this.request<void>("DELETE", `/v1/sessions/${encodeURIComponent(id)}`);
     },
 
-    messages: async (id: string): Promise<{ messages: Message[]; lastSeq: number }> => {
-      return this.request<{ messages: Message[]; lastSeq: number }>(
+    messages: async (
+      id: string
+    ): Promise<{ messages: Message[]; lastSeq: number; activeRunId?: string | null }> => {
+      return this.request<{ messages: Message[]; lastSeq: number; activeRunId?: string | null }>(
         "GET",
         `/v1/sessions/${encodeURIComponent(id)}/messages`
       );
@@ -166,7 +183,8 @@ export class HttpOpenHarnessClient {
       input: {
         text: string;
         agent?: string;
-        mode?: "chat" | "task" | "long_task";
+        mode?: RunMode;
+        clientTurnId?: string;
         fix?: { commands: string[] };
       }
     ): Promise<{ messageId: string; runId?: string }> => {
@@ -183,6 +201,34 @@ export class HttpOpenHarnessClient {
 
     compact: async (id: string): Promise<void> => {
       await this.request<unknown>("POST", `/v1/sessions/${encodeURIComponent(id)}/compact`, {});
+    },
+
+    files: async (id: string): Promise<{ files: string[] }> => {
+      return this.request<{ files: string[] }>(
+        "GET",
+        `/v1/sessions/${encodeURIComponent(id)}/files`
+      );
+    },
+
+    file: async (id: string, path: string): Promise<{ path: string; content: string }> => {
+      return this.request<{ path: string; content: string }>(
+        "GET",
+        `/v1/sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`
+      );
+    },
+
+    diff: async (id: string): Promise<{ changed: string[]; diff: string }> => {
+      return this.request<{ changed: string[]; diff: string }>(
+        "GET",
+        `/v1/sessions/${encodeURIComponent(id)}/diff`
+      );
+    },
+
+    archive: async (id: string): Promise<{ archiveBase64: string; filename: string }> => {
+      return this.request<{ archiveBase64: string; filename: string }>(
+        "GET",
+        `/v1/sessions/${encodeURIComponent(id)}/archive`
+      );
     },
 
     checkpoints: async (id: string): Promise<CheckpointInfo[]> => {
@@ -244,6 +290,20 @@ export class HttpOpenHarnessClient {
     },
     cancel: async (id: string): Promise<RunRecord> => {
       return this.request<RunRecord>("POST", `/v1/runs/${encodeURIComponent(id)}/cancel`, {});
+    },
+    answer: async (id: string, answer: string): Promise<RunRecord> => {
+      return this.request<RunRecord>(
+        "POST",
+        `/v1/runs/${encodeURIComponent(id)}/answer`,
+        { answer }
+      );
+    },
+    retry: async (id: string): Promise<{ runId: string; run: RunRecord }> => {
+      return this.request<{ runId: string; run: RunRecord }>(
+        "POST",
+        `/v1/runs/${encodeURIComponent(id)}/retry`,
+        {}
+      );
     },
   };
 
@@ -413,6 +473,7 @@ export class HttpOpenHarnessClient {
     const q = new URLSearchParams();
     if (sessionId) q.set("sessionId", sessionId);
     if (after) q.set("after", String(after));
+    if (this.accessKey) q.set("key", this.accessKey);
     const url = `${this.base}/v1/events?${q.toString()}`;
 
     onStatus?.("connecting");

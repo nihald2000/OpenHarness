@@ -11,6 +11,8 @@ export interface SandboxTransport {
   ): Promise<DaemonResponse>;
 }
 
+export type DaemonTransport = SandboxTransport;
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function combineSignals(signals: Array<AbortSignal | undefined>): AbortSignal {
@@ -33,13 +35,16 @@ export class HttpDaemonTransport implements SandboxTransport {
   private token?: { url: string; token: string };
   private sessionKey: string;
   private mint: () => Promise<{ url: string; token: string }>;
+  private onActivity?: () => void;
 
   constructor(
     sessionKey: string,
-    mint: () => Promise<{ url: string; token: string }>
+    mint: () => Promise<{ url: string; token: string }>,
+    onActivity?: () => void
   ) {
     this.sessionKey = sessionKey;
     this.mint = mint;
+    this.onActivity = onActivity;
   }
 
   async request(
@@ -48,6 +53,7 @@ export class HttpDaemonTransport implements SandboxTransport {
     body?: unknown,
     o: { timeoutMs?: number; signal?: AbortSignal } = {}
   ): Promise<DaemonResponse> {
+    this.onActivity?.();
     const requestId = crypto.randomUUID();
     for (let attempt = 0; ; attempt++) {
       this.token ??= await this.mint();
@@ -60,14 +66,16 @@ export class HttpDaemonTransport implements SandboxTransport {
       let res: Response;
       try {
         res = await fetch(`${this.token.url.replace(/\/$/, "")}${path}`, {
-          method,
+          method: method.toUpperCase(),
           signal,
-          body: body === undefined ? undefined : JSON.stringify(body),
+          body: body === undefined || method.toUpperCase() === "GET" ? undefined : JSON.stringify(body),
           headers: {
-            authorization: `Bearer ${this.token.token}`,
+            ...(this.token.token ? { authorization: `Bearer ${this.token.token}` } : {}),
             "x-session-key": this.sessionKey,
             "x-oh-request-id": requestId,
-            ...(body === undefined ? {} : { "content-type": "application/json" }),
+            ...(body === undefined || method.toUpperCase() === "GET"
+              ? {}
+              : { "content-type": "application/json" }),
           },
         });
       } catch (err) {
@@ -132,7 +140,7 @@ export class InProcessTestTransport implements SandboxTransport {
     body?: unknown
   ): Promise<DaemonResponse> {
     const res = await this.daemon.handleRequest(
-      method,
+      method.toUpperCase(),
       path,
       { "x-session-key": this.sessionKey, "x-oh-request-id": crypto.randomUUID() },
       body as Record<string, unknown> | undefined

@@ -3,6 +3,7 @@ export type RunStatus =
   | "queued"
   | "running"
   | "awaiting_permission"
+  | "awaiting_input"
   | "verifying"
   | "completed"
   | "failed"
@@ -15,13 +16,14 @@ export type RunPhase =
   | "fixing"
   | "reviewing"
   | "awaiting_permission"
+  | "awaiting_input"
   | "paused"
   | "completed"
   | "failed"
   | "cancelled"
   | "stuck";
 
-export type RunMode = "chat" | "task" | "long_task";
+export type RunMode = "chat" | "task" | "long_task" | "ask";
 
 export type RiskLevel = "low" | "medium" | "high" | "unknown";
 
@@ -31,6 +33,7 @@ export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = [
   "queued",
   "running",
   "awaiting_permission",
+  "awaiting_input",
   "verifying",
 ] as const;
 
@@ -89,6 +92,9 @@ export interface Session {
   phase?: RunPhase;
   mode?: RunMode;
   runId?: string;
+  activeRunId?: string | null;
+  sandboxHandleId?: string;
+  lastSeq?: number;
   featureId?: string;
   lastCheckpoint?: string;
   tainted?: boolean;
@@ -185,8 +191,16 @@ export interface SkillPart {
 export interface CompactionPart {
   type: "compaction";
   strategy?: "microcompact" | "observation_masking" | "summarize" | "hard_reset";
+  reason?: string;
   tokensSaved?: number;
+  compactedMessages?: number;
+  keptMessages?: number;
+  tokensBefore?: number;
+  tokensAfter?: number;
   summary?: string;
+  requirements?: string[];
+  decisions?: string[];
+  openQuestions?: string[];
 }
 
 export interface VerifyPart {
@@ -438,10 +452,18 @@ export type OpenHarnessEvent =
   | { type: "session.updated"; session: Session }
   | { type: "session.deleted"; sessionId: string }
   | { type: "runtime.reloaded"; at: number }
-  | { type: "run.status"; sessionId: string; status: RunStatus; error?: string }
-  | { type: "run.phase"; sessionId: string; runId?: string; phase: RunPhase; previousPhase?: RunPhase; featureId?: string }
-  | { type: "run.retry"; sessionId: string; runId?: string; attempt: number; delayMs: number; reason: string }
-  | { type: "run.stuck"; sessionId: string; runId?: string; detector: string; count: number; message: string; action: "warn" | "blocked" | "paused" }
+  | { type: "run.created"; sessionId: string; runId: string; mode?: RunMode; seq?: number }
+  | { type: "run.status"; sessionId: string; runId?: string; status: RunStatus; error?: string; seq?: number }
+  | { type: "run.phase"; sessionId: string; runId?: string; phase: RunPhase; previousPhase?: RunPhase; featureId?: string; seq?: number }
+  | { type: "run.retry"; sessionId: string; runId?: string; attempt: number; delayMs: number; reason: string; seq?: number }
+  | { type: "run.stuck"; sessionId: string; runId?: string; detector: string; count: number; message: string; action: "warn" | "blocked" | "paused"; seq?: number }
+  | { type: "run.error"; sessionId: string; runId?: string; code?: string; message?: string; recoverable?: boolean; error?: { code: string; message: string; recoverable: boolean }; seq?: number }
+  | { type: "run.completed"; sessionId: string; runId: string; changedFiles?: string[]; previewUrl?: string; seq?: number }
+  | { type: "plan.updated"; sessionId: string; runId?: string; plan: PlanData; seq?: number }
+  | { type: "question.requested"; sessionId: string; runId: string; questionId: string; question: string; options?: string[]; seq?: number }
+  | { type: "question.answered"; sessionId: string; runId: string; questionId: string; answer: string; seq?: number }
+  | { type: "preview.ready"; sessionId: string; runId?: string; url: string; port?: number; seq?: number }
+  | { type: "verification.finished"; sessionId: string; runId?: string; passed: boolean; results: Array<{ name: string; command: string; passed: boolean; exitCode: number; output: string }>; seq?: number }
   | { type: "budget.warning"; sessionId: string; runId?: string; resource: "iterations" | "duration" | "tokens" | "cost"; used: number; limit: number; ratio: number }
   | { type: "checkpoint.created"; sessionId: string; runId?: string; checkpoint: CheckpointInfo }
   | { type: "context.hard_reset"; sessionId: string; runId?: string; attempts: number; tokensBefore: number; tokensAfter: number }
@@ -455,8 +477,9 @@ export type OpenHarnessEvent =
   | { type: "verification.completed"; sessionId: string; result: { command?: string; passed?: boolean; exitCode?: number | null; timedOut?: boolean; stdout?: string; stderr?: string; truncated?: boolean }; iteration: number; maxIterations: number }
   | { type: "permission.asked"; request: PermissionRequest }
   | { type: "permission.replied"; requestId: string; reply?: PermissionReply }
-  | { type: "message.updated"; sessionId: string; message: Message }
-  | { type: "part.updated"; sessionId: string; messageId: string; part: Part };
+  | { type: "message.updated"; sessionId: string; message: Message; seq?: number }
+  | { type: "part.updated"; sessionId: string; messageId: string; part: Part; seq?: number }
+  | { type: "part.delta"; sessionId: string; messageId?: string; delta: string; seq?: number };
 
 export class OpenHarnessError extends Error {
   readonly status: number;
@@ -489,6 +512,7 @@ export interface PromptInput {
   agent?: string;
   mode?: RunMode;
   async?: boolean;
+  clientTurnId?: string;
 }
 
 export interface PromptResponse {
@@ -527,9 +551,15 @@ export interface OpenHarnessClient {
   getSession(id: string): Promise<Session>;
   updateSession(id: string, input: UpdateSessionInput): Promise<Session>;
   deleteSession(id: string): Promise<void>;
-  getMessages(sessionId: string): Promise<{ messages: Message[]; lastSeq?: number }>;
+  getMessages(sessionId: string): Promise<{ messages: Message[]; lastSeq?: number; activeRunId?: string | null }>;
   prompt(sessionId: string, input: PromptInput): Promise<PromptResponse>;
   abort(sessionId: string): Promise<void>;
+  answerQuestion?(runId: string, answer: string): Promise<void>;
+  retryRun?(runId: string): Promise<PromptResponse>;
+  listSessionFiles?(sessionId: string): Promise<{ files: string[] }>;
+  getSessionFile?(sessionId: string, path: string): Promise<{ path: string; content: string }>;
+  getSessionDiff?(sessionId: string): Promise<{ changed: string[]; diff: string }>;
+  getSessionArchiveUrl?(sessionId: string): string;
   contextUsage(sessionId: string): Promise<ContextUsage>;
   summarize(sessionId: string): Promise<void>;
   executeCommand(
@@ -572,6 +602,7 @@ export interface OpenHarnessClient {
     onEvent: (event: OpenHarnessEvent) => void,
     options?: {
       sessionId?: string;
+      after?: number;
       onStatus?: (status: ConnectionStatus) => void;
       onError?: (error: Error) => void;
     }
@@ -609,6 +640,24 @@ export function applyEvent(
     }
     const copy = [...messages];
     copy[idx] = { ...msg, parts };
+    return copy;
+  }
+  if (event.type === "part.delta") {
+    const targetIdx = event.messageId
+      ? messages.findIndex((m) => m.info.id === event.messageId)
+      : messages.length - 1;
+    if (targetIdx === -1) return messages;
+    const msg = messages[targetIdx]!;
+    if (msg.info.role !== "assistant") return messages;
+    const parts = [...msg.parts];
+    const lastPart = parts[parts.length - 1];
+    if (lastPart && lastPart.type === "text") {
+      parts[parts.length - 1] = { ...lastPart, text: lastPart.text + event.delta };
+    } else {
+      parts.push({ type: "text", text: event.delta });
+    }
+    const copy = [...messages];
+    copy[targetIdx] = { ...msg, parts };
     return copy;
   }
   return messages;

@@ -13,9 +13,22 @@ import { getActiveSandboxDaemon } from "../sandbox/providers.ts";
 import { enforceToolOutputLimit } from "./output-limit.ts";
 import { resolveInside, PathEscapeError } from "../util/safe-path.ts";
 
+export const HOST_TOOLS = new Set([
+  "update_plan",
+  "todo_write",
+  "todowrite",
+  "plan",
+  "ask_user",
+  "delegate",
+  "handoff",
+  "word_count",
+  "webfetch",
+]);
+
 export interface SandboxToolRouterOptions {
   workspaceRoot: string;
   sandboxEnabled?: boolean;
+  ensureSandbox?: (state: RunState) => Promise<{ id: string; workspacePath: string }>;
   onDelegate?: (
     input: Record<string, unknown>,
     ctx: ToolExecutionContext
@@ -49,10 +62,14 @@ export class StandardToolRouter implements ToolRouter {
   listTools(state: RunState): RegisteredTool[] {
     const hasSandbox = Boolean(state.sandboxHandleId || this.opts.sandboxEnabled);
     const isReadOnlyPhase = state.phase === "planning" || state.agent === "plan" || state.agent === "explore";
+    const isAskMode = state.mode === "ask";
 
     return Array.from(this.tools.values())
       .filter((t) => {
         // Sandbox-only tools are advertised only when a sandbox runtime is active (§5 C.3, §6)
+        if (isAskMode && !t.readOnly && t.name !== "ask_user") {
+          return false;
+        }
         if (t.requiresSandbox && !hasSandbox) {
           return false;
         }
@@ -87,6 +104,14 @@ export class StandardToolRouter implements ToolRouter {
     const tool = this.tools.get(name);
     if (!tool) {
       return { output: null, error: `Unknown tool: ${name}` };
+    }
+    if (!HOST_TOOLS.has(name) && !ctx.sandboxHandleId && this.opts.ensureSandbox && ctx.state?.runtime && ctx.state.runtime !== "local") {
+      const h = await this.opts.ensureSandbox(ctx.state);
+      ctx.sandboxHandleId = h.id;
+      ctx.state.sandboxHandleId = h.id;
+    }
+    if (!HOST_TOOLS.has(name) && ctx.state?.runtime && ctx.state.runtime !== "local" && !this.getDaemonAndHeaders(ctx)) {
+      return { output: null, error: "sandbox unavailable" };
     }
     const rawRes = await tool.execute(input, ctx);
     if (typeof rawRes.output === "string") {
@@ -1103,6 +1128,30 @@ export class StandardToolRouter implements ToolRouter {
               agent: String(input.agent ?? "explore"),
               status: "completed",
               report: `Subagent completed exploration for: ${String(input.prompt).slice(0, 120)}`,
+            },
+          };
+        },
+      },
+
+      {
+        name: "ask_user",
+        description:
+          "Asks the user a clarifying question and pauses the run until the user answers. Use ONLY when the request is genuinely ambiguous and blocks implementation (max 3 questions per run). Example: {\"question\": \"Which database should I use?\", \"options\": [\"SQLite\", \"Postgres\"]}",
+        readOnly: true,
+        idempotent: false,
+        parameters: {
+          type: "object",
+          required: ["question"],
+          properties: {
+            question: { type: "string" },
+            options: { type: "array", items: { type: "string" } },
+          },
+        },
+        execute: async (input) => {
+          return {
+            output: {
+              question: String(input.question ?? ""),
+              answer: String(input.answer ?? "Proceed with default."),
             },
           };
         },

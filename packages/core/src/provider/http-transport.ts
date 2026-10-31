@@ -42,7 +42,7 @@ export function createHttpTransport(resolve: ResolvedEndpoint) {
     if (!ep.baseUrl) {
       throw new ProviderHttpError(400, `no baseUrl configured for ${payload.model}`);
     }
-    if (profile.wire === "openai-chat") {
+    if (profile.wire === "openai-chat" || profile.wire === "gemini") {
       return openaiChat(ep, payload, profile, opts);
     }
     if (profile.wire === "anthropic") {

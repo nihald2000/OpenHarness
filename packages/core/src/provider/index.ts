@@ -1,5 +1,6 @@
 export * from "./profiles.ts";
 export * from "./toolcall.ts";
+export * from "./wire-messages.ts";
 export * from "./retry.ts";
 export * from "./adapter.ts";
 export * from "./fixtures.ts";

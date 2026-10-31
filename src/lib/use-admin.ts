@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import { isDemoMode } from "./client";
 
 export interface AuthenticatedUser {
   id: string;
@@ -38,26 +37,13 @@ export async function loginAdminWithToken(
 }
 
 export function useAdmin() {
-  const [admin, setAdmin] = useState<boolean>(isDemoMode);
-  const [loading, setLoading] = useState<boolean>(!isDemoMode);
+  const [admin, setAdmin] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(true);
   const [expired, setExpired] = useState(false);
-  const [user, setUser] = useState<AuthenticatedUser | null>(
-    isDemoMode
-      ? {
-          id: "usr_demo",
-          name: "Demo User",
-          email: "demo@openharness.local",
-        }
-      : null
-  );
+  const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [authDisabled, setAuthDisabled] = useState<boolean>(true);
 
   const refresh = useCallback(async (): Promise<boolean> => {
-    if (isDemoMode) {
-      setAdmin(true);
-      setLoading(false);
-      return true;
-    }
     try {
       const res = await fetch("/v1/admin/session", { credentials: "include" });
       if (!res.ok) {

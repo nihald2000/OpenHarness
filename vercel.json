@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/((?!v1/|health|assets/).*)", "destination": "/index.html" }
+  ]
+}

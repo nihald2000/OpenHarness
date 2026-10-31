@@ -109,6 +109,11 @@ export interface RunState {
   unattended?: boolean;
   onConfirm?: "deny" | "pause";
   confirmationPolicy?: ConfirmationPolicy;
+  toolsDisabled?: boolean;
+  verificationPassed?: boolean;
+  changedFiles?: string[];
+  previewUrl?: string;
+  sandboxNotice?: string;
 }
 
 export interface ProviderToolCall {
@@ -247,42 +252,64 @@ export interface StateStore {
 
   saveRun(tenantId: string, run: RunRecord): Promise<void>;
   getRun(tenantId: string, runId: string): Promise<RunRecord | null>;
+  listRuns(tenantId: string): Promise<RunRecord[]>;
 
-  savePermissionRequest(tenantId: string, req: PermissionRequest): Promise<void>;
+  savePermissionRequest(tenantId: string, request: PermissionRequest): Promise<void>;
   getPermissionRequest(tenantId: string, requestId: string): Promise<PermissionRequest | null>;
   listPermissionRequests(tenantId: string, sessionId?: string): Promise<PermissionRequest[]>;
-  resolvePermissionRequest(tenantId: string, requestId: string, reply: PermissionReply): Promise<PermissionRequest | null>;
+  resolvePermissionRequest(
+    tenantId: string,
+    requestId: string,
+    reply: PermissionReply
+  ): Promise<void>;
 
   saveCheckpointInfo(tenantId: string, sessionId: string, checkpoint: CheckpointInfo): Promise<void>;
   listCheckpoints(tenantId: string, sessionId: string): Promise<CheckpointInfo[]>;
+
+  saveSchedule(tenantId: string, schedule: import("@openharness/sdk").ScheduleRecord): Promise<void>;
+  getSchedule(tenantId: string, id: string): Promise<import("@openharness/sdk").ScheduleRecord | null>;
+  listSchedules(tenantId: string): Promise<import("@openharness/sdk").ScheduleRecord[]>;
+  deleteSchedule(tenantId: string, id: string): Promise<void>;
 }
 
-export interface EventBus {
-  publish(envelope: EventEnvelope): void;
-  subscribe(
-    filter: { tenantId?: string; sessionId?: string },
-    listener: (envelope: EventEnvelope) => void
-  ): () => void;
+export interface VerificationCheckResult {
+  name: string;
+  command: string;
+  passed: boolean;
+  exitCode: number;
+  output: string;
+}
+
+export interface VerificationResult {
+  passed: boolean;
+  signature: string;
+  condensedError: string;
+  results: VerificationCheckResult[];
+}
+
+export interface ReviewerResult {
+  verdict: "pass" | "fail";
+  issues: string[];
+  tamperingDetected: boolean;
 }
 
 export interface EngineDeps {
   clock: Clock;
   stateStore: StateStore;
-  eventBus: EventBus;
+  eventBus: {
+    publish(tenantId: string, sessionId: string, event: OpenHarnessEvent): Promise<void>;
+  };
   provider: ProviderAdapter;
   toolRouter: ToolRouter;
   policyGate: PolicyGate;
   contextManager: ContextManager;
   workspaceRoot: string;
-  ensureSandbox?: (state: RunState) => Promise<{ id: string }>;
-  onCreateCheckpoint?: (state: RunState, message: string, automatic: boolean) => Promise<CheckpointInfo | null>;
-  onRunVerification?: (state: RunState) => Promise<{
-    passed: boolean;
-    signature: string;
-    condensedError: string;
-    results: Array<{ name: string; command: string; passed: boolean; exitCode: number; output: string }>;
-  }>;
-  onRunReviewer?: (state: RunState) => Promise<{ verdict: "pass" | "fail"; issues: string[]; tamperingDetected?: boolean }>;
-  onPauseSandbox?: (state: RunState) => Promise<{ snapshotId?: string }>;
-  onResumeSandbox?: (state: RunState) => Promise<{ sandboxHandleId: string }>;
+  ensureSandbox?: (state: RunState) => Promise<{ id: string; workspacePath: string }>;
+  onRunVerification?: (state: RunState) => Promise<VerificationResult>;
+  onRunReviewer?: (state: RunState) => Promise<ReviewerResult>;
+  onCreateCheckpoint?: (
+    state: RunState,
+    message: string,
+    automatic: boolean
+  ) => Promise<CheckpointInfo | null>;
 }

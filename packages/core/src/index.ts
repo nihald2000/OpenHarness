@@ -3,6 +3,7 @@ export * from "./agent/deps.ts";
 export * from "./agent/engine.ts";
 export * from "./agent/loop.ts";
 export * from "./agent/stuck.ts";
+export * from "./agent/tool-loop-guard.ts";
 export * from "./agent/delegate.ts";
 export * from "./agent/budget.ts";
 export * from "./agent/long-task.ts";

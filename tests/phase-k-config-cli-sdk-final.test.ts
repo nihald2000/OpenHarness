@@ -394,5 +394,9 @@ test("§13 Phase K CLI & §17 Final Acceptance Criterion #1: Meta Llama 4 Maveri
   const cliSbDestroy = await runOhCli(["sandbox", "destroy", "sb_default", "--json"], server);
   assert.equal(cliSbDestroy.exitCode, 0);
 
+  for (const sbId of Array.from(server.activeSandboxes.keys())) {
+    await runOhCli(["sandbox", "destroy", sbId, "--json"], server);
+  }
+  await server.stop();
   await dockerProvider.destroy(handle);
 });

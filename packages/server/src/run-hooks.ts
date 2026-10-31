@@ -42,10 +42,25 @@ export function createRunHooks(ctx: RunHooksContext) {
   };
 
   const ensureSandbox = async (state: RunState): Promise<SandboxHandle> => {
-    if (state.sandboxHandleId && ctx.activeSandboxes.has(state.sandboxHandleId)) {
-      return ctx.activeSandboxes.get(state.sandboxHandleId)!;
-    }
     const session = await ctx.stateStore.getSession(state.tenantId, state.sessionId);
+    const existingHandleId = state.sandboxHandleId ?? session?.sandboxHandleId;
+    if (existingHandleId && ctx.activeSandboxes.has(existingHandleId)) {
+      const existing = ctx.activeSandboxes.get(existingHandleId)!;
+      if (existing.status === "paused") {
+        const p = ctx.providers.get(existing.providerId);
+        await p?.resume(existing);
+        await ctx.emit(state.tenantId, state.sessionId, {
+          type: "sandbox.status",
+          sessionId: state.sessionId,
+          runId: state.runId,
+          sandboxId: existing.id,
+          provider: existing.providerId,
+          status: "running",
+        });
+      }
+      state.sandboxHandleId = existing.id;
+      return existing;
+    }
     const runtime = state.runtime ?? session?.runtime ?? "local";
 
     if (
@@ -67,6 +82,19 @@ export function createRunHooks(ctx: RunHooksContext) {
       throw new Error(`sandbox runtime ${runtime} unavailable: ${health.detail ?? health.status}`);
     }
 
+    const maxSandboxes = Number(process.env.OH_MAX_SANDBOXES ?? 3);
+    if (runtime === "modal" && maxSandboxes > 0) {
+      const runningModal = Array.from(ctx.activeSandboxes.values()).filter(
+        (h) => h.providerId === "modal" && h.status === "running"
+      );
+      if (runningModal.length >= maxSandboxes) {
+        const oldest = runningModal[0];
+        if (oldest) {
+          await provider.pause(oldest).catch(() => {});
+        }
+      }
+    }
+
     const spec = ctx.defaultSpecFor(state);
     if (ctx.allowUnsandboxedAutonomy) {
       spec.allowUnsandboxedAutonomy = true;
@@ -75,7 +103,14 @@ export function createRunHooks(ctx: RunHooksContext) {
     ctx.activeSandboxes.set(handle.id, handle);
     state.sandboxHandleId = handle.id;
 
-    // Persist record in SandboxRecordStore if not already saved by ModalSandboxProvider
+    if (session) {
+      await ctx.stateStore.saveSession(state.tenantId, {
+        ...session,
+        sandboxHandleId: handle.id,
+        updatedAt: Date.now(),
+      });
+    }
+
     const existingRec = await ctx.sandboxRecords.get(handle.id);
     if (!existingRec) {
       await ctx.sandboxRecords.save({
@@ -104,6 +139,19 @@ export function createRunHooks(ctx: RunHooksContext) {
       provider: handle.providerId,
       status: "running",
     });
+
+    for (const [portStr, url] of Object.entries(handle.ports ?? {})) {
+      if (url) {
+        state.previewUrl = url;
+        await ctx.emit(state.tenantId, state.sessionId, {
+          type: "preview.ready",
+          sessionId: state.sessionId,
+          runId: state.runId,
+          port: Number(portStr),
+          url,
+        });
+      }
+    }
 
     return handle;
   };
@@ -162,10 +210,42 @@ export function createRunHooks(ctx: RunHooksContext) {
     return cp;
   };
 
+  const detectSandboxChecks = async (
+    reqFn: (method: "GET" | "POST", route: string, body?: Record<string, unknown>) => Promise<{ status: number; body: Record<string, unknown> }>,
+    fallbackRoot: string
+  ): Promise<Array<{ name: string; command: string; timeoutSec?: number; expectedExitCode?: number }>> => {
+    const checks: Array<{ name: string; command: string; timeoutSec?: number; expectedExitCode?: number }> = [];
+    const pkgView = await reqFn("POST", "/files/view", { path: "package.json" }).catch(() => null);
+    if (pkgView && pkgView.status === 200 && typeof pkgView.body.content === "string") {
+      try {
+        const pkg = JSON.parse(pkgView.body.content) as { scripts?: Record<string, string> };
+        const scripts = pkg.scripts ?? {};
+        if (scripts.typecheck) checks.push({ name: "typecheck", command: "npm run typecheck", timeoutSec: 180 });
+        if (scripts.test && !scripts.test.includes("no test specified")) {
+          checks.push({ name: "test", command: "npm test", timeoutSec: 240 });
+        }
+        if (scripts.build) checks.push({ name: "build", command: "npm run build", timeoutSec: 240 });
+      } catch {}
+    }
+    if (checks.length > 0) return checks;
+    const recipe = resolveVerificationRecipe(fallbackRoot);
+    return recipe.checks;
+  };
+
   const onRunVerification = async (state: RunState) => {
+    if (!state.sandboxHandleId) {
+      return {
+        passed: true,
+        signature: "pass",
+        condensedError: "",
+        results: [],
+      };
+    }
     const h = await ensureSandbox(state);
     const reqFn = getRequestFn(h);
-    const recipe = resolveVerificationRecipe(h.workspacePath || ctx.workspaceRoot);
+    const checks = reqFn
+      ? await detectSandboxChecks(reqFn, h.workspacePath || ctx.workspaceRoot)
+      : resolveVerificationRecipe(h.workspacePath || ctx.workspaceRoot).checks;
 
     const results: Array<{
       name: string;
@@ -176,7 +256,7 @@ export function createRunHooks(ctx: RunHooksContext) {
       durationMs: number;
     }> = [];
 
-    for (const check of recipe.checks) {
+    for (const check of checks) {
       const t0 = Date.now();
       let exitCode = 0;
       let output = "";
@@ -198,7 +278,41 @@ export function createRunHooks(ctx: RunHooksContext) {
       });
     }
 
+    if (reqFn) {
+      const portsRes = await reqFn("GET", "/ports").catch(() => null);
+      const openPorts = Array.isArray(portsRes?.body?.ports)
+        ? (portsRes!.body.ports as Array<{ port: number; previewUrl?: string }>)
+        : [];
+      if (openPorts.length > 0) {
+        const targetPort = openPorts[0]!.port;
+        const t0 = Date.now();
+        const navRes = await reqFn("POST", "/browser/navigate", {
+          url: `http://127.0.0.1:${targetPort}`,
+        }).catch(() => null);
+        if (navRes && navRes.status === 200) {
+          const logsRes = await reqFn("GET", "/browser/console_logs").catch(() => null);
+          const logs = Array.isArray(logsRes?.body?.logs) ? (logsRes!.body.logs as string[]) : [];
+          const errLogs = logs.filter((l) => /^\[(?:error|pageerror)\]/i.test(l));
+          results.push({
+            name: "browser-check",
+            command: `browser_open http://127.0.0.1:${targetPort}`,
+            passed: errLogs.length === 0,
+            exitCode: errLogs.length === 0 ? 0 : 1,
+            output: errLogs.length > 0 ? errLogs.join("\n") : `Loaded ${String(navRes.body.title ?? "")}`,
+            durationMs: Date.now() - t0,
+          });
+        }
+      }
+    }
+
     const { signature, condensedError } = condenseVerificationFailure(results);
+    await ctx.emit(state.tenantId, state.sessionId, {
+      type: "verification.finished",
+      sessionId: state.sessionId,
+      runId: state.runId,
+      passed: results.every((r) => r.passed),
+      results,
+    });
     return {
       passed: results.every((r) => r.passed),
       signature,

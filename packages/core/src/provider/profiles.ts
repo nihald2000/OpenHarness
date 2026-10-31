@@ -304,6 +304,8 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     reasoningField: "reasoning",
     usageInStream: true,
     strictSchemas: true,
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    apiKeyEnv: "GEMINI_API_KEY",
   },
   "gemini-2.5-flash": {
     wire: "gemini",
@@ -316,6 +318,8 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     promptCaching: "automatic",
     usageInStream: true,
     strictSchemas: true,
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    apiKeyEnv: "GEMINI_API_KEY",
   },
 
   // Offline mock provider

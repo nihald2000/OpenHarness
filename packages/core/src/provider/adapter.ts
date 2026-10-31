@@ -14,6 +14,7 @@ import {
   repairToolArgumentsJson,
   synthesizeToolCallId,
 } from "./toolcall.ts";
+import { toWireMessages } from "./wire-messages.ts";
 
 export interface ProviderRequestWirePayload {
   model: string;
@@ -69,10 +70,18 @@ export function buildProviderWirePayload(
     payload.parallel_tool_calls = true;
   }
 
-  // Format messages deterministically
-  const wireMessages: Array<Record<string, unknown>> = [];
+  const converted = toWireMessages(req.messages, profile);
+  if (profile.promptCaching === "explicit") {
+    const summaryIdx = req.messages.findIndex((x) => x.info.summary);
+    if (summaryIdx !== -1 && converted[summaryIdx]) {
+      converted[summaryIdx] = {
+        ...converted[summaryIdx],
+        cache_control: { type: "ephemeral" },
+      };
+    }
+  }
+
   if (profile.wire === "anthropic") {
-    // Explicit cache breakpoint on system prompt (§7 E.1)
     payload.system = [
       {
         type: "text",
@@ -82,55 +91,29 @@ export function buildProviderWirePayload(
           : {}),
       },
     ];
+    payload.messages = converted;
   } else {
-    wireMessages.push({ role: "system", content: systemPrompt });
+    payload.messages = [{ role: "system", content: systemPrompt }, ...converted];
   }
-
-  req.messages.forEach((m, idx) => {
-    const textContent = m.parts
-      .filter((p) => p.type === "text" || p.type === "compaction")
-      .map((p) => (p.type === "text" ? p.text : p.summary))
-      .join("\n");
-
-    const msgObj: Record<string, unknown> = {
-      role: m.info.role,
-      content: textContent,
-    };
-
-    if (
-      profile.promptCaching === "explicit" &&
-      m.info.summary &&
-      idx === req.messages.findIndex((x) => x.info.summary)
-    ) {
-      msgObj.cache_control = { type: "ephemeral" };
-    }
-    wireMessages.push(msgObj);
-  });
-
-  payload.messages = wireMessages;
 
   if (hasTools && profile.toolCalling !== "text") {
     payload.tools = advertisedTools.map((t, idx) => {
-      const fnDef: Record<string, unknown> = {
-        name: t.name,
-        description: t.description,
-        parameters: sortJsonKeysDeterministically(t.parameters) as Record<string, unknown>,
-      };
-      if (profile.strictSchemas) {
-        fnDef.strict = true;
-      }
+      const schema = sortJsonKeysDeterministically(t.parameters) as Record<string, unknown>;
       const toolEntry: Record<string, unknown> =
         profile.wire === "anthropic"
           ? {
               name: t.name,
               description: t.description,
-              input_schema: sortJsonKeysDeterministically(t.parameters) as Record<string, unknown>,
-              type: "function",
-              function: fnDef,
+              input_schema: schema,
             }
           : {
               type: "function",
-              function: fnDef,
+              function: {
+                name: t.name,
+                description: t.description,
+                parameters: schema,
+                ...(profile.strictSchemas ? { strict: true } : {}),
+              },
             };
       if (
         profile.promptCaching === "explicit" &&

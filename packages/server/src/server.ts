@@ -1,3 +1,11 @@
+import { InProcessLauncher } from "./worker/launcher.ts";
+import { sweepStalledRuns } from "./worker/sweeper.ts";
+import { createKeepalive } from "./keepalive.ts";
+import { RunStateMachine } from "./worker/run-state.ts";
+import { RunEventEmitter } from "./worker/emitter.ts";
+import { DurableRunWorker } from "./worker/run-worker.ts";
+import { spawnSync } from "node:child_process";
+import { runSubagent } from "./subagents.ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -21,6 +29,8 @@ import {
   LayeredContextManager,
   LocalSandboxProvider,
   LocalStateStore,
+  ModalSandboxProvider,
+  ModalSdkApi,
   ModelAgnosticProviderAdapter,
   createHttpTransport,
   ProviderHttpError,
@@ -68,6 +78,8 @@ export interface OpenHarnessServerConfig {
   host?: string;
   port?: number;
   loopback?: boolean;
+  authMode?: "open" | "token";
+  accessKey?: string;
   dataDir?: string;
   workspaceRoot?: string;
   databaseUrl?: string;
@@ -179,6 +191,11 @@ export class OpenHarnessServer {
   readonly eventBus: InProcessEventBus;
   readonly jobQueue: JobQueue;
   readonly worker: DurableWorker;
+  readonly runStateMachine: RunStateMachine;
+  readonly emitter: RunEventEmitter;
+  readonly runWorker: DurableRunWorker;
+  readonly launcher: InProcessLauncher;
+  private sweepInterval?: NodeJS.Timeout;
   readonly secretStore: EncryptedSecretStore;
   readonly checkpointManager: SessionCheckpointManager;
   readonly scheduleManager: ScheduleManager;
@@ -202,6 +219,19 @@ export class OpenHarnessServer {
   private defaultRuntime: string;
   private knownRuntimes = new Set<string>(["local", "srt-local", "docker", "modal"]);
   private generatedAdminTokenPath?: string;
+  private settingsPath: string;
+  private readUserSettings(): Record<string, any> {
+    try {
+      if (fs.existsSync(this.settingsPath)) {
+        return JSON.parse(fs.readFileSync(this.settingsPath, "utf8")) || {};
+      }
+    } catch {}
+    return {};
+  }
+  private writeUserSettings(cfg: Record<string, any>): void {
+    fs.mkdirSync(path.dirname(this.settingsPath), { recursive: true });
+    fs.writeFileSync(this.settingsPath, JSON.stringify(cfg, null, 2), "utf8");
+  }
 
   constructor(config?: OpenHarnessServerConfig) {
     this.config = {
@@ -229,6 +259,7 @@ export class OpenHarnessServer {
       this.oidc = new OidcVerifier(this.config.oidc);
     }
     this.defaultRuntime = this.config.defaultRuntime ?? "local";
+    this.settingsPath = path.join(dataDir, "settings.json");
 
     this.providers =
       this.config.providers ??
@@ -236,12 +267,55 @@ export class OpenHarnessServer {
         ["local", new LocalSandboxProvider()],
         ["srt-local", new SrtLocalSandboxProvider({ checkHostBinary: true })],
         ["docker", new DockerSandboxProvider({ checkHostBinary: true })],
-        ["modal", new UnconfiguredModalProvider()],
+        [
+          "modal",
+          (() => {
+            const manifestPath = path.resolve("deploy/modal/image-manifest.json");
+            let imageId = process.env.OH_MODAL_IMAGE_ID ?? "";
+            if (!imageId && fs.existsSync(manifestPath)) {
+              try {
+                imageId = String(JSON.parse(fs.readFileSync(manifestPath, "utf8"))?.imageId ?? "");
+              } catch {}
+            }
+            const hasCreds = Boolean(
+              (process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET) ||
+                process.env.MODAL_ENVIRONMENT ||
+                process.env.MODAL_TASK_ID
+            );
+            if (imageId && hasCreds) {
+              return new ModalSandboxProvider(
+                new ModalSdkApi({
+                  appName: process.env.OH_MODAL_APP ?? "openharness",
+                  tokenId: process.env.MODAL_TOKEN_ID,
+                  tokenSecret: process.env.MODAL_TOKEN_SECRET,
+                }),
+                {
+                  baseImageId: imageId,
+                  encrypt: (s) => this.secretStore.encryptValue(s),
+                  decrypt: (s) => this.secretStore.decryptValue(s),
+                },
+                this.sandboxRecords
+              );
+            }
+            return new UnconfiguredModalProvider();
+          })(),
+        ],
       ]);
 
-    const toolRouter = new StandardToolRouter({
+    let hooksRef: ReturnType<typeof createRunHooks> | null = null;
+    let emitRef: ((tenantId: string, sessionId: string, ev: OpenHarnessEvent) => Promise<void>) | null = null;
+    const toolRouter: StandardToolRouter = new StandardToolRouter({
       workspaceRoot,
       sandboxEnabled: Boolean(this.config.osEnforcedSandbox),
+      ensureSandbox: (s) => hooksRef!.ensureSandbox(s),
+      onDelegate: (input, ctx) =>
+        runSubagent({
+          input,
+          ctx,
+          provider: providerRef!,
+          toolRouter,
+          emit: emitRef ?? undefined,
+        }),
     });
 
     let providerRef: ModelAgnosticProviderAdapter | null = null;
@@ -303,11 +377,43 @@ export class OpenHarnessServer {
           };
         };
         const httpTransport = createHttpTransport(async (profile, model) => {
+          const userCfg = this.readUserSettings();
+          const providers = (userCfg.providers && typeof userCfg.providers === "object" ? userCfg.providers : {}) as Record<string, any>;
+          let customBaseUrl: string | undefined;
+          let customApiKey: string | undefined;
+          for (const [provId, prov] of Object.entries(providers)) {
+            const modelsMap = prov?.models && typeof prov.models === "object" ? prov.models : {};
+            if (modelsMap[model] || provId === model.split("/")[0]) {
+              if (typeof prov.baseUrl === "string" && prov.baseUrl.trim()) {
+                customBaseUrl = prov.baseUrl.trim();
+              }
+              if (typeof prov.apiKey === "string") {
+                const secMatch = prov.apiKey.match(/^\{secret:([A-Za-z0-9_]+)\}$/);
+                if (secMatch && secMatch[1]) {
+                  customApiKey = this.secretStore.getSecret(secMatch[1]) ?? process.env[secMatch[1]];
+                } else if (prov.apiKey.trim()) {
+                  customApiKey = prov.apiKey.trim();
+                }
+              }
+              if (!customApiKey) {
+                const autoName = `PROVIDER_${provId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+                customApiKey = this.secretStore.getSecret(autoName) ?? process.env[autoName];
+              }
+              break;
+            }
+          }
           const keyName = profile.apiKeyEnv;
-          const apiKey = keyName
-            ? this.secretStore.getSecret(keyName) ?? process.env[keyName]
-            : undefined;
-          const baseUrl = profile.baseUrl;
+          const apiKey =
+            customApiKey ??
+            (keyName
+              ? this.secretStore.getSecret(keyName) ?? process.env[keyName]
+              : undefined) ??
+            (model.startsWith("gemini")
+              ? this.secretStore.getSecret("GEMINI_API_KEY") ??
+                this.secretStore.getSecret("PROVIDER_GEMINI_API_KEY") ??
+                process.env.GEMINI_API_KEY
+              : undefined);
+          const baseUrl = customBaseUrl ?? profile.baseUrl;
           if (!baseUrl) {
             throw new ProviderHttpError(400, `no baseUrl configured for ${model}`);
           }
@@ -325,12 +431,12 @@ export class OpenHarnessServer {
       })(),
     }));
 
-    const emit = async (tenantId: string, sessionId: string, ev: OpenHarnessEvent) => {
+    const emit = (emitRef = async (tenantId: string, sessionId: string, ev: OpenHarnessEvent) => {
       const env = await this.stateStore.appendEvent(tenantId, sessionId, ev);
       this.eventBus.publish(env);
-    };
+    });
 
-    const hooks = createRunHooks({
+    const hooks = (hooksRef = createRunHooks({
       providers: this.providers,
       activeSandboxes: this.activeSandboxes,
       sandboxRecords: this.sandboxRecords,
@@ -340,20 +446,26 @@ export class OpenHarnessServer {
       workspaceRoot,
       allowUnsandboxedAutonomy: this.config.allowUnsandboxedAutonomy,
       emit,
-      defaultSpecFor: (state: RunState): SandboxSpec => ({
-        runId: state.runId,
-        sessionId: state.sessionId,
-        tenantId: state.tenantId,
-        workspace: { type: "bind", kind: "local", hostPath: workspaceRoot, path: workspaceRoot },
-        policy: compileSandboxPolicy({
+      defaultSpecFor: (state: RunState): SandboxSpec => {
+        const rt = state.runtime ?? this.defaultRuntime;
+        const isModal = rt === "modal";
+        return {
           runId: state.runId,
-          phase: "agent",
-          workspacePath: workspaceRoot,
-          networkMode: "allowlist",
-        }),
-        allowUnsandboxedAutonomy: this.config.allowUnsandboxedAutonomy,
-      }),
-    });
+          sessionId: state.sessionId,
+          tenantId: state.tenantId,
+          workspace: isModal
+            ? ({ type: "empty", kind: "empty" } as any)
+            : { type: "bind", kind: "local", hostPath: workspaceRoot, path: workspaceRoot },
+          policy: compileSandboxPolicy({
+            runId: state.runId,
+            phase: "agent",
+            workspacePath: isModal ? "/workspace" : workspaceRoot,
+            networkMode: "allowlist",
+          }),
+          allowUnsandboxedAutonomy: this.config.allowUnsandboxedAutonomy,
+        };
+      },
+    }));
 
     this.deps = {
       clock: {
@@ -376,6 +488,16 @@ export class OpenHarnessServer {
     };
 
     this.worker = new DurableWorker(this.jobQueue, this.deps);
+    this.runStateMachine = new RunStateMachine({ dataDir, stateStore: this.stateStore });
+    this.emitter = new RunEventEmitter({ stateStore: this.stateStore, eventBus: this.eventBus });
+    this.runWorker = new DurableRunWorker({
+      stateMachine: this.runStateMachine,
+      emitter: this.emitter,
+      deps: this.deps,
+      activeSandboxes: this.activeSandboxes,
+    });
+    const keepalive = createKeepalive(() => this.config.port ?? Number(process.env.OPENHARNESS_PORT ?? 4096));
+    this.launcher = new InProcessLauncher({ worker: this.runWorker, keepalive });
     this.scheduleManager = new ScheduleManager({
       onEnqueueRun: async (req) => {
         const sessionId = `sess_${req.runId}`;
@@ -433,10 +555,22 @@ export class OpenHarnessServer {
       this.log.info(`Admin token stored at ${tokenPath}`);
     }
     await this.jobQueue.reapExpiredLeases(Date.now());
+    await this.launcher.recoverInterruptedRuns();
+    this.sweepInterval = setInterval(() => {
+      void sweepStalledRuns(this.runStateMachine, this.emitter);
+      const modalProv = this.providers.get("modal") as any;
+      if (modalProv && typeof modalProv.snapshotIdle === "function") {
+        void modalProv.snapshotIdle(Number(process.env.OH_SANDBOX_IDLE_MS ?? 600_000));
+      }
+    }, 60_000);
+    this.sweepInterval.unref?.();
   }
 
   async stop(): Promise<void> {
-    // Graceful shutdown hook for worker/scheduler
+    if (this.sweepInterval) {
+      clearInterval(this.sweepInterval);
+      this.sweepInterval = undefined;
+    }
   }
 
   getAdminTokenPath(): string | undefined {
@@ -477,6 +611,19 @@ export class OpenHarnessServer {
       }
     }
 
+    const configuredAccessKey = this.config.accessKey ?? process.env.OH_ACCESS_KEY;
+    if (configuredAccessKey) {
+      const providedKey = String(h["x-oh-key"] ?? h["X-Oh-Key"] ?? bearer ?? "").trim();
+      if (!providedKey || !safeEqual(providedKey, configuredAccessKey)) {
+        return null;
+      }
+      return {
+        tenantId: this.config.serviceTenantId ?? "default",
+        userId: "access_key",
+        admin: true,
+      };
+    }
+
     const configuredServerToken = this.config.serverToken ?? process.env.OPENHARNESS_SERVER_TOKEN;
     if (configuredServerToken) {
       return bearer && safeEqual(bearer, configuredServerToken)
@@ -486,6 +633,15 @@ export class OpenHarnessServer {
             admin: isAdminToken,
           }
         : null;
+    }
+
+    const isOpenMode = (this.config.authMode ?? process.env.OH_AUTH_MODE) === "open";
+    if (isOpenMode) {
+      return {
+        tenantId: "default",
+        userId: "open",
+        admin: true,
+      };
     }
 
     return this.config.loopback !== false
@@ -607,9 +763,12 @@ export class OpenHarnessServer {
     replaying = false;
     for (const e of pending) write(e);
 
+    res.write("retry: 1000\n\n");
     const ping = setInterval(() => res.write(`: ping ${Date.now()}\n\n`), 15_000);
+    const rotate = setTimeout(() => res.end(), 110_000);
     res.on("close", () => {
       clearInterval(ping);
+      clearTimeout(rotate);
       unsubscribe();
       this.sseLimiter.release(id.userId);
     });
@@ -624,6 +783,19 @@ export class OpenHarnessServer {
     const parsedUrl = new URL(urlPath, "http://127.0.0.1:4096");
     if (method === "GET" && parsedUrl.pathname === "/health") {
       return { status: 200, body: { ok: true, version: "0.2.0" } };
+    }
+    const artifactMatch = parsedUrl.pathname.match(/^\/v1\/artifacts\/([A-Za-z0-9_.-]+)$/);
+    if (method === "GET" && artifactMatch) {
+      const dataDir = this.config.dataDir ?? ".openharness";
+      const filePath = path.join(dataDir, "artifacts", artifactMatch[1]!);
+      if (!fs.existsSync(filePath)) {
+        return { status: 404, body: { error: "Artifact not found" } };
+      }
+      const b64 = fs.readFileSync(filePath, "base64");
+      return {
+        status: 200,
+        body: { id: artifactMatch[1]!, dataBase64: b64, mimeType: "image/png" },
+      };
     }
     const identity = await this.authenticate(headers);
     if (!identity) {
@@ -644,11 +816,12 @@ export class OpenHarnessServer {
 
     if (method === "GET" && pathname === "/v1/admin/session") {
       const hasAdminCfg = Boolean(this.config.adminToken ?? process.env.OPENHARNESS_ADMIN_TOKEN);
+      const isOpenMode = (this.config.authMode ?? process.env.OH_AUTH_MODE) === "open";
       return {
         status: 200,
         body: {
-          admin: identity.admin,
-          authDisabled: !hasAdminCfg && this.config.loopback !== false,
+          admin: identity.admin || isOpenMode,
+          authDisabled: isOpenMode || (!hasAdminCfg && this.config.loopback !== false),
           user: identity.admin
             ? { id: identity.userId, name: "Admin User", email: "admin@openharness.local" }
             : null,
@@ -788,19 +961,34 @@ export class OpenHarnessServer {
     }
 
     if (method === "GET" && pathname === "/v1/admin/settings") {
+      const cfg = this.readUserSettings();
       return {
         status: 200,
         body: {
-          config: {},
-          effective: { defaultRuntime: this.defaultRuntime, defaultModel: this.config.defaultModel ?? "mock/demo" },
-          file: "openharness.json",
-          exists: false,
+          config: cfg,
+          effective: {
+            ...cfg,
+            defaultRuntime: cfg.defaultRuntime ?? this.defaultRuntime,
+            defaultModel: cfg.model ?? this.config.defaultModel ?? "mock/demo",
+          },
+          file: this.settingsPath,
+          exists: fs.existsSync(this.settingsPath),
         },
       };
     }
 
     if (method === "PATCH" && pathname === "/v1/admin/settings") {
-      return { status: 200, body: {} };
+      const cfg = this.readUserSettings();
+      const section = typeof body?.section === "string" ? body.section : "";
+      if (section) {
+        if (body?.value === null || body?.value === undefined) {
+          delete cfg[section];
+        } else {
+          cfg[section] = body.value;
+        }
+        this.writeUserSettings(cfg);
+      }
+      return { status: 200, body: { config: cfg } };
     }
 
     if (method === "GET" && pathname === "/v1/admin/mcp") {
@@ -812,14 +1000,35 @@ export class OpenHarnessServer {
     }
 
     if (method === "GET" && pathname === "/v1/models") {
-      const models = Object.entries(BUILT_IN_MODEL_PROFILES).map(([id, prof]) => ({
-        id,
-        name: id,
-        provider: prof.wire,
-        contextWindow: prof.contextWindow,
-        isDefault: id === (this.config.defaultModel ?? "mock/demo"),
-      }));
-      return { status: 200, body: models };
+      const userCfg = this.readUserSettings();
+      const defaultModelId = userCfg.model ?? this.config.defaultModel ?? "mock/demo";
+      const modelMap = new Map<string, any>();
+      for (const [id, prof] of Object.entries(BUILT_IN_MODEL_PROFILES)) {
+        modelMap.set(id, {
+          id,
+          name: id,
+          provider: prof.wire,
+          contextWindow: prof.contextWindow,
+          isDefault: id === defaultModelId,
+        });
+      }
+      const providers = (userCfg.providers && typeof userCfg.providers === "object" ? userCfg.providers : {}) as Record<string, any>;
+      for (const [provId, prov] of Object.entries(providers)) {
+        if (!prov || typeof prov !== "object") continue;
+        const provName = typeof prov.name === "string" && prov.name.trim() ? prov.name.trim() : provId;
+        const modelsObj = (prov.models && typeof prov.models === "object" ? prov.models : {}) as Record<string, any>;
+        for (const [mId, mVal] of Object.entries(modelsObj)) {
+          if (!mId) continue;
+          modelMap.set(mId, {
+            id: mId,
+            name: typeof mVal?.name === "string" && mVal.name.trim() ? mVal.name.trim() : mId,
+            provider: provName,
+            contextWindow: typeof mVal?.contextWindow === "number" ? mVal.contextWindow : 128000,
+            isDefault: mId === defaultModelId,
+          });
+        }
+      }
+      return { status: 200, body: Array.from(modelMap.values()) };
     }
 
     if (method === "GET" && pathname === "/v1/runtimes") {
@@ -876,7 +1085,7 @@ export class OpenHarnessServer {
           }
           (patch as Record<string, unknown>)[k] = v;
         }
-        if (patch.mode && !["chat", "task", "long_task"].includes(patch.mode)) {
+        if (patch.mode && !["chat", "task", "long_task", "ask"].includes(patch.mode)) {
           return { status: 400, body: { error: "invalid mode" } };
         }
         if (patch.runtime && !this.knownRuntimes.has(patch.runtime)) {
@@ -899,8 +1108,146 @@ export class OpenHarnessServer {
 
     const messagesMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/messages$/);
     if (method === "GET" && messagesMatch) {
-      const data = await this.stateStore.getMessages(tenantId, messagesMatch[1]!);
-      return { status: 200, body: data };
+      const sid = messagesMatch[1]!;
+      const [data, sess] = await Promise.all([
+        this.stateStore.getMessages(tenantId, sid),
+        this.stateStore.getSession(tenantId, sid),
+      ]);
+      return {
+        status: 200,
+        body: {
+          ...data,
+          activeRunId: sess?.activeRunId ?? null,
+        },
+      };
+    }
+
+    const sessionFilesMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/files$/);
+    if (method === "GET" && sessionFilesMatch) {
+      const sid = sessionFilesMatch[1]!;
+      const sess = await this.stateStore.getSession(tenantId, sid);
+      if (!sess) return { status: 404, body: { error: "Session not found" } };
+      const sbId = sess.sandboxHandleId;
+      if (sbId) {
+        const daemon = getActiveSandboxDaemon(sbId);
+        if (daemon) {
+          const res = await daemon.handleRequest("POST", "/search/glob", { "x-session-key": daemon.config.sessionKey }, { pattern: "**/*" });
+          const files = Array.isArray(res.body.matches) ? res.body.matches : [];
+          return { status: 200, body: { files } };
+        }
+      }
+      const listFiles = (dir: string, rel = ""): string[] => {
+        const out: string[] = [];
+        try {
+          for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (e.name === "node_modules" || e.name === ".git" || e.name.startsWith(".openharness")) continue;
+            const p = rel ? `${rel}/${e.name}` : e.name;
+            if (e.isDirectory()) out.push(...listFiles(path.join(dir, e.name), p));
+            else out.push(p);
+          }
+        } catch {}
+        return out;
+      };
+      return { status: 200, body: { files: listFiles(this.deps.workspaceRoot).slice(0, 500) } };
+    }
+
+    const sessionFileMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/file$/);
+    if (method === "GET" && sessionFileMatch) {
+      const sid = sessionFileMatch[1]!;
+      const filePath = parsedUrl.searchParams.get("path") ?? "";
+      const sess = await this.stateStore.getSession(tenantId, sid);
+      if (!sess) return { status: 404, body: { error: "Session not found" } };
+      if (!filePath || filePath.includes("..")) {
+        return { status: 400, body: { error: "Invalid file path" } };
+      }
+      if (sess.sandboxHandleId) {
+        const daemon = getActiveSandboxDaemon(sess.sandboxHandleId);
+        if (daemon) {
+          const res = await daemon.handleRequest("POST", "/files/view", { "x-session-key": daemon.config.sessionKey }, { path: filePath });
+          if (res.status !== 200) return { status: res.status, body: res.body };
+          return { status: 200, body: { path: filePath, content: String(res.body.content ?? "") } };
+        }
+      }
+      const resolved = path.resolve(this.deps.workspaceRoot, filePath);
+      if (!resolved.startsWith(path.resolve(this.deps.workspaceRoot)) || !fs.existsSync(resolved)) {
+        return { status: 404, body: { error: "File not found" } };
+      }
+      return { status: 200, body: { path: filePath, content: fs.readFileSync(resolved, "utf8") } };
+    }
+
+    const sessionDiffMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/diff$/);
+    if (method === "GET" && sessionDiffMatch) {
+      const sid = sessionDiffMatch[1]!;
+      const sess = await this.stateStore.getSession(tenantId, sid);
+      if (!sess) return { status: 404, body: { error: "Session not found" } };
+      if (sess.sandboxHandleId) {
+        const daemon = getActiveSandboxDaemon(sess.sandboxHandleId);
+        if (daemon) {
+          const res = await daemon.handleRequest("POST", "/checkpoints/diff", { "x-session-key": daemon.config.sessionKey }, {});
+          if (res.status === 200) {
+            return {
+              status: 200,
+              body: {
+                changed: Array.isArray(res.body.files) ? res.body.files : [],
+                diff: String(res.body.diff ?? ""),
+              },
+            };
+          }
+        }
+      }
+      const runs = this.runStateMachine.listRuns(sid);
+      const changed = Array.from(new Set(runs.flatMap((r) => r.changedFiles ?? [])));
+      return { status: 200, body: { changed, diff: "" } };
+    }
+
+    const sessionArchiveMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/archive$/);
+    if (method === "GET" && sessionArchiveMatch) {
+      const sid = sessionArchiveMatch[1]!;
+      const sess = await this.stateStore.getSession(tenantId, sid);
+      if (!sess) return { status: 404, body: { error: "Session not found" } };
+      if (sess.sandboxHandleId) {
+        const daemon = getActiveSandboxDaemon(sess.sandboxHandleId);
+        if (daemon) {
+          const res = await daemon.handleRequest("GET", "/workspace/archive", { "x-session-key": daemon.config.sessionKey });
+          if (res.status === 200 && res.body.archiveBase64) {
+            return {
+              status: 200,
+              body: { archiveBase64: res.body.archiveBase64, filename: `${sid}.tar.gz` },
+            };
+          }
+        }
+      }
+      const tarRes = spawnSync(
+        "tar",
+        ["-czf", "-", "--exclude=node_modules", "--exclude=.git", "--exclude=.openharness", "."],
+        { cwd: this.deps.workspaceRoot, maxBuffer: 50 * 1024 * 1024 }
+      );
+      return {
+        status: 200,
+        body: {
+          archiveBase64: (tarRes.stdout as Buffer)?.toString("base64") ?? "",
+          filename: `${sid}.tar.gz`,
+        },
+      };
+    }
+
+    const sessionAbortMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/abort$/);
+    if (method === "POST" && sessionAbortMatch) {
+      const sid = sessionAbortMatch[1]!;
+      const sess = await this.stateStore.getSession(tenantId, sid);
+      if (!sess) return { status: 404, body: { error: "Session not found" } };
+      const targetRunId = sess.activeRunId ?? sess.runId;
+      if (targetRunId) {
+        await this.runWorker.cancelRun(targetRunId);
+        await this.worker.cancelRun(tenantId, targetRunId).catch(() => null);
+      }
+      await this.stateStore.saveSession(tenantId, {
+        ...sess,
+        status: "cancelled",
+        activeRunId: null,
+        updatedAt: Date.now(),
+      });
+      return { status: 200, body: { aborted: true } };
     }
 
     const promptMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/prompt$/);
@@ -1048,6 +1395,29 @@ export class OpenHarnessServer {
       return { status: 200, body: run };
     }
 
+    const runAnswerMatch = pathname.match(/^\/v1\/runs\/([^/]+)\/answer$/);
+    if (method === "POST" && runAnswerMatch) {
+      try {
+        const answer = String(body?.answer ?? "");
+        const updated = await this.runWorker.answerQuestion(runAnswerMatch[1]!, answer);
+        return { status: 200, body: updated };
+      } catch (err) {
+        const status = typeof (err as any)?.status === "number" ? (err as any).status : 400;
+        return { status, body: { error: (err as Error).message } };
+      }
+    }
+
+    const runRetryMatch = pathname.match(/^\/v1\/runs\/([^/]+)\/retry$/);
+    if (method === "POST" && runRetryMatch) {
+      try {
+        const retried = await this.runWorker.retryRun(runRetryMatch[1]!);
+        return { status: 202, body: { runId: retried.id, run: retried } };
+      } catch (err) {
+        const status = typeof (err as any)?.status === "number" ? (err as any).status : 400;
+        return { status, body: { error: (err as Error).message } };
+      }
+    }
+
     const runActionMatch = pathname.match(/^\/v1\/runs\/([^/]+)\/(pause|resume|cancel)$/);
     if (method === "POST" && runActionMatch) {
       const runId = runActionMatch[1]!;
@@ -1064,9 +1434,11 @@ export class OpenHarnessServer {
         return { status: 200, body: resumed.run };
       }
       if (action === "cancel") {
+        const v2Cancelled = await this.runWorker.cancelRun(runId);
         const cancelled = await this.worker.cancelRun(tenantId, runId);
-        if (!cancelled) return { status: 404, body: { error: "Run not found" } };
-        return { status: 200, body: cancelled };
+        const finalRun = v2Cancelled ?? cancelled;
+        if (!finalRun) return { status: 404, body: { error: "Run not found" } };
+        return { status: 200, body: finalRun };
       }
     }
 
