@@ -46,6 +46,7 @@ export function SignInCard({ expired, returnTo = "/settings", initialError }: { 
     const result = await login(value); setSubmitting(false);
     if (!result.ok) setError(result.error);
     else if (window.location.pathname === "/login") window.location.assign(returnTo);
+    else window.location.reload();
   };
 
   const oauthUrl = (provider: "google" | "github") => `/api/auth/${provider}?mode=${mode}&returnTo=${encodeURIComponent(returnTo)}`;

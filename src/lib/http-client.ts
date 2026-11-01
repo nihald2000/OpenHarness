@@ -105,6 +105,10 @@ export class HttpOpenHarnessClient {
     return this.request<ServerInfo>("GET", "/v1/info");
   }
 
+  async bootstrapGuestSession(): Promise<void> {
+    await this.request<{ ok: boolean }>("GET", "/v1/guest/session");
+  }
+
   async agents(): Promise<AgentInfo[]> {
     return this.request<AgentInfo[]>("GET", "/v1/agents");
   }

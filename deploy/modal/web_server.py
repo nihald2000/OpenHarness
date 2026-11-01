@@ -62,6 +62,9 @@ def server():
         # Keep ordinary web conversations on the model path until a sandbox
         # runtime is explicitly selected for a Code run.
         "OPENHARNESS_WEB_DISABLE_SANDBOX": "1",
+        # Give each anonymous browser a signed, isolated tenant cookie; admin
+        # routes still require the separate administrator session.
+        "OPENHARNESS_WEB_GUEST": "1",
         "OPENHARNESS_HOST": "0.0.0.0",
         "OPENHARNESS_PORT": "4096",
         "OPENHARNESS_DATA_DIR": "/data",

@@ -284,7 +284,13 @@ export class OpenHarnessServer {
     this.attachments = new AttachmentStore(dataDir);
     this.checkpointManager = new SessionCheckpointManager(this.stateStore);
     this.sandboxRecords = new FileSandboxRecordStore(dataDir);
-    this.sessions = new CookieSessionStore();
+    const cookieSecret =
+      process.env.OPENHARNESS_WEB_GUEST_SECRET ??
+      this.config.serverToken ??
+      process.env.OPENHARNESS_SERVER_TOKEN ??
+      this.config.adminToken ??
+      process.env.OPENHARNESS_ADMIN_TOKEN;
+    this.sessions = new CookieSessionStore(cookieSecret);
     if (this.config.oidc) {
       this.oidc = new OidcVerifier(this.config.oidc);
     }
@@ -828,6 +834,36 @@ export class OpenHarnessServer {
           admin: isAdminToken,
         }
       : null;
+  }
+
+  async createWebGuestSession(
+    headers: http.IncomingHttpHeaders | Record<string, string | undefined>
+  ): Promise<{ status: number; body: Record<string, unknown>; headers?: Record<string, string> }> {
+    const identity = await this.authenticate(headers);
+    if (identity) {
+      return { status: 200, body: { ok: true, admin: identity.admin } };
+    }
+    if (process.env.OPENHARNESS_WEB_GUEST !== "1") {
+      return { status: 403, body: { error: "Guest web access is disabled" } };
+    }
+
+    const stableSecret =
+      process.env.OPENHARNESS_WEB_GUEST_SECRET ??
+      this.config.serverToken ??
+      process.env.OPENHARNESS_SERVER_TOKEN ??
+      this.config.adminToken ??
+      process.env.OPENHARNESS_ADMIN_TOKEN;
+    if (!stableSecret) {
+      return { status: 503, body: { error: "Guest web access is not configured" } };
+    }
+
+    const guestSessions = new CookieSessionStore(stableSecret);
+    const issued = guestSessions.issueGuestCookie(30 * 24 * 60 * 60 * 1000, this.config.loopback === false);
+    return {
+      status: 200,
+      body: { ok: true, admin: false },
+      headers: { "set-cookie": issued.cookieHeader },
+    };
   }
 
   async listRuntimes(): Promise<RuntimeInfo[]> {

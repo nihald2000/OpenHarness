@@ -123,6 +123,10 @@ export function createHttpServer(
         req.on("close", () => clearTimeout(timer));
         return;
       }
+      if (req.method === "GET" && url.pathname === "/v1/guest/session") {
+        const guest = await app.createWebGuestSession(req.headers);
+        return send(res, guest.status, guest.body, guest.headers);
+      }
       const queryKey = url.searchParams.get("key");
       const authHeaders = queryKey
         ? { ...req.headers, "x-oh-key": queryKey }
