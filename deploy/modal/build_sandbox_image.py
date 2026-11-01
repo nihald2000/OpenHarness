@@ -31,6 +31,9 @@ def build_sandbox_image() -> modal.Image:
         )
         .run_commands(
             "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs",
+            # Install the same OS-level process sandbox that the daemon requires
+            # for enforcing its per-run filesystem and network policy.
+            "npm install --global @anthropic-ai/sandbox-runtime && srt --version",
             "useradd --create-home -u 1000 --shell /bin/bash agent || true",
         )
         .env({"PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright"})
