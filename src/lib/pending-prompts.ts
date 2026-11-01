@@ -1,5 +1,6 @@
 export interface PendingPrompt {
   text: string;
+  attachmentIds?: string[];
   agent?: string;
   fix?: { commands: string[] };
 }

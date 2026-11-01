@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { OpenHarnessServer, HttpError } from "./server.ts";
 import { loadServerConfig, type LoadedServerConfig } from "./config.ts";
+import { MAX_ATTACHMENT_BYTES } from "./attachments.ts";
 
 export const SECURITY_HEADERS: Record<string, string> = {
   "x-content-type-options": "nosniff",
@@ -47,6 +48,18 @@ export async function readJson(
     // fall through
   }
   throw new HttpError(400, "body must be a JSON object");
+}
+
+async function readRawBody(req: http.IncomingMessage, max: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of req) {
+    const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
+    size += buf.length;
+    if (size > max) throw new HttpError(413, "attachment is too large");
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks);
 }
 
 function isOriginAllowed(origin: string): boolean {
@@ -146,6 +159,19 @@ export function createHttpServer(
       const identity = await app.authenticate(authHeaders);
       if (!identity) {
         return send(res, 401, { error: "unauthorized" });
+      }
+      const attachmentRoute = url.pathname.match(/^\/v1\/sessions\/([^/]+)\/attachments$/);
+      if (req.method === "POST" && attachmentRoute) {
+        const rawBody = await readRawBody(req, MAX_ATTACHMENT_BYTES);
+        const out = await app.handleAuthenticatedRequest(
+          identity,
+          req.method,
+          url,
+          authHeaders,
+          undefined,
+          rawBody
+        );
+        return send(res, out.status, out.body, out.headers);
       }
       if (url.pathname === "/v1/events") {
         await app.streamEvents(identity, url, req, res);

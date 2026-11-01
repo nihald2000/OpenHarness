@@ -1,4 +1,4 @@
-import type { Message, ToolPart } from "@openharness/sdk";
+import type { AttachmentPart, Message, ToolPart } from "@openharness/sdk";
 import type { ModelProfile } from "./profiles.ts";
 import { synthesizeToolCallId } from "./toolcall.ts";
 
@@ -22,6 +22,22 @@ const textOf = (m: Message) =>
     )
     .join("\n");
 
+const imageAttachments = (m: Message): AttachmentPart[] =>
+  m.parts.filter(
+    (p): p is AttachmentPart =>
+      p.type === "attachment" &&
+      Boolean(p.dataBase64) &&
+      ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(p.mimeType.toLowerCase())
+  );
+
+const pdfAttachments = (m: Message): AttachmentPart[] =>
+  m.parts.filter(
+    (p): p is AttachmentPart =>
+      p.type === "attachment" &&
+      Boolean(p.dataBase64) &&
+      p.mimeType.toLowerCase() === "application/pdf"
+  );
+
 const toolOf = (m: Message) => m.parts.filter((p): p is ToolPart => p.type === "tool");
 
 const inputOf = (t: ToolPart) =>
@@ -37,8 +53,19 @@ export function toWireMessages(messages: Message[], profile: ModelProfile): Wire
 function openAIMessages(m: Message): Wire[] {
   const text = textOf(m);
   const tools = toolOf(m);
+  const images = imageAttachments(m);
   if (m.info.role !== "assistant" || tools.length === 0) {
-    return [{ role: m.info.role, content: text }];
+    if (images.length === 0) return [{ role: m.info.role, content: text }];
+    return [{
+      role: m.info.role,
+      content: [
+        ...(text ? [{ type: "text", text }] : []),
+        ...images.map((image) => ({
+          type: "image_url",
+          image_url: { url: `data:${image.mimeType};base64,${image.dataBase64}` },
+        })),
+      ],
+    }];
   }
   const calls = tools.map((t, idx) => ({
     id: synthesizeToolCallId(m.info.id, idx, t.callId),
@@ -61,8 +88,32 @@ function openAIMessages(m: Message): Wire[] {
 function anthropicMessages(m: Message): Wire[] {
   const text = textOf(m);
   const tools = toolOf(m);
+  const images = imageAttachments(m);
+  const pdfs = pdfAttachments(m);
   if (m.info.role !== "assistant" || tools.length === 0) {
-    return text ? [{ role: m.info.role, content: [{ type: "text", text }] }] : [];
+    if (!text && images.length === 0 && pdfs.length === 0) return [];
+    return [{
+      role: m.info.role,
+      content: [
+        ...(text ? [{ type: "text", text }] : []),
+        ...images.map((image) => ({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: image.mimeType,
+            data: image.dataBase64,
+          },
+        })),
+        ...pdfs.map((pdf) => ({
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: pdf.dataBase64,
+          },
+        })),
+      ],
+    }];
   }
   const assistantBlocks: Wire[] = [];
   if (text) assistantBlocks.push({ type: "text", text });
@@ -90,8 +141,19 @@ function anthropicMessages(m: Message): Wire[] {
 function textModeMessages(m: Message): Wire[] {
   const text = textOf(m);
   const tools = toolOf(m);
+  const images = imageAttachments(m);
   if (m.info.role !== "assistant" || tools.length === 0) {
-    return [{ role: m.info.role, content: text }];
+    if (images.length === 0) return [{ role: m.info.role, content: text }];
+    return [{
+      role: m.info.role,
+      content: [
+        ...(text ? [{ type: "text", text }] : []),
+        ...images.map((image) => ({
+          type: "image_url",
+          image_url: { url: `data:${image.mimeType};base64,${image.dataBase64}` },
+        })),
+      ],
+    }];
   }
   const callLines = tools
     .map((t) => `<tool_call>${JSON.stringify({ name: t.tool, arguments: inputOf(t) })}</tool_call>`)

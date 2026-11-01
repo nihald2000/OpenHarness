@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
-import { AlertCircle, ChevronRight } from "lucide-react";
+import { AlertCircle, ChevronRight, FileText, Image as ImageIcon } from "lucide-react";
 import type {
+  AttachmentPart,
   CompactionPart,
   Message,
   Part,
@@ -95,6 +96,7 @@ function UserMessageRow({ message }: { message: Message }) {
   const syntheticTexts: string[] = [];
   const verifyParts: VerifyPart[] = [];
   const skillParts: SkillPart[] = [];
+  const attachments: AttachmentPart[] = [];
 
   for (const part of message.parts) {
     if (part.type === "text") {
@@ -107,6 +109,8 @@ function UserMessageRow({ message }: { message: Message }) {
       verifyParts.push(part);
     } else if (part.type === "skill") {
       skillParts.push(part);
+    } else if (part.type === "attachment") {
+      attachments.push(part);
     }
   }
 
@@ -117,6 +121,24 @@ function UserMessageRow({ message }: { message: Message }) {
       {regularTexts.length > 0 && (
         <div className="max-w-[85%] rounded-2xl border border-border bg-elev px-4 py-3 text-base leading-normal text-fg whitespace-pre-wrap">
           {regularTexts.join("\n\n")}
+        </div>
+      )}
+
+      {attachments.length > 0 && (
+        <div className="mt-2 flex max-w-[95%] flex-wrap justify-end gap-2">
+          {attachments.map((file) => {
+            const isImage = file.mimeType.startsWith("image/");
+            const Icon = isImage ? ImageIcon : FileText;
+            return (
+              <div key={file.id} title={file.relativePath} className="flex min-w-0 max-w-64 items-center gap-2 rounded-xl border border-border bg-elev px-3 py-2 text-left">
+                <Icon className="size-4 shrink-0 text-accent" aria-hidden="true" />
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-medium text-fg">{file.relativePath}</div>
+                  <div className="text-[10px] text-muted">{file.mimeType} · {file.size < 1024 * 1024 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${(file.size / (1024 * 1024)).toFixed(1)} MB`}</div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 

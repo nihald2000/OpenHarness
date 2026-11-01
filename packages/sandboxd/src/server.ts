@@ -312,6 +312,9 @@ export class SandboxDaemon {
     if (method === "POST" && pathname === "/files/create") {
       return this.createFile(payload);
     }
+    if (method === "POST" && pathname === "/files/write_bytes") {
+      return this.writeFileBytes(payload);
+    }
     if (method === "POST" && pathname === "/files/str_replace") {
       return this.strReplaceFile(payload);
     }
@@ -990,6 +993,33 @@ export class SandboxDaemon {
         bytesWritten: Buffer.byteLength(content, "utf8"),
         diagnostics: lint.diagnostics,
       },
+    };
+  }
+
+  private async writeFileBytes(
+    payload: Record<string, unknown>
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const rawPath = String(payload.path ?? "");
+    const encoded = String(payload.dataBase64 ?? "");
+    if (!rawPath || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+      return { status: 400, body: { error: "Invalid binary file payload" } };
+    }
+    if (encoded.length > 28 * 1024 * 1024) {
+      return { status: 413, body: { error: "Binary file payload is too large" } };
+    }
+    const data = Buffer.from(encoded, "base64");
+    const access = this.resolveSafePath(rawPath, "write");
+    if (!access.allowed) {
+      return { status: 403, body: { error: access.error } };
+    }
+    if (payload.overwrite === false && fs.existsSync(access.resolvedPath)) {
+      return { status: 200, body: { path: rawPath, exists: true, bytesWritten: 0 } };
+    }
+    fs.mkdirSync(path.dirname(access.resolvedPath), { recursive: true });
+    fs.writeFileSync(access.resolvedPath, data);
+    return {
+      status: 200,
+      body: { path: rawPath, bytesWritten: data.byteLength },
     };
   }
 

@@ -119,6 +119,7 @@ export interface RunState {
   pauseReason?: string;
   error?: string;
   assistantMessageId?: string;
+  attachmentIds?: string[];
   unattended?: boolean;
   onConfirm?: "deny" | "pause";
   confirmationPolicy?: ConfirmationPolicy;
@@ -340,6 +341,7 @@ export interface EngineDeps {
   /** Returns the cancellation signal for a run so in-flight model and tool calls can be interrupted. */
   signalFor?: (runId: string) => AbortSignal | undefined;
   ensureSandbox?: (state: RunState) => Promise<{ id: string; workspacePath: string }>;
+  prepareAttachments?: (state: RunState, messages: Message[]) => Promise<Message[]>;
   onRunVerification?: (state: RunState) => Promise<VerificationResult>;
   onRunReviewer?: (state: RunState) => Promise<ReviewerResult>;
   onCreateCheckpoint?: (

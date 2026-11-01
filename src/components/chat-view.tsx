@@ -17,7 +17,7 @@ import {
 import { useSession } from "@/lib/use-session";
 import { CapabilitiesPanel } from "./capabilities-panel";
 import { ChatHeader } from "./chat-header";
-import { Composer, type ComposerHandle } from "./composer";
+import { Composer, type ComposerHandle, type SelectedAttachment } from "./composer";
 import { EmptyState } from "./empty-state";
 import { PermissionPrompt } from "./permission-prompt";
 import { PlanDock } from "./plan-dock";
@@ -54,6 +54,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   const [settleTick, setSettleTick] = useState(0);
   const [optimisticPrompt, setOptimisticPrompt] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number } | null>(null);
   const [stopping, setStopping] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [stickTrigger, setStickTrigger] = useState(0);
@@ -240,9 +241,9 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     async (
       targetId: string,
       text: string,
-      opts?: { agent?: string; fix?: { commands: string[] } }
+      opts?: { agent?: string; fix?: { commands: string[] }; attachmentIds?: string[]; selectedFiles?: SelectedAttachment[] }
     ) => {
-      setOptimisticPrompt(text);
+      setOptimisticPrompt(text || (opts?.selectedFiles?.length ? `Attached ${opts.selectedFiles.length} file${opts.selectedFiles.length === 1 ? "" : "s"}` : null));
       setStickTrigger((t) => t + 1);
       resetFix();
       setSending(true);
@@ -254,10 +255,12 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
           mode: runMode,
           clientTurnId: `turn_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
           fix: opts?.fix,
+          attachments: opts?.attachmentIds,
         });
       } catch (err) {
         setOptimisticPrompt(null);
         composerRef.current?.setText(text);
+        if (opts?.selectedFiles?.length) composerRef.current?.restoreAttachments(opts.selectedFiles);
         notify("error", errorMessage(err));
       } finally {
         setSending(false);
@@ -273,6 +276,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
       void sendPromptToSession(sessionId, pending.text, {
         agent: pending.agent,
         fix: pending.fix,
+        attachmentIds: pending.attachmentIds,
       });
     }
   }, [sessionId, loading, notFound, sendPromptToSession]);
@@ -280,9 +284,12 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   const handleSend = async (
     text: string,
     fixOpts?: { commands: string[] },
+    selectedFiles: SelectedAttachment[] = [],
     overrideAgent?: string
   ) => {
     if (!selectedModelConfigured) {
+      composerRef.current?.setText(text);
+      if (selectedFiles.length) composerRef.current?.restoreAttachments(selectedFiles);
       notify(
         "info",
         models.length === 0
@@ -292,6 +299,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
       return;
     }
     if (!runtimeReady) {
+      composerRef.current?.setText(text);
+      if (selectedFiles.length) composerRef.current?.restoreAttachments(selectedFiles);
       notify(
         "info",
         !selectedRuntime
@@ -304,35 +313,85 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     }
 
     if (sessionId) {
-      await sendPromptToSession(sessionId, text, {
-        agent: overrideAgent,
-        fix: fixOpts,
-      });
+      setSending(true);
+      const uploadedIds: string[] = [];
+      try {
+        if (selectedFiles.length) {
+          setUploadProgress({ completed: 0, total: selectedFiles.length });
+          for (let index = 0; index < selectedFiles.length; index++) {
+            const item = selectedFiles[index]!;
+            const uploaded = await client.session.uploadAttachment(sessionId, {
+              file: item.file,
+              path: item.relativePath,
+              groupId: item.groupId,
+            });
+            uploadedIds.push(uploaded.id);
+            setUploadProgress({ completed: index + 1, total: selectedFiles.length });
+          }
+        }
+        await sendPromptToSession(sessionId, text, {
+          agent: overrideAgent,
+          fix: fixOpts,
+          attachmentIds: uploadedIds,
+          selectedFiles,
+        });
+      } catch (err) {
+        await Promise.all(uploadedIds.map((id) => client.session.deleteAttachment(sessionId, id).catch(() => {})));
+        composerRef.current?.setText(text);
+        if (selectedFiles.length) composerRef.current?.restoreAttachments(selectedFiles);
+        notify("error", errorMessage(err));
+      } finally {
+        setSending(false);
+        setUploadProgress(null);
+      }
       return;
     }
 
     setSending(true);
-    setOptimisticPrompt(text);
+    setOptimisticPrompt(text || (selectedFiles.length ? `Attached ${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"}` : null));
     setStickTrigger((t) => t + 1);
+    let createdId: string | undefined;
+    const uploadedIds: string[] = [];
     try {
       const created = await client.session.create({
         agent: overrideAgent ?? selectedAgent,
         model: selectedModel || undefined,
         runtime: draft.runtime || undefined,
       });
+      createdId = created.id;
       upsertSession(created);
+      if (selectedFiles.length) {
+        setUploadProgress({ completed: 0, total: selectedFiles.length });
+        for (let index = 0; index < selectedFiles.length; index++) {
+          const item = selectedFiles[index]!;
+          const uploaded = await client.session.uploadAttachment(created.id, {
+            file: item.file,
+            path: item.relativePath,
+            groupId: item.groupId,
+          });
+          uploadedIds.push(uploaded.id);
+          setUploadProgress({ completed: index + 1, total: selectedFiles.length });
+        }
+      }
       setPendingPrompt(created.id, {
         text,
         agent: overrideAgent,
         fix: fixOpts,
+        attachmentIds: uploadedIds,
       });
       router.push(`/c/${encodeURIComponent(created.id)}`);
     } catch (err) {
+      if (createdId) {
+        await Promise.all(uploadedIds.map((id) => client.session.deleteAttachment(createdId!, id).catch(() => {})));
+        await client.session.delete(createdId).catch(() => {});
+      }
       setOptimisticPrompt(null);
       composerRef.current?.setText(text);
+      if (selectedFiles.length) composerRef.current?.restoreAttachments(selectedFiles);
       notify("error", `Could not start a chat: ${errorMessage(err)}`);
     } finally {
       setSending(false);
+      setUploadProgress(null);
     }
   };
 
@@ -721,9 +780,10 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                   commands={commands}
                   active={activeRun}
                   sending={sending}
+                  uploadProgress={uploadProgress}
                   stopping={stopping}
                   disabled={!selectedModelConfigured || !runtimeReady}
-                  onSend={(t, f) => void handleSend(t, f)}
+                  onSend={(t, f, files) => void handleSend(t, f, files)}
                   onStop={() => void handleStop()}
                 />
               </>

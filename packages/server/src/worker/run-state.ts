@@ -115,6 +115,7 @@ export class RunStateMachine {
       updatedAt: now,
       lastHeartbeatAt: now,
       clientTurnId: input.clientTurnId,
+      attachmentIds: input.attachmentIds,
       snapshot,
       pendingQuestion: null,
       questionsAsked: 0,

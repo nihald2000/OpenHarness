@@ -73,6 +73,7 @@ export function createInitialRunState(params: {
   phase?: RunPhase;
   budgets?: Partial<BudgetState>;
   sandboxHandleId?: string | null;
+  attachmentIds?: string[];
   now?: number;
   unattended?: boolean;
   onConfirm?: "deny" | "pause";
@@ -110,6 +111,7 @@ export function createInitialRunState(params: {
     questionsAsked: 0,
     lastCheckpoint: null,
     sandboxHandleId: params.sandboxHandleId ?? null,
+    attachmentIds: params.attachmentIds,
     sandboxSnapshotId: null,
     inFlightToolCalls: [],
     completedToolCalls: {},
@@ -675,12 +677,15 @@ export async function runStep(
     message: assistantMsg,
   });
 
+  const providerMessages = deps.prepareAttachments
+    ? await deps.prepareAttachments(state, ctxPrepared.messages)
+    : ctxPrepared.messages;
   const turnResponse = await deps.provider.generateTurn({
     runId: state.runId,
     sessionId: state.sessionId,
     model: state.model,
     systemPrompt: ctxPrepared.systemPrompt,
-    messages: ctxPrepared.messages,
+    messages: providerMessages,
     tools: availableTools.map((t) => ({
       name: t.name,
       description: t.description ?? "",

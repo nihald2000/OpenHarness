@@ -154,6 +154,19 @@ export interface ReasoningPart {
   text: string;
 }
 
+export interface AttachmentPart {
+  type: "attachment";
+  id: string;
+  groupId: string;
+  name: string;
+  relativePath: string;
+  workspacePath: string;
+  mimeType: string;
+  size: number;
+  /** Transient provider payload only; never persisted or returned to clients. */
+  dataBase64?: string;
+}
+
 export type ToolCallState =
   | "pending"
   | "running"
@@ -239,6 +252,7 @@ export interface PlanPart {
 export type Part =
   | TextPart
   | ReasoningPart
+  | AttachmentPart
   | ToolPart
   | SkillPart
   | CompactionPart
@@ -521,6 +535,7 @@ export interface PromptInput {
   mode?: RunMode;
   async?: boolean;
   clientTurnId?: string;
+  attachments?: string[];
 }
 
 export interface PromptResponse {
@@ -561,6 +576,12 @@ export interface OpenHarnessClient {
   deleteSession(id: string): Promise<void>;
   getMessages(sessionId: string): Promise<{ messages: Message[]; lastSeq?: number; activeRunId?: string | null }>;
   prompt(sessionId: string, input: PromptInput): Promise<PromptResponse>;
+  uploadAttachment?(sessionId: string, input: {
+    file: Blob;
+    path: string;
+    groupId: string;
+  }): Promise<Omit<AttachmentPart, "type" | "dataBase64">>;
+  deleteAttachment?(sessionId: string, attachmentId: string): Promise<void>;
   abort(sessionId: string): Promise<void>;
   answerQuestion?(runId: string, answer: string): Promise<void>;
   retryRun?(runId: string): Promise<PromptResponse>;

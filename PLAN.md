@@ -47,3 +47,8 @@
 
 ### Phase I: Checkpoints, Rewind, and Fork — Complete
 - Implemented `SessionCheckpointManager` (`packages/core/src/checkpoints/index.ts`), `POST /v1/sessions/:id/rewind` (`{ checkpoint, files: true, conversation: false }`), `POST /v1/sessions/:id/fork`, `oh session checkpoints|rewind|fork` CLI commands, and the Web UI `CheckpointsPopover` (`src/components/checkpoints-popover.tsx`).
+
+### Phase J: User File Attachments — In Progress
+- Add the composer file/folder picker and authenticated per-file upload API, preserving relative folder paths and tenant/session scope.
+- Persist attachment metadata with the user message; hydrate safe text and supported image/PDF content into provider requests and stage original bytes into the selected Code sandbox.
+- Complete focused API, sandbox-write, and browser composer checks before marking this phase complete. Upload files remain on the single `dataDir` storage layer; shared multi-node object storage is not implemented here.

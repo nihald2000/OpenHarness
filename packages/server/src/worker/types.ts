@@ -48,6 +48,7 @@ export interface DurableRunRecord extends RunRecord {
   agent: string;
   runtime?: string;
   clientTurnId?: string;
+  attachmentIds?: string[];
   snapshot: FrozenRunSnapshot;
   pendingQuestion?: QuestionRequest | null;
   questionsAsked: number;
@@ -68,6 +69,7 @@ export interface CreateRunInput {
   runtime?: string;
   mode?: RunMode;
   clientTurnId?: string;
+  attachmentIds?: string[];
   tools?: string[];
   limits?: Partial<FrozenRunSnapshot["limits"]>;
 }

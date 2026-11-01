@@ -73,7 +73,8 @@ export class HttpOpenHarnessClient {
     signal?: AbortSignal
   ): Promise<T> {
     const headers: Record<string, string> = {};
-    if (body !== undefined) {
+    const isBlob = typeof Blob !== "undefined" && body instanceof Blob;
+    if (body !== undefined && !isBlob) {
       headers["content-type"] = "application/json";
     }
     if (this.token) {
@@ -86,7 +87,7 @@ export class HttpOpenHarnessClient {
       method,
       headers,
       credentials: "include",
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : isBlob ? body as Blob : JSON.stringify(body),
       signal,
     });
     if (!res.ok) {
@@ -185,6 +186,7 @@ export class HttpOpenHarnessClient {
         agent?: string;
         mode?: RunMode;
         clientTurnId?: string;
+        attachments?: string[];
         fix?: { commands: string[] };
         async?: boolean;
       }
@@ -193,6 +195,48 @@ export class HttpOpenHarnessClient {
         "POST",
         `/v1/sessions/${encodeURIComponent(id)}/prompt`,
         { async: true, ...input }
+      );
+    },
+
+    uploadAttachment: async (
+      id: string,
+      input: { file: Blob; path: string; groupId: string }
+    ): Promise<{
+      id: string;
+      groupId: string;
+      name: string;
+      relativePath: string;
+      workspacePath: string;
+      mimeType: string;
+      size: number;
+    }> => {
+      const query = new URLSearchParams({
+        group: input.groupId,
+        path: input.path,
+        type: input.file.type || "application/octet-stream",
+      });
+      const res = await this.request<{
+        attachment: {
+          id: string;
+          groupId: string;
+          name: string;
+          relativePath: string;
+          workspacePath: string;
+          mimeType: string;
+          size: number;
+        };
+      }>(
+        "POST",
+        `/v1/sessions/${encodeURIComponent(id)}/attachments?${query}`,
+        input.file
+      );
+      return res.attachment;
+    },
+
+    deleteAttachment: async (id: string, attachmentId: string): Promise<void> => {
+      await this.request<void>(
+        "DELETE",
+        `/v1/sessions/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`
       );
     },
 

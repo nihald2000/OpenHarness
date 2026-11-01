@@ -7,14 +7,33 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { ArrowUp, Square, TerminalSquare, Wrench, X } from "lucide-react";
+import { ArrowUp, FileText, FolderUp, Plus, Square, TerminalSquare, Wrench, X } from "lucide-react";
 import type { CommandInfo } from "@openharness/sdk";
 import { Spinner } from "./ui";
 
 export interface ComposerHandle {
   focus: () => void;
   setText: (text: string) => void;
+  restoreAttachments: (files: SelectedAttachment[]) => void;
 }
+
+export interface SelectedAttachment {
+  file: File;
+  relativePath: string;
+  groupId: string;
+}
+
+const MAX_FILES = 100;
+const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+const formatBytes = (bytes: number) =>
+  bytes < 1024 * 1024
+    ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+    : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
+const newGroupId = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `files_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
 const VERIFY_STORAGE_KEY = "oh-verifyCommand";
 let moduleVerifyEnabled = false;
@@ -28,8 +47,9 @@ export const Composer = forwardRef<
     active: boolean;
     sending: boolean;
     stopping: boolean;
+    uploadProgress?: { completed: number; total: number } | null;
     disabled?: boolean;
-    onSend: (text: string, fix?: { commands: string[] }) => void;
+    onSend: (text: string, fix?: { commands: string[] }, files?: SelectedAttachment[]) => void;
     onStop: () => void;
   }
 >(function Composer(
@@ -40,6 +60,7 @@ export const Composer = forwardRef<
     active,
     sending,
     stopping,
+    uploadProgress = null,
     disabled = false,
     onSend,
     onStop,
@@ -51,8 +72,13 @@ export const Composer = forwardRef<
   const [verifyCommand, setVerifyCommand] = useState("bun test");
   const [dismissedQuery, setDismissedQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [attachments, setAttachments] = useState<SelectedAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState("");
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const verifyInputRef = useRef<HTMLInputElement>(null);
   const slashListboxId = useId();
 
@@ -65,6 +91,11 @@ export const Composer = forwardRef<
     } catch {
       // ignore
     }
+  }, []);
+
+  useEffect(() => {
+    folderInputRef.current?.setAttribute("webkitdirectory", "");
+    folderInputRef.current?.setAttribute("directory", "");
   }, []);
 
   const updateVerifyEnabled = (next: boolean) => {
@@ -91,7 +122,34 @@ export const Composer = forwardRef<
         textareaRef.current?.focus();
       });
     },
+    restoreAttachments: (files: SelectedAttachment[]) => {
+      setAttachments((current) => [...files, ...current]);
+    },
   }));
+
+  const addFiles = (fileList: FileList | File[]) => {
+    const picked = Array.from(fileList);
+    const groupId = newGroupId();
+    const additions = picked.map((file) => ({
+      file,
+      relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+      groupId,
+    }));
+    setAttachmentError("");
+    const next = [...attachments, ...additions];
+    const totalBytes = next.reduce((sum, item) => sum + item.file.size, 0);
+    if (next.length > MAX_FILES) {
+      setAttachmentError(`Attach up to ${MAX_FILES} files at a time.`);
+      return;
+    }
+    if (totalBytes > MAX_TOTAL_BYTES) {
+      setAttachmentError("Attachments must total 20 MB or less.");
+      return;
+    }
+    setAttachments(next);
+    setAttachMenuOpen(false);
+    textareaRef.current?.focus();
+  };
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -142,16 +200,19 @@ export const Composer = forwardRef<
     !disabled &&
     !active &&
     !sending &&
-    text.trim().length > 0 &&
+    (text.trim().length > 0 || attachments.length > 0) &&
     (!verifyEnabled || trimmedCmd.length > 0);
 
   const submit = () => {
     if (!canSend) return;
     const payload = text.trim();
+    const files = attachments;
     const fix =
       verifyEnabled && trimmedCmd ? { commands: [trimmedCmd] } : undefined;
     setText("");
-    onSend(payload, fix);
+    setAttachments([]);
+    setAttachmentError("");
+    onSend(payload, fix, files);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -201,8 +262,32 @@ export const Composer = forwardRef<
       : undefined;
 
   return (
-    <div className="mx-auto w-full max-w-[720px] px-4 pb-4">
+    <div
+      className="mx-auto w-full max-w-[720px] px-4 pb-4"
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        if (e.dataTransfer.files.length) {
+          e.preventDefault();
+          addFiles(e.dataTransfer.files);
+        }
+      }}
+    >
       <div className="relative">
+        {attachMenuOpen && (
+          <div role="menu" aria-label="Add attachments" className="absolute bottom-full left-0 z-30 mb-2 w-52 rounded-xl border border-border bg-bg p-1 shadow-menu animate-fade-in">
+            <button type="button" role="menuitem" onClick={() => fileInputRef.current?.click()} className="touch-target flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-fg hover:bg-hover">
+              <FileText className="size-4 text-accent" aria-hidden="true" /> Add files
+            </button>
+            <button type="button" role="menuitem" onClick={() => folderInputRef.current?.click()} className="touch-target flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-fg hover:bg-hover">
+              <FolderUp className="size-4 text-accent" aria-hidden="true" /> Add folder
+            </button>
+            <p className="px-3 pb-2 pt-1 text-[11px] text-muted">Up to 100 files, 20 MB total. Code mode can work with any file type.</p>
+          </div>
+        )}
+        <input ref={fileInputRef} type="file" multiple className="sr-only" onChange={(e) => { if (e.currentTarget.files) addFiles(e.currentTarget.files); e.currentTarget.value = ""; }} />
+        <input ref={folderInputRef} type="file" multiple className="sr-only" onChange={(e) => { if (e.currentTarget.files) addFiles(e.currentTarget.files); e.currentTarget.value = ""; }} />
         {slashOpen && (
           <div
             id={slashListboxId}
@@ -255,6 +340,20 @@ export const Composer = forwardRef<
             disabled ? "opacity-40 pointer-events-none" : ""
           }`}
         >
+          {attachments.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2 border-b border-border px-1 pb-2">
+              {attachments.map((item, index) => (
+                <div key={`${item.groupId}:${item.relativePath}:${index}`} title={item.relativePath} className="flex max-w-full items-center gap-2 rounded-xl border border-border bg-bg px-2 py-1.5 text-xs">
+                  <FileText className="size-3.5 shrink-0 text-accent" aria-hidden="true" />
+                  <span className="max-w-44 truncate text-fg">{item.relativePath}</span>
+                  <span className="shrink-0 text-muted">{formatBytes(item.file.size)}</span>
+                  <button type="button" onClick={() => setAttachments((current) => current.filter((_, i) => i !== index))} aria-label={`Remove ${item.file.name}`} className="touch-target inline-flex size-5 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-fg">
+                    <X className="size-3" aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           {verifyEnabled && (
             <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-border px-2 pb-2 text-xs">
               <span className="font-medium text-fg">Verify &amp; fix with</span>
@@ -299,6 +398,16 @@ export const Composer = forwardRef<
           )}
 
           <div className="flex items-end gap-2">
+            <button
+              type="button"
+              onClick={() => setAttachMenuOpen((open) => !open)}
+              aria-label="Add files or folder"
+              title="Add files or folder"
+              aria-expanded={attachMenuOpen}
+              className="touch-target inline-flex size-9 shrink-0 items-center justify-center rounded-xl text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg"
+            >
+              <Plus className={`size-5 transition-transform ${attachMenuOpen ? "rotate-45" : ""}`} aria-hidden="true" />
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -384,6 +493,13 @@ export const Composer = forwardRef<
           </div>
         </div>
 
+        {attachmentError && <p role="alert" className="mt-2 px-1 text-xs text-danger">{attachmentError}</p>}
+
+        {uploadProgress && (
+          <div className="mt-2 px-1 text-xs text-muted" role="status" aria-live="polite">
+            Uploading files {uploadProgress.completed}/{uploadProgress.total}…
+          </div>
+        )}
         <div className="mt-2 hidden md:flex items-center justify-between px-1 text-xs text-muted">
           <span>
             Enter to send · Shift+Enter for a new line · / for commands

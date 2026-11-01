@@ -31,3 +31,4 @@
   - [x] Wire LLM `summarizer` into `LayeredContextManager` for non-`mock/*` models (`tests/step-10-browser-compaction.test.ts`).
   - [x] Expand `packages/core/src/*` domain modules and verify behavior in `tests/phase-k-config-cli-sdk-final.test.ts`.
   - [x] Delete `metadata.json` and update `README.md`, `TODO.md`, and `docs/*.md`.
+- [ ] **File attachment follow-up**: add focused integration coverage for tenant/session upload isolation, path traversal rejection, binary sandbox writes, image/PDF provider payloads, and browser file/folder selection; then mark the feature complete.

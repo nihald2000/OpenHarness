@@ -298,6 +298,8 @@ export class DurableRunWorker implements RunWorker {
       model: prev.snapshot.model,
       runtime: prev.runtime,
       mode: prev.mode,
+      clientTurnId: prev.clientTurnId,
+      attachmentIds: prev.attachmentIds,
       tools: prev.snapshot.tools,
       limits: prev.snapshot.limits,
     });
@@ -350,6 +352,7 @@ export class DurableRunWorker implements RunWorker {
             mode: run.mode,
             phase: run.mode === "chat" || run.mode === "ask" ? "building" : "planning",
             sandboxHandleId: run.sandboxHandleId ?? session?.sandboxHandleId ?? null,
+            attachmentIds: run.attachmentIds,
           });
 
       const loopGuard =
