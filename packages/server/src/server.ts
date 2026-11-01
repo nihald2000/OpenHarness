@@ -306,7 +306,9 @@ export class OpenHarnessServer {
       this.oidc = new OidcVerifier(this.config.oidc);
     }
     this.settingsPath = path.join(dataDir, "settings.json");
-    const savedDefaultRuntime = this.readUserSettings().defaultRuntime;
+    const rawSavedRuntime = this.readUserSettings().defaultRuntime;
+    const savedDefaultRuntime =
+      rawSavedRuntime && rawSavedRuntime !== "modal" ? rawSavedRuntime : undefined;
     this.defaultRuntime = savedDefaultRuntime ?? this.config.defaultRuntime ?? "local";
 
     this.providers =

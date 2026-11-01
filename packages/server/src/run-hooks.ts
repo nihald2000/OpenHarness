@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { CheckpointInfo, OpenHarnessEvent } from "@openharness/sdk";
 import {
   condenseVerificationFailure,
@@ -96,13 +97,51 @@ export function createRunHooks(ctx: RunHooksContext) {
     if (ctx.allowUnsandboxedAutonomy) {
       spec.allowUnsandboxedAutonomy = true;
     }
-    const handle = await provider.create(spec);
+    let handle: SandboxHandle;
+    let createdSpec = spec;
+    try {
+      handle = await provider.create(spec);
+    } catch (error) {
+      if (runtime === "local") throw error;
+      const localProvider = ctx.providers.get("local");
+      if (!localProvider) throw error;
+
+      const rebaseWorkspacePath = (candidate: string): string => {
+        if (candidate === "/workspace") return ctx.workspaceRoot;
+        if (candidate.startsWith("/workspace/")) {
+          return path.resolve(ctx.workspaceRoot, candidate.slice("/workspace/".length));
+        }
+        return candidate;
+      };
+      createdSpec = {
+        ...spec,
+        providerId: "local",
+        workspace: {
+          type: "bind",
+          kind: "local",
+          hostPath: ctx.workspaceRoot,
+          path: ctx.workspaceRoot,
+        },
+        policy: {
+          ...spec.policy,
+          filesystem: {
+            ...spec.policy.filesystem,
+            allowRead: spec.policy.filesystem.allowRead.map(rebaseWorkspacePath),
+            allowWrite: spec.policy.filesystem.allowWrite.map(rebaseWorkspacePath),
+          },
+          network: { ...spec.policy.network, mode: "open" },
+        },
+      };
+      handle = await localProvider.create(createdSpec);
+      state.runtime = "local";
+    }
     ctx.activeSandboxes.set(handle.id, handle);
     state.sandboxHandleId = handle.id;
 
     if (session) {
       await ctx.stateStore.saveSession(state.tenantId, {
         ...session,
+        runtime: state.runtime ?? runtime,
         sandboxHandleId: handle.id,
         updatedAt: Date.now(),
       });
@@ -118,10 +157,10 @@ export function createRunHooks(ctx: RunHooksContext) {
         runId: state.runId,
         status: "running",
         sessionKeyEnc: "",
-        cpu: spec.limits?.cpuCores ?? 2,
-        memoryMiB: spec.limits?.memoryMb ?? 4096,
+        cpu: createdSpec.limits?.cpuCores ?? 2,
+        memoryMiB: createdSpec.limits?.memoryMb ?? 4096,
         createdAt: Date.now(),
-        timeoutMs: (spec.limits?.timeoutSec ?? 3600) * 1000,
+        timeoutMs: (createdSpec.limits?.timeoutSec ?? 3600) * 1000,
         billedUntil: Date.now(),
         ports: handle.ports,
         policy: handle.policy,
