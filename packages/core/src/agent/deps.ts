@@ -43,6 +43,16 @@ export interface InFlightToolCall {
   partialOutput?: string;
 }
 
+export interface PendingQuestion {
+  questionId: string;
+  question: string;
+  options?: string[];
+  callId: string;
+  askedAt: number;
+  answeredAt?: number;
+  answer?: string;
+}
+
 export interface StepCheckpoint {
   runId: string;
   sessionId: string;
@@ -53,6 +63,7 @@ export interface StepCheckpoint {
   usage: TokenUsage;
   cost: number;
   pendingApproval: PermissionRequest | null;
+  pendingQuestion?: PendingQuestion | null;
   sandboxHandleId: string | null;
   lastCheckpointSha: string | null;
   inFlightToolCalls: InFlightToolCall[];
@@ -88,6 +99,8 @@ export interface RunState {
   features: FeatureItem[];
   featureId: string | null;
   pendingApproval: PermissionRequest | null;
+  pendingQuestion?: PendingQuestion | null;
+  questionsAsked?: number;
   lastCheckpoint: string | null;
   sandboxHandleId: string | null;
   sandboxSnapshotId?: string | null;
@@ -318,6 +331,8 @@ export interface EngineDeps {
     delta: string
   ) => void;
   onFlushDelta?: (sessionId: string) => Promise<void>;
+  /** Returns the cancellation signal for a run so in-flight model and tool calls can be interrupted. */
+  signalFor?: (runId: string) => AbortSignal | undefined;
   ensureSandbox?: (state: RunState) => Promise<{ id: string; workspacePath: string }>;
   onRunVerification?: (state: RunState) => Promise<VerificationResult>;
   onRunReviewer?: (state: RunState) => Promise<ReviewerResult>;

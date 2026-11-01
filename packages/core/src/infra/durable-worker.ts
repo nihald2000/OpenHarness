@@ -2,6 +2,7 @@ import type { OpenHarnessEvent, PermissionReply, RunRecord } from "@openharness/
 import type { EngineDeps, RunState } from "../agent/deps.ts";
 import {
   applyPermissionDecisionToState,
+  applyQuestionAnswerToState,
   createInitialRunState,
   persistStepCheckpoint,
   runStep,
@@ -134,6 +135,9 @@ export class DurableWorker {
       if (state.phase === "awaiting_permission") {
         // Free the worker slot while waiting for permission approval (§3 A.2)
         await this.queue.moveToWaiting(job.id, this.workerId, job.fenceToken, "permission");
+      } else if (state.phase === "awaiting_input") {
+        // Free the worker slot while waiting for a clarifying-question answer.
+        await this.queue.moveToWaiting(job.id, this.workerId, job.fenceToken, "input");
       } else if (state.phase === "paused" || state.phase === "stuck") {
         await this.queue.moveToWaiting(job.id, this.workerId, job.fenceToken, "paused");
         this.scheduleSandboxIdleHibernation(state);
@@ -146,26 +150,33 @@ export class DurableWorker {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      state.phase = "failed";
-      state.error = message;
+      const aborted = this.deps.signalFor?.(state.runId)?.aborted === true;
+      state.phase = aborted ? "cancelled" : "failed";
+      if (!aborted) state.error = message;
+      if (aborted) state.pauseReason = "cancelled";
       state.updatedAt = this.deps.clock.now();
       state.completedAt = state.updatedAt;
       await persistStepCheckpoint(this.deps, state);
-      await this.queue.fail(job.id, this.workerId, job.fenceToken, message);
+      if (aborted) {
+        await this.queue.cancel(job.id);
+      } else {
+        await this.queue.fail(job.id, this.workerId, job.fenceToken, message);
+      }
 
       const failedRunRecord: RunRecord = {
         id: state.runId,
         sessionId: state.sessionId,
         tenantId: state.tenantId,
         mode: state.mode,
-        status: "failed",
-        phase: "failed",
+        status: aborted ? "cancelled" : "failed",
+        phase: aborted ? "cancelled" : "failed",
         iteration: state.iteration,
         maxIterations: state.budgets.maxIterations,
         startedAt: state.startedAt,
         updatedAt: state.updatedAt,
         completedAt: state.completedAt,
-        error: message,
+        pauseReason: state.pauseReason,
+        error: aborted ? undefined : message,
         sandboxHandleId: state.sandboxHandleId ?? undefined,
         usage: state.usage,
         cost: state.cost,
@@ -173,17 +184,18 @@ export class DurableWorker {
       await this.deps.stateStore.saveRun(state.tenantId, failedRunRecord);
       const sess = await this.deps.stateStore.getSession(state.tenantId, state.sessionId);
       if (sess) {
-        sess.status = "failed";
-        sess.phase = "failed";
-        sess.error = message;
+        sess.status = aborted ? "cancelled" : "failed";
+        sess.phase = aborted ? "cancelled" : "failed";
+        sess.error = aborted ? undefined : message;
+        sess.activeRunId = null;
         sess.updatedAt = state.updatedAt;
         await this.deps.stateStore.saveSession(state.tenantId, sess);
       }
       const env = await this.deps.stateStore.appendEvent(state.tenantId, state.sessionId, {
         type: "run.status",
         sessionId: state.sessionId,
-        status: "failed",
-        error: message,
+        status: aborted ? "cancelled" : "failed",
+        error: aborted ? undefined : message,
       });
       this.deps.eventBus.publish(env);
     }
@@ -214,6 +226,38 @@ export class DurableWorker {
     const { state: updatedState, events } = await applyPermissionDecisionToState(
       cp.state,
       reply,
+      this.deps
+    );
+
+    const job = await this.queue.getJobByRunId(runId);
+    if (job) {
+      await this.queue.resumeWaiting(job.id);
+      const resumed = await this.executeJobById(job.id);
+      return {
+        state: resumed.state ?? updatedState,
+        events: [...events, ...resumed.events],
+      };
+    }
+
+    return { state: updatedState, events };
+  }
+
+  /**
+   * Records the user's answer to a durable `ask_user` question and resumes the same waiting job.
+   */
+  async answerQuestion(
+    tenantId: string,
+    runId: string,
+    answer: string
+  ): Promise<{ state: RunState | null; events: OpenHarnessEvent[] }> {
+    const cp = await this.deps.stateStore.getStepCheckpoint(tenantId, runId);
+    if (!cp || !cp.state.pendingQuestion) {
+      return { state: cp?.state ?? null, events: [] };
+    }
+
+    const { state: updatedState, events } = await applyQuestionAnswerToState(
+      cp.state,
+      answer,
       this.deps
     );
 

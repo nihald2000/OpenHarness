@@ -24,7 +24,7 @@ export interface JobRecord {
   workerId: string | null;
   fenceToken: number;
   leaseExpiresAt: number | null;
-  waitReason?: "permission" | "retry" | "quota" | "paused";
+  waitReason?: "permission" | "input" | "retry" | "quota" | "paused";
   resumeAt?: number | null;
   checkpoint: StepCheckpoint | null;
   createdAt: number;
@@ -37,7 +37,7 @@ export interface JobQueue {
   claim(workerId: string, leaseMs?: number): Promise<JobRecord | null>;
   heartbeat(jobId: string, workerId: string, fenceToken: number, leaseMs?: number): Promise<boolean>;
   saveCheckpoint(jobId: string, workerId: string, fenceToken: number, checkpoint: StepCheckpoint): Promise<boolean>;
-  moveToWaiting(jobId: string, workerId: string, fenceToken: number, reason: "permission" | "retry" | "quota" | "paused", resumeAt?: number): Promise<boolean>;
+  moveToWaiting(jobId: string, workerId: string, fenceToken: number, reason: "permission" | "input" | "retry" | "quota" | "paused", resumeAt?: number): Promise<boolean>;
   resumeWaiting(jobId: string): Promise<boolean>;
   complete(jobId: string, workerId: string, fenceToken: number): Promise<boolean>;
   fail(jobId: string, workerId: string, fenceToken: number, error: string): Promise<boolean>;
@@ -171,7 +171,7 @@ export class InProcessJobQueue implements JobQueue {
     jobId: string,
     workerId: string,
     fenceToken: number,
-    reason: "permission" | "retry" | "quota" | "paused",
+    reason: "permission" | "input" | "retry" | "quota" | "paused",
     resumeAt?: number
   ): Promise<boolean> {
     const job = this.jobs.get(jobId);
@@ -251,7 +251,7 @@ export class InProcessJobQueue implements JobQueue {
         job.leaseExpiresAt = null;
         job.updatedAt = now;
         reaped.push(job.id);
-      } else if (job.status === "waiting" && job.resumeAt && job.resumeAt <= now && job.waitReason !== "permission") {
+      } else if (job.status === "waiting" && job.resumeAt && job.resumeAt <= now && job.waitReason !== "permission" && job.waitReason !== "input") {
         job.status = "queued";
         job.waitReason = undefined;
         job.resumeAt = null;

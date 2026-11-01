@@ -199,6 +199,7 @@ export class OpenHarnessServer {
   readonly runWorker: DurableRunWorker;
   readonly launcher: InProcessLauncher;
   private sweepInterval?: NodeJS.Timeout;
+  private readonly runAborts = new Map<string, AbortController>();
   readonly secretStore: EncryptedSecretStore;
   readonly checkpointManager: SessionCheckpointManager;
   readonly scheduleManager: ScheduleManager;
@@ -319,6 +320,26 @@ export class OpenHarnessServer {
       workspaceRoot,
       sandboxEnabled: Boolean(this.config.osEnforcedSandbox),
       ensureSandbox: (s) => hooksRef!.ensureSandbox(s),
+      onSandboxStop: async (toolCtx) => {
+        const sandboxId = toolCtx.sandboxHandleId ?? toolCtx.state.sandboxHandleId ?? null;
+        if (!sandboxId) {
+          return { output: { stopped: false, reason: "no active sandbox" } };
+        }
+        const handle = this.activeSandboxes.get(sandboxId);
+        const record = await this.sandboxRecords.get(sandboxId).catch(() => null);
+        const providerId = handle?.providerId ?? record?.providerId;
+        const provider = providerId ? this.providers.get(providerId) : undefined;
+        if (handle && provider) {
+          await provider.destroy(handle).catch(() => {});
+        }
+        this.activeSandboxes.delete(sandboxId);
+        await this.sandboxRecords
+          .update(sandboxId, { status: "destroyed" })
+          .catch(() => {});
+        toolCtx.state.sandboxHandleId = null;
+        toolCtx.sandboxHandleId = null;
+        return { output: { stopped: true, sandboxId } };
+      },
       onVerify: async (_cmds, toolCtx) => {
         const res = await hooksRef!.onRunVerification(toolCtx.state);
         return { output: res };
@@ -503,6 +524,7 @@ export class OpenHarnessServer {
       onReasoningDelta: (tenantId, sessionId, messageId, delta) =>
         this.emitter.emitDelta(tenantId, sessionId, delta, messageId, "reasoning"),
       onFlushDelta: (sessionId) => this.emitter.flushDelta(sessionId),
+      signalFor: (runId) => this.runAborts.get(runId)?.signal,
       ensureSandbox: hooks.ensureSandbox,
       onCreateCheckpoint: hooks.onCreateCheckpoint,
       onRunVerification: hooks.onRunVerification,
@@ -1303,6 +1325,9 @@ export class OpenHarnessServer {
       if (!sess) return { status: 404, body: { error: "Session not found" } };
       const targetRunId = sess.activeRunId ?? sess.runId;
       if (targetRunId) {
+        this.runAborts
+          .get(targetRunId)
+          ?.abort(Object.assign(new Error("Cancelled by user"), { code: "CANCELLED" }));
         await this.runWorker.cancelRun(targetRunId);
         await this.worker.cancelRun(tenantId, targetRunId).catch(() => null);
       }
@@ -1359,15 +1384,33 @@ export class OpenHarnessServer {
         mode,
       });
 
+      const abortController = new AbortController();
+      this.runAborts.set(runId, abortController);
+      const releaseAbort = (phase?: string) => {
+        if (!phase || phase === "completed" || phase === "failed" || phase === "cancelled") {
+          if (this.runAborts.get(runId) === abortController) {
+            this.runAborts.delete(runId);
+          }
+        }
+      };
+
       if (isAsync) {
-        void this.worker.executeJobById(jobId);
+        void this.worker
+          .executeJobById(jobId)
+          .then((res) => releaseAbort(res.state?.phase))
+          .catch(() => releaseAbort("failed"));
         return {
           status: 202,
           body: { messageId: userMsgId, runId },
         };
       }
 
-      await this.worker.executeJobById(jobId);
+      try {
+        const res = await this.worker.executeJobById(jobId);
+        releaseAbort(res.state?.phase);
+      } finally {
+        releaseAbort("failed");
+      }
       return {
         status: 202,
         body: { messageId: userMsgId, runId },
@@ -1468,13 +1511,58 @@ export class OpenHarnessServer {
     const runAnswerMatch = pathname.match(/^\/v1\/runs\/([^/]+)\/answer$/);
     if (method === "POST" && runAnswerMatch) {
       try {
+        const runId = runAnswerMatch[1]!;
         const answer = String(body?.answer ?? "");
-        const updated = await this.runWorker.answerQuestion(runAnswerMatch[1]!, answer);
+        // Durable v1 runs store the pending question on the StepCheckpoint and
+        // resume the same queued job; v2 runs keep it on the DurableRunRecord.
+        const job = await this.jobQueue.getJobByRunId(runId);
+        const checkpoint = await this.stateStore.getStepCheckpoint(tenantId, runId);
+        if (job || checkpoint) {
+          const controller = this.runAborts.get(runId) ?? new AbortController();
+          this.runAborts.set(runId, controller);
+          try {
+            const res = await this.worker.answerQuestion(tenantId, runId, answer);
+            return {
+              status: 200,
+              body: { answered: true, phase: res.state?.phase ?? null },
+            };
+          } finally {
+            const phase = (await this.stateStore.getStepCheckpoint(tenantId, runId))?.state
+              .phase;
+            if (!phase || phase === "completed" || phase === "failed" || phase === "cancelled") {
+              if (this.runAborts.get(runId) === controller) this.runAborts.delete(runId);
+            }
+          }
+        }
+        const updated = await this.runWorker.answerQuestion(runId, answer);
         return { status: 200, body: updated };
       } catch (err) {
         const status = typeof (err as any)?.status === "number" ? (err as any).status : 400;
         return { status, body: { error: (err as Error).message } };
       }
+    }
+
+    const sessionPendingMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/pending$/);
+    if (method === "GET" && sessionPendingMatch) {
+      const sessionId = sessionPendingMatch[1]!;
+      const session = await this.stateStore.getSession(tenantId, sessionId);
+      if (!session) return { status: 404, body: { error: "Session not found" } };
+      const runId = session.activeRunId ?? session.runId;
+      const checkpoint = runId
+        ? await this.stateStore.getStepCheckpoint(tenantId, runId)
+        : null;
+      return {
+        status: 200,
+        body: {
+          runId: runId ?? null,
+          phase: checkpoint?.state.phase ?? session.phase ?? null,
+          status: session.status,
+          pendingQuestion: checkpoint?.state.pendingQuestion ?? null,
+          pendingApproval: checkpoint?.state.pendingApproval ?? null,
+          previewUrl: checkpoint?.state.previewUrl ?? null,
+          changedFiles: checkpoint?.state.changedFiles ?? [],
+        },
+      };
     }
 
     const runRetryMatch = pathname.match(/^\/v1\/runs\/([^/]+)\/retry$/);

@@ -109,10 +109,21 @@ export const HOST_TOOLS = new Set([
   "webfetch",
 ]);
 
+/**
+ * Sandbox lifecycle tools manage the sandbox itself, so they must not be gated on
+ * an already-active sandbox daemon (unlike `bash`, `process_start`, `browser_*`, ...).
+ */
+export const SANDBOX_CONTROL_TOOLS = new Set([
+  "sandbox_create",
+  "sandbox_status",
+  "sandbox_stop",
+]);
+
 export interface SandboxToolRouterOptions {
   workspaceRoot: string;
   sandboxEnabled?: boolean;
   ensureSandbox?: (state: RunState) => Promise<{ id: string; workspacePath: string }>;
+  onSandboxStop?: (ctx: ToolExecutionContext) => Promise<ToolExecutionResult>;
   onDelegate?: (
     input: Record<string, unknown>,
     ctx: ToolExecutionContext
@@ -189,12 +200,12 @@ export class StandardToolRouter implements ToolRouter {
     if (!tool) {
       return { output: null, error: `Unknown tool: ${name}` };
     }
-    if (!HOST_TOOLS.has(name) && !ctx.sandboxHandleId && this.opts.ensureSandbox && ctx.state?.runtime && ctx.state.runtime !== "local") {
+    if (!HOST_TOOLS.has(name) && !SANDBOX_CONTROL_TOOLS.has(name) && !ctx.sandboxHandleId && this.opts.ensureSandbox && ctx.state?.runtime && ctx.state.runtime !== "local") {
       const h = await this.opts.ensureSandbox(ctx.state);
       ctx.sandboxHandleId = h.id;
       ctx.state.sandboxHandleId = h.id;
     }
-    if (!HOST_TOOLS.has(name) && ctx.state?.runtime && ctx.state.runtime !== "local" && !this.getDaemonAndHeaders(ctx)) {
+    if (!HOST_TOOLS.has(name) && !SANDBOX_CONTROL_TOOLS.has(name) && ctx.state?.runtime && ctx.state.runtime !== "local" && !this.getDaemonAndHeaders(ctx)) {
       return { output: null, error: "sandbox unavailable" };
     }
     const rawRes = await tool.execute(input, ctx);
@@ -774,6 +785,71 @@ export class StandardToolRouter implements ToolRouter {
             };
           }
           return { output: { ports } };
+        },
+      },
+
+      // 2b. Sandbox lifecycle tools (explicit create/status/stop as tool calls)
+      {
+        name: "sandbox_create",
+        description:
+          "Creates or reuses the run's sandbox and returns its `sandboxId` and `workspacePath`. Use before running commands if no sandbox is active. Example: {}",
+        readOnly: false,
+        idempotent: true,
+        parameters: { type: "object", properties: {} },
+        execute: async (_input, ctx) => {
+          if (!this.opts.ensureSandbox) {
+            return {
+              output: null,
+              error: "sandbox_create is unavailable: no sandbox provider is configured",
+            };
+          }
+          const h = await this.opts.ensureSandbox(ctx.state);
+          ctx.sandboxHandleId = h.id;
+          ctx.state.sandboxHandleId = h.id;
+          return { output: { sandboxId: h.id, workspacePath: h.workspacePath } };
+        },
+      },
+
+      {
+        name: "sandbox_status",
+        description:
+          "Returns the active sandbox id, whether it is running, and the listening preview ports. Example: {}",
+        readOnly: true,
+        idempotent: true,
+        parameters: { type: "object", properties: {} },
+        execute: async (_input, ctx) => {
+          const d = this.getDaemonAndHeaders(ctx);
+          if (!d) {
+            return { output: { active: false, sandboxId: ctx.sandboxHandleId ?? null } };
+          }
+          const portsRes = await d.daemon
+            .handleRequest("GET", "/ports", d.headers)
+            .catch(() => null);
+          return {
+            output: {
+              active: true,
+              sandboxId: ctx.sandboxHandleId ?? null,
+              ports: portsRes?.body?.ports ?? [],
+            },
+          };
+        },
+      },
+
+      {
+        name: "sandbox_stop",
+        description:
+          "Stops and releases the run's sandbox. Use when the task is finished and no more commands, servers, or browser checks are needed. Example: {}",
+        readOnly: false,
+        idempotent: true,
+        parameters: { type: "object", properties: {} },
+        execute: async (_input, ctx) => {
+          const sandboxId = ctx.sandboxHandleId ?? null;
+          if (this.opts.onSandboxStop) {
+            return this.opts.onSandboxStop(ctx);
+          }
+          ctx.state.sandboxHandleId = null;
+          ctx.sandboxHandleId = null;
+          return { output: { stopped: true, sandboxId } };
         },
       },
 

@@ -7,6 +7,7 @@ export const ALL_RUN_PHASES: readonly RunPhase[] = [
   "fixing",
   "reviewing",
   "awaiting_permission",
+  "awaiting_input",
   "paused",
   "completed",
   "failed",
@@ -22,6 +23,7 @@ export const TERMINAL_RUN_PHASES: readonly RunPhase[] = [
 
 export const WAITING_RUN_PHASES: readonly RunPhase[] = [
   "awaiting_permission",
+  "awaiting_input",
   "paused",
   "stuck",
 ] as const;
@@ -40,6 +42,8 @@ export function mapPhaseToSessionStatus(phase: RunPhase): RunStatus {
       return "verifying";
     case "awaiting_permission":
       return "awaiting_permission";
+    case "awaiting_input":
+      return "awaiting_input";
     case "paused":
     case "stuck":
       return "idle";
@@ -63,6 +67,7 @@ export function isTerminalPhase(phase: RunPhase): boolean {
 export function isWaitingPhase(phase: RunPhase): boolean {
   return (
     phase === "awaiting_permission" ||
+    phase === "awaiting_input" ||
     phase === "paused" ||
     phase === "stuck"
   );

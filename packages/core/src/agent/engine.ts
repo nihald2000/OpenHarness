@@ -103,6 +103,8 @@ export function createInitialRunState(params: {
     features: [],
     featureId: null,
     pendingApproval: null,
+    pendingQuestion: null,
+    questionsAsked: 0,
     lastCheckpoint: null,
     sandboxHandleId: params.sandboxHandleId ?? null,
     sandboxSnapshotId: null,
@@ -212,6 +214,16 @@ async function transitionPhase(
     cost: state.cost,
   };
   await deps.stateStore.saveRun(state.tenantId, runRecord);
+
+  if (nextPhase === "completed") {
+    await emitAndPersist(deps, state, events, {
+      type: "run.completed",
+      sessionId: state.sessionId,
+      runId: state.runId,
+      changedFiles: state.changedFiles ?? [],
+      previewUrl: state.previewUrl,
+    });
+  }
 }
 
 export async function persistStepCheckpoint(
@@ -228,6 +240,7 @@ export async function persistStepCheckpoint(
     usage: structuredClone(state.usage),
     cost: state.cost,
     pendingApproval: state.pendingApproval ? structuredClone(state.pendingApproval) : null,
+    pendingQuestion: state.pendingQuestion ? structuredClone(state.pendingQuestion) : null,
     sandboxHandleId: state.sandboxHandleId,
     lastCheckpointSha: state.lastCheckpoint,
     inFlightToolCalls: structuredClone(state.inFlightToolCalls),
@@ -337,6 +350,15 @@ export async function runStep(
     return { state, events };
   }
 
+  const signal = deps.signalFor?.(state.runId);
+  if (signal?.aborted) {
+    await transitionPhase(deps, state, "cancelled", events, {
+      pauseReason: "cancelled",
+    });
+    await persistStepCheckpoint(deps, state);
+    return { state, events };
+  }
+
   // Ask mode is a model-only conversation and must work without a sandbox.
   // Provision one for task modes, or when a chat explicitly selects a remote runtime.
   if (
@@ -352,6 +374,14 @@ export async function runStep(
   // 1. Handle pending approval state
   if (state.phase === "awaiting_permission") {
     if (state.pendingApproval) {
+      return { state, events };
+    }
+    await transitionPhase(deps, state, "building", events);
+  }
+
+  // 1b. Handle pending clarifying question state
+  if (state.phase === "awaiting_input") {
+    if (state.pendingQuestion) {
       return { state, events };
     }
     await transitionPhase(deps, state, "building", events);
@@ -378,6 +408,7 @@ export async function runStep(
             tenantId: state.tenantId,
             workspaceRoot: deps.workspaceRoot,
             sandboxHandleId: state.sandboxHandleId,
+            signal,
             state,
           }
         );
@@ -463,6 +494,7 @@ export async function runStep(
       messages: [...messages, wrapUpUserMsg],
       tools: [],
       maxOutputTokens: state.budgets.maxOutputTokensPerCall,
+      signal,
     });
     const wrapAssistantMsg: Message = {
       info: {
@@ -653,6 +685,7 @@ export async function runStep(
       masked: t.masked,
     })),
     maxOutputTokens: state.budgets.maxOutputTokensPerCall,
+    signal,
     onDelta: (delta) => {
       if (delta.text) {
         deps.onTextDelta?.(state.tenantId, state.sessionId, assistantMsgId, delta.text);
@@ -756,6 +789,108 @@ export async function runStep(
         });
         await persistStepCheckpoint(deps, state);
         continue;
+      }
+
+      // Durable clarifying-question pause (`ask_user`). The run releases its worker
+      // slot in `awaiting_input` and resumes the same run once the user answers.
+      if (toolDef.name === "ask_user") {
+        const startedAt = deps.clock.now();
+        const question = String(parsedInput.question ?? "").trim();
+        if (!question) {
+          const errText = "ask_user requires a non-empty `question`.";
+          const errPart: ToolPart = {
+            type: "tool",
+            tool: "ask_user",
+            callId,
+            state: "error",
+            input: parsedInput,
+            error: errText,
+            startedAt,
+            endedAt: startedAt,
+          };
+          updateMessageToolPart(assistantMsg, errPart);
+          state.completedToolCalls[callId] = { output: null, error: errText, state: "error" };
+          await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
+          await emitAndPersist(deps, state, events, {
+            type: "part.updated",
+            sessionId: state.sessionId,
+            messageId: assistantMsg.info.id,
+            part: errPart,
+          });
+          await persistStepCheckpoint(deps, state);
+          continue;
+        }
+
+        const options = Array.isArray(parsedInput.options)
+          ? parsedInput.options.map(String)
+          : undefined;
+        const maxQuestions = Number(process.env.OH_MAX_QUESTIONS ?? 3);
+        if ((state.questionsAsked ?? 0) >= maxQuestions) {
+          const fallback =
+            "Maximum clarifying questions reached for this run. Proceed with your best judgment.";
+          const part: ToolPart = {
+            type: "tool",
+            tool: "ask_user",
+            callId,
+            state: "completed",
+            input: parsedInput,
+            output: { question, answer: fallback },
+            startedAt,
+            endedAt: deps.clock.now(),
+          };
+          updateMessageToolPart(assistantMsg, part);
+          state.completedToolCalls[callId] = {
+            output: { question, answer: fallback },
+            state: "completed",
+          };
+          await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
+          await emitAndPersist(deps, state, events, {
+            type: "part.updated",
+            sessionId: state.sessionId,
+            messageId: assistantMsg.info.id,
+            part,
+          });
+          await persistStepCheckpoint(deps, state);
+          continue;
+        }
+
+        const questionId = `q_${state.runId}_${(state.questionsAsked ?? 0) + 1}`;
+        state.pendingQuestion = {
+          questionId,
+          question,
+          options,
+          callId,
+          askedAt: startedAt,
+        };
+        state.questionsAsked = (state.questionsAsked ?? 0) + 1;
+
+        const pendingPart: ToolPart = {
+          type: "tool",
+          tool: "ask_user",
+          callId,
+          state: "pending",
+          input: parsedInput,
+          startedAt,
+        };
+        updateMessageToolPart(assistantMsg, pendingPart);
+        await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
+        await emitAndPersist(deps, state, events, {
+          type: "part.updated",
+          sessionId: state.sessionId,
+          messageId: assistantMsg.info.id,
+          part: pendingPart,
+        });
+        await emitAndPersist(deps, state, events, {
+          type: "question.requested",
+          sessionId: state.sessionId,
+          runId: state.runId,
+          questionId,
+          question,
+          options,
+        });
+        await transitionPhase(deps, state, "awaiting_input", events);
+        await persistStepCheckpoint(deps, state);
+        return { state, events };
       }
 
       // Automatic shadow-git checkpoint before the first mutating call of each step (§11 Phase I)
@@ -924,11 +1059,44 @@ export async function runStep(
         tenantId: state.tenantId,
         workspaceRoot: deps.workspaceRoot,
         sandboxHandleId: state.sandboxHandleId,
+        signal,
         state,
       });
 
       state.inFlightToolCalls = [];
       state.malformedCallStreak = 0;
+
+      if (!execResult.error) {
+        if (
+          toolDef.name === "write_file" ||
+          toolDef.name === "edit" ||
+          toolDef.name === "apply_patch"
+        ) {
+          const paths = extractChangedPaths(toolDef.name, parsedInput, execResult.output);
+          if (paths.length > 0) {
+            state.changedFiles = Array.from(
+              new Set([...(state.changedFiles ?? []), ...paths])
+            );
+          }
+        } else if (toolDef.name === "preview_url") {
+          const out = execResult.output as { previewUrl?: unknown } | null;
+          const url = out && typeof out.previewUrl === "string" ? out.previewUrl : undefined;
+          if (url) {
+            state.previewUrl = url;
+            await emitAndPersist(deps, state, events, {
+              type: "preview.ready",
+              sessionId: state.sessionId,
+              runId: state.runId,
+              url,
+            });
+          }
+        } else if (toolDef.name === "sandbox_create") {
+          const out = execResult.output as { sandboxId?: unknown } | null;
+          if (out && typeof out.sandboxId === "string") {
+            state.sandboxHandleId = out.sandboxId;
+          }
+        }
+      }
 
       if (execResult.untrusted) {
         state.tainted = true;
@@ -1136,6 +1304,72 @@ export async function applyPermissionDecisionToState(
 }
 
 /**
+ * Resumes a run waiting on an `ask_user` question by recording the answer as the
+ * tool result for the paused call and transitioning back to `building`.
+ */
+export async function applyQuestionAnswerToState(
+  state: RunState,
+  answer: string,
+  deps: EngineDeps
+): Promise<{ state: RunState; events: OpenHarnessEvent[] }> {
+  const next = structuredClone(state);
+  const events: OpenHarnessEvent[] = [];
+  const question = next.pendingQuestion;
+  if (!question) {
+    if (next.phase === "awaiting_input") {
+      await transitionPhase(deps, next, "building", events);
+    }
+    return { state: next, events };
+  }
+
+  const { messages } = await deps.stateStore.getMessages(next.tenantId, next.sessionId);
+  const target = next.assistantMessageId
+    ? messages.find((m) => m.info.id === next.assistantMessageId) ??
+      [...messages].reverse().find((m) => m.info.role === "assistant")
+    : [...messages].reverse().find((m) => m.info.role === "assistant");
+
+  const toolPart: ToolPart = {
+    type: "tool",
+    tool: "ask_user",
+    callId: question.callId,
+    state: "completed",
+    input: { question: question.question, options: question.options },
+    output: { question: question.question, answer },
+    startedAt: question.askedAt,
+    endedAt: deps.clock.now(),
+  };
+  next.completedToolCalls[question.callId] = {
+    output: { question: question.question, answer },
+    state: "completed",
+  };
+  next.pendingQuestion = null;
+  next.updatedAt = deps.clock.now();
+
+  if (target) {
+    updateMessageToolPart(target, toolPart);
+    await deps.stateStore.saveMessage(next.tenantId, next.sessionId, target);
+    await emitAndPersist(deps, next, events, {
+      type: "part.updated",
+      sessionId: next.sessionId,
+      messageId: target.info.id,
+      part: toolPart,
+    });
+  }
+
+  await emitAndPersist(deps, next, events, {
+    type: "question.answered",
+    sessionId: next.sessionId,
+    runId: next.runId,
+    questionId: question.questionId,
+    answer,
+  });
+
+  await transitionPhase(deps, next, "building", events);
+  await persistStepCheckpoint(deps, next);
+  return { state: next, events };
+}
+
+/**
  * Runs a state machine until it reaches a waiting phase (`awaiting_permission`, `paused`, `stuck`)
  * or a terminal phase (`completed`, `failed`, `cancelled`).
  */
@@ -1168,6 +1402,38 @@ function updateMessageToolPart(msg: Message, part: ToolPart): void {
   } else {
     msg.parts[idx] = part;
   }
+}
+
+function extractChangedPaths(
+  toolName: string,
+  input: Record<string, unknown>,
+  output: unknown
+): string[] {
+  const paths = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value === "string" && value.trim()) paths.add(value.trim());
+  };
+
+  if (toolName === "write_file" || toolName === "edit") {
+    add(input.path);
+  }
+  if (toolName === "apply_patch" && typeof input.patch === "string") {
+    const beginPatch = /^\*\*\*\s*(?:Update|Add|Delete) File:\s*(.+)$/gm;
+    let match: RegExpExecArray | null;
+    while ((match = beginPatch.exec(input.patch)) !== null) add(match[1]);
+    const unified = /^\+\+\+\s+b\/(.+)$/gm;
+    while ((match = unified.exec(input.patch)) !== null) add(match[1]);
+  }
+
+  if (output && typeof output === "object") {
+    const out = output as { path?: unknown; files?: unknown };
+    add(out.path);
+    if (Array.isArray(out.files)) {
+      for (const file of out.files) add(file);
+    }
+  }
+
+  return Array.from(paths);
 }
 
 function safeParseJsonObject(raw: string): Record<string, unknown> {
