@@ -144,84 +144,6 @@ function createSandboxRootDirs(spec: SandboxSpec): {
 }
 
 /**
- * 1. `local` provider — unsandboxed default for the offline demo (§5 C.3).
- * Refuses autonomous long_task mode unless `allowUnsandboxedAutonomy: true` is explicitly set.
- */
-export class LocalSandboxProvider implements SandboxProvider {
-  readonly id: SandboxProviderId = "local";
-  readonly capabilities: SandboxCapabilities = {
-    osEnforced: false,
-    network: "open",
-    snapshots: false,
-    ports: false,
-    browser: false,
-    persistentShell: false,
-  };
-
-  async create(spec: SandboxSpec): Promise<SandboxHandle> {
-    if (!spec.allowUnsandboxedAutonomy) {
-      throw new Error(
-        "Refusing to start autonomous sandboxed run on unsandboxed 'local' runtime (fail-closed). Configure 'srt-local', 'docker', or 'modal', or set allowUnsandboxedAutonomy: true explicitly."
-      );
-    }
-    const dirs = createSandboxRootDirs(spec);
-    const sessionKey = crypto.randomBytes(24).toString("hex");
-    const handleId = `local_${spec.runId}`;
-    return {
-      id: handleId,
-      providerId: "local",
-      runId: spec.runId,
-      sessionId: spec.sessionId,
-      agentServerUrl: "in-process://local",
-      sessionKey,
-      workspacePath: dirs.workspacePath,
-      memoriesPath: dirs.memoriesPath,
-      tmpPath: dirs.tmpPath,
-      shadowGitDir: dirs.shadowGitDir,
-      status: "running",
-      ports: {},
-      policy: spec.policy,
-    };
-  }
-
-  async pause(h: SandboxHandle): Promise<void> {
-    h.status = "paused";
-  }
-
-  async resume(h: SandboxHandle): Promise<void> {
-    h.status = "running";
-  }
-
-  async snapshot(h: SandboxHandle): Promise<SnapshotRef> {
-    return {
-      id: `snap_local_${h.runId}_${Date.now()}`,
-      providerId: "local",
-      runId: h.runId,
-      sessionId: h.sessionId,
-      createdAt: Date.now(),
-    };
-  }
-
-  async restore(_ref: SnapshotRef, spec: SandboxSpec): Promise<SandboxHandle> {
-    return this.create({ ...spec, allowUnsandboxedAutonomy: true });
-  }
-
-  async destroy(h: SandboxHandle): Promise<void> {
-    h.status = "destroyed";
-  }
-
-  async health(): Promise<HealthReport> {
-    return {
-      ok: true,
-      providerId: "local",
-      status: "ready (unsandboxed)",
-      osEnforced: false,
-      checkedAt: Date.now(),
-    };
-  }
-}
-
-/**
  * Base class for OS-enforced providers (`srt-local`, `docker`, `modal`) backed by `oh-sandboxd` (§5 C.2, C.3).
  */
 export class ManagedDaemonSandboxProvider implements SandboxProvider {
@@ -469,7 +391,7 @@ export class ManagedDaemonSandboxProvider implements SandboxProvider {
           ok: false,
           providerId: this.id,
           status: "stopped",
-          osEnforced: true,
+          osEnforced: false,
           checkedAt: Date.now(),
         };
       }
@@ -478,7 +400,7 @@ export class ManagedDaemonSandboxProvider implements SandboxProvider {
         ok: res.status === 200,
         providerId: this.id,
         status: h.status,
-        osEnforced: true,
+        osEnforced: res.body?.osEnforced === true,
         checkedAt: Date.now(),
       };
     }
@@ -486,8 +408,48 @@ export class ManagedDaemonSandboxProvider implements SandboxProvider {
       ok: true,
       providerId: this.id,
       status: "ready",
-      osEnforced: true,
+      // When the host binary preflight is disabled, tools remain available in
+      // process but callers must not be told that OS isolation is active.
+      osEnforced: this.checkHostBinary,
       checkedAt: Date.now(),
+    };
+  }
+}
+
+/**
+ * In-process local daemon provider. It keeps filesystem policy boundaries and
+ * tool mediation while allowing local workspace shell/network use without a
+ * host SRT or Docker binary.
+ */
+export class LocalSandboxProvider extends ManagedDaemonSandboxProvider {
+  override readonly capabilities: SandboxCapabilities = {
+    osEnforced: false,
+    network: "open",
+    snapshots: true,
+    ports: true,
+    browser: true,
+    persistentShell: true,
+  };
+
+  constructor() {
+    super("local", { checkHostBinary: false });
+  }
+
+  override async create(spec: SandboxSpec): Promise<SandboxHandle> {
+    const policy = {
+      ...spec.policy,
+      network: { ...spec.policy.network, mode: "open" as const },
+    };
+    return super.create({ ...spec, policy });
+  }
+
+  override async health(h?: SandboxHandle): Promise<HealthReport> {
+    const health = await super.health(h);
+    return {
+      ...health,
+      providerId: "local",
+      osEnforced: false,
+      status: health.ok ? "ready (in-process; no OS isolation)" : health.status,
     };
   }
 }

@@ -10,6 +10,8 @@ export interface LoadedServerConfig {
   serviceTenantId: string;
   maxBodyBytes: number;
   dataDir: string;
+  defaultModel?: string;
+  defaultBaseUrl?: string;
 }
 
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): LoadedServerConfig {
@@ -19,6 +21,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): LoadedSe
   const accessKey = env.OH_ACCESS_KEY || undefined;
   const serverToken = env.OPENHARNESS_SERVER_TOKEN || undefined;
   const adminToken = env.OPENHARNESS_ADMIN_TOKEN || undefined;
+  const hasMetaApiKey = Boolean(env.MODEL_API_KEY || env.META_API_KEY);
   const oidc =
     env.OIDC_ISSUER && env.OIDC_AUDIENCE
       ? {
@@ -54,5 +57,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): LoadedSe
     serviceTenantId: env.OPENHARNESS_SERVICE_TENANT_ID ?? "default",
     maxBodyBytes: Number(env.PROMPT_MAX_BYTES ?? 1_000_000),
     dataDir: env.OPENHARNESS_DATA_DIR ?? ".openharness",
+    defaultModel: env.OPENHARNESS_MODEL ?? (hasMetaApiKey ? "muse-spark-1.3" : undefined),
+    defaultBaseUrl: env.OPENHARNESS_BASE_URL ?? (hasMetaApiKey ? "https://api.meta.ai/v1" : undefined),
   };
 }

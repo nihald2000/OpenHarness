@@ -13,7 +13,7 @@ import {
 test("Phase C Acceptance: on in-process daemon (docker/srt-local profiles), agent cannot read ~/.ssh, cannot write outside /workspace, /tmp, /memories, cannot modify .git/hooks, and cannot reach non-allowlisted domains or 169.254.169.254; each yields sandbox.violation and tool error; processes publish preview URLs; pause/resume preserves files and shell state", async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "oh-phase-c-ws-"));
 
-  // 1. Verify `local` provider fails closed when autonomous mode is requested without allowUnsandboxedAutonomy
+  // 1. Verify `local` is an in-process workspace runtime with no claimed OS-level enforcement
   const localProvider = new LocalSandboxProvider();
   const basePolicy = compileSandboxPolicy({
     runId: "run_c_1",
@@ -22,16 +22,15 @@ test("Phase C Acceptance: on in-process daemon (docker/srt-local profiles), agen
     presets: ["github-read"],
   });
 
-  await assert.rejects(
-    () =>
-      localProvider.create({
-        runId: "run_c_1",
-        sessionId: "sess_c_1",
-        workspace: { type: "bind", hostPath: workspaceDir },
-        policy: basePolicy,
-      }),
-    /Refusing to start autonomous sandboxed run on unsandboxed 'local' runtime/
-  );
+  const localHandle = await localProvider.create({
+    runId: "run_c_1",
+    sessionId: "sess_c_1",
+    workspace: { type: "bind", hostPath: workspaceDir },
+    policy: basePolicy,
+  });
+  assert.equal(localHandle.providerId, "local");
+  assert.equal((await localProvider.health()).osEnforced, false);
+  await localProvider.destroy(localHandle);
 
   // 2. Test both `srt-local` and `docker` providers
   for (const providerId of ["srt-local", "docker"]) {

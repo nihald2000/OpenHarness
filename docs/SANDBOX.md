@@ -1,13 +1,13 @@
 # OpenHarness Sandbox Architecture (`oh-sandboxd`, `srt-local`, `docker`, `modal`)
 
-OpenHarness enforces a strict fail-closed sandbox model across four runtime providers:
+OpenHarness provides four workspace runtimes. Local workspace tools continue through the managed in-process daemon when host OS enforcement is unavailable; Modal still requires its configured cloud image and credentials.
 
 | Provider | Isolation Mechanism | OS Enforced | Network Policy | Snapshots / Pause |
 |---|---|---|---|---|
-| `local` | Host workspace containment (`resolveInside` realpath checks). Refuses `task` and `long_task` modes unless `allowUnsandboxedAutonomy: true`. | `false` | `open` | No |
-| `srt-local` | Host child processes wrapped by Anthropic Sandbox Runtime (`srt --settings <srt.json> -- <argv>`) with scrubbed `BASE_ENV`. Fails closed (`503`) if `srt` is missing when `requireSrt: true`. | `true` (when `srt` installed) | `allowlist` / `none` | Local directory snapshot + shadow-git |
-| `docker` | Hardened rootless container (`--cap-drop ALL --security-opt no-new-privileges --read-only`) running `oh-sandboxd`. | `true` (when Docker daemon running) | `allowlist` / `none` | Container commit / directory snapshot + shadow-git |
-| `modal` | Modal cloud microVM (`ModalSandboxProvider`) running `/usr/local/bin/oh-sandboxd` with `srt` defense-in-depth, Modal `cidr_allowlist` / `block_network` egress rules, and short-lived `connectToken` HTTPS transport. | `true` | `allowlist` / `none` | `snapshotFilesystem` image snapshots + 23h rollover |
+| `local` | In-process `oh-sandboxd` bound to the workspace. File tools enforce path policy, but shell commands run as the server process user and may access outside the workspace when SRT is unavailable. | `false` | `open` | Directory snapshot + shadow-git |
+| `srt-local` | Managed daemon; wraps child processes with SRT when available. The server does not preflight the host binary, and without SRT it runs in process with no OS-level isolation. | `true` when daemon reports SRT enforcement; otherwise `false` | `open` by default (OS-enforced only with SRT) | Local directory snapshot + shadow-git |
+| `docker` | Managed daemon; the server does not preflight Docker, so tool execution can continue in process without container isolation when Docker is unavailable. | `false` unless the daemon reports OS enforcement | `open` by default (OS-enforced only when available) | Directory snapshot + shadow-git |
+| `modal` | Modal cloud microVM (`ModalSandboxProvider`) running `/usr/local/bin/oh-sandboxd` with `srt` defense-in-depth, Modal `cidr_allowlist` / `block_network` egress rules, and short-lived `connectToken` HTTPS transport. | `true` | Configured domain allowlist / none; Modal rejects open egress. | `snapshotFilesystem` image snapshots + 23h rollover |
 
 ## 1. Two-Phase Sandbox Provisioning (`setup` -> `agent`)
 

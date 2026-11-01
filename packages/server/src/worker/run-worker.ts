@@ -2,6 +2,7 @@ import type { Message, ToolPart } from "@openharness/sdk";
 import {
   createInitialRunState,
   getActiveSandboxDaemon,
+  applyQuestionAnswerToState,
   runStep,
   ToolLoopGuard,
   type EngineDeps,
@@ -15,7 +16,6 @@ import { isTerminalRunStatus, type RunStateMachine } from "./run-state.ts";
 import type {
   CreateRunInput,
   DurableRunRecord,
-  QuestionRequest,
   RunWorker,
 } from "./types.ts";
 
@@ -34,10 +34,6 @@ export class DurableRunWorker implements RunWorker {
   readonly activeSandboxes: Map<string, SandboxHandle>;
   private readonly heartbeatIntervalMs: number;
   private readonly activeControllers = new Map<string, AbortController>();
-  private readonly questionWaiters = new Map<
-    string,
-    { resolve: (answer: string) => void; reject: (err: Error) => void }
-  >();
   private readonly loopGuards = new Map<string, ToolLoopGuard>();
 
   constructor(opts: DurableRunWorkerOptions) {
@@ -67,77 +63,34 @@ export class DurableRunWorker implements RunWorker {
     return this.stateMachine.getRun(runId);
   }
 
-  /**
-   * Called by the `ask_user` tool during a run (H5).
-   * Pauses the run in `awaiting_input` and waits until `answerQuestion` or `cancelRun` is called.
-   */
-  async requestUserAnswer(
-    runId: string,
-    question: string,
-    options?: string[],
-    callId?: string
-  ): Promise<string> {
-    const run = this.stateMachine.getRun(runId);
-    if (!run) {
-      throw new Error(`Run ${runId} not found`);
-    }
-    const maxQuestions = run.snapshot.limits.maxQuestions ?? 3;
-    if (run.questionsAsked >= maxQuestions) {
-      return `Maximum clarifying questions (${maxQuestions}) reached for this run. Proceed with your best judgment.`;
-    }
-
-    const qReq: QuestionRequest = {
-      questionId: `q_${runId}_${run.questionsAsked + 1}`,
-      question,
-      options,
-      callId,
-      askedAt: Date.now(),
-    };
-
-    const tr = await this.stateMachine.transition(runId, "running", "awaiting_input", {
-      phase: "awaiting_input",
-      pendingQuestion: qReq,
-      questionsAsked: run.questionsAsked + 1,
-    });
-    if (!tr.ok) {
-      throw new Error(`Cannot request user input when run is in status ${run.status}`);
-    }
-
-    const tenantId = run.tenantId ?? "default";
-    await this.emitter.emit(tenantId, run.sessionId, {
-      type: "question.requested",
-      sessionId: run.sessionId,
-      runId,
-      questionId: qReq.questionId,
-      question: qReq.question,
-      options: qReq.options,
-    });
-    await this.emitter.emit(tenantId, run.sessionId, {
-      type: "run.status",
-      sessionId: run.sessionId,
-      runId,
-      status: "awaiting_input",
-    });
-
-    return new Promise<string>((resolve, reject) => {
-      this.questionWaiters.set(runId, { resolve, reject });
-    });
-  }
-
   async answerQuestion(runId: string, answer: string): Promise<DurableRunRecord> {
-    const run = this.stateMachine.getRun(runId);
+    let run = this.stateMachine.getRun(runId);
     if (!run) {
       throw new HttpError(404, `Run not found: ${runId}`);
+    }
+    const tenantId = run.tenantId ?? "default";
+    const checkpoint = await this.deps.stateStore.getStepCheckpoint(tenantId, runId);
+    // The engine commits the pending question before publishing question.requested.
+    // Promote the durable run record here if the answer races the worker's loop exit.
+    if (run.status === "running" && checkpoint?.state.pendingQuestion) {
+      const waiting = await this.stateMachine.transition(runId, "running", "awaiting_input", {
+        phase: "awaiting_input",
+        pendingQuestion: checkpoint.state.pendingQuestion,
+        questionsAsked: checkpoint.state.questionsAsked ?? run.questionsAsked,
+      });
+      if (waiting.ok && waiting.run) run = waiting.run;
     }
     if (run.status !== "awaiting_input" || !run.pendingQuestion) {
       throw new HttpError(409, `Run ${runId} is not awaiting user input (status: ${run.status})`);
     }
 
-    const qReq = {
-      ...run.pendingQuestion,
-      answeredAt: Date.now(),
-      answer,
-    };
+    if (!checkpoint?.state.pendingQuestion) {
+      throw new HttpError(409, `Run ${runId} has no durable pending question checkpoint`);
+    }
+
+    // Persist the answer in the engine checkpoint and assistant tool part before
+    // reopening the run. This works the same way after an in-process pause or restart.
+    await applyQuestionAnswerToState(checkpoint.state, answer, this.deps);
 
     const tr = await this.stateMachine.transition(runId, "awaiting_input", "running", {
       phase: "building",
@@ -147,46 +100,7 @@ export class DurableRunWorker implements RunWorker {
       throw new HttpError(409, `Failed to transition run ${runId} to running`);
     }
 
-    const tenantId = run.tenantId ?? "default";
-    await this.emitter.emit(tenantId, run.sessionId, {
-      type: "question.answered",
-      sessionId: run.sessionId,
-      runId,
-      questionId: qReq.questionId,
-      answer,
-    });
-    await this.emitter.emit(tenantId, run.sessionId, {
-      type: "run.status",
-      sessionId: run.sessionId,
-      runId,
-      status: "running",
-    });
-
-    const waiter = this.questionWaiters.get(runId);
-    if (waiter) {
-      this.questionWaiters.delete(runId);
-      waiter.resolve(answer);
-    } else {
-      // Container restarted while awaiting_input: append user answer to transcript and resume run loop
-      const { messages } = await this.deps.stateStore.getMessages(tenantId, run.sessionId);
-      const lastAssistant = [...messages].reverse().find((m) => m.info.role === "assistant");
-      if (lastAssistant && qReq.callId) {
-        const partIdx = lastAssistant.parts.findIndex(
-          (p) => p.type === "tool" && p.callId === qReq.callId
-        );
-        if (partIdx !== -1) {
-          const oldPart = lastAssistant.parts[partIdx] as ToolPart;
-          lastAssistant.parts[partIdx] = {
-            ...oldPart,
-            state: "completed",
-            output: { answer },
-            endedAt: Date.now(),
-          };
-          await this.deps.stateStore.saveMessage(tenantId, run.sessionId, lastAssistant);
-        }
-      }
-      void this.startRun(runId);
-    }
+    void this.startRun(runId);
 
     return tr.run;
   }
@@ -204,12 +118,6 @@ export class DurableRunWorker implements RunWorker {
     if (ctrl) {
       ctrl.abort(Object.assign(new Error(reason), { code: "CANCELLED" }));
       this.activeControllers.delete(runId);
-    }
-
-    const waiter = this.questionWaiters.get(runId);
-    if (waiter) {
-      this.questionWaiters.delete(runId);
-      waiter.reject(Object.assign(new Error(reason), { code: "CANCELLED" }));
     }
 
     // Stop any running commands or background servers inside the session sandbox (H3)
@@ -365,8 +273,6 @@ export class DurableRunWorker implements RunWorker {
       // Wrap provider & toolRouter with signal, first-activity tracking, tool timeout, and ToolLoopGuard
       const scopedDeps: EngineDeps = {
         ...this.deps,
-        requestUserAnswer: (questionRunId, question, options, callId) =>
-          this.requestUserAnswer(questionRunId, question, options, callId),
         provider: {
           generateTurn: async (req) => {
             if (ctrl.signal.aborted) {
@@ -399,13 +305,6 @@ export class DurableRunWorker implements RunWorker {
             }
             await this.stateMachine.heartbeat(runId, true);
             clearTimeout(firstActivityTimer);
-
-            if (name === "ask_user") {
-              const qText = String(input.question ?? "");
-              const opts = Array.isArray(input.options) ? input.options.map(String) : undefined;
-              const answer = await this.requestUserAnswer(runId, qText, opts, callId);
-              return { output: { question: qText, answer } };
-            }
 
             let timer: NodeJS.Timeout | undefined;
             const timeoutPromise = new Promise<never>((_resolve, reject) => {
@@ -481,6 +380,18 @@ export class DurableRunWorker implements RunWorker {
           previewUrl: state.previewUrl,
         });
 
+        if (state.phase === "awaiting_input") {
+          const waiting = this.stateMachine.getRun(runId);
+          const currentCheckpoint = await this.deps.stateStore.getStepCheckpoint(tenantId, runId);
+          if (waiting?.status === "running" && currentCheckpoint?.state.pendingQuestion) {
+            await this.stateMachine.transition(runId, "running", "awaiting_input", {
+              phase: "awaiting_input",
+              pendingQuestion: state.pendingQuestion ?? null,
+              questionsAsked: state.questionsAsked ?? waiting.questionsAsked,
+            });
+          }
+        }
+
         if (state.plan) {
           await this.emitter.emit(tenantId, run.sessionId, {
             type: "plan.updated",
@@ -495,7 +406,8 @@ export class DurableRunWorker implements RunWorker {
           state.phase === "failed" ||
           state.phase === "cancelled" ||
           state.phase === "paused" ||
-          state.phase === "awaiting_permission"
+          state.phase === "awaiting_permission" ||
+          state.phase === "awaiting_input"
         ) {
           break;
         }
@@ -508,19 +420,6 @@ export class DurableRunWorker implements RunWorker {
             phase: "completed",
             changedFiles: state.changedFiles ?? [],
             previewUrl: state.previewUrl,
-          });
-          await this.emitter.emit(tenantId, run.sessionId, {
-            type: "run.completed",
-            sessionId: run.sessionId,
-            runId,
-            changedFiles: state.changedFiles ?? [],
-            previewUrl: state.previewUrl,
-          });
-          await this.emitter.emit(tenantId, run.sessionId, {
-            type: "run.status",
-            sessionId: run.sessionId,
-            runId,
-            status: "completed",
           });
         }
       }
@@ -557,7 +456,9 @@ export class DurableRunWorker implements RunWorker {
     } finally {
       clearTimeout(firstActivityTimer);
       clearInterval(hbTimer);
-      this.activeControllers.delete(runId);
+      if (this.activeControllers.get(runId) === ctrl) {
+        this.activeControllers.delete(runId);
+      }
     }
   }
 }

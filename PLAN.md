@@ -52,3 +52,7 @@
 - Add the composer file/folder picker and authenticated per-file upload API, preserving relative folder paths and tenant/session scope.
 - Persist attachment metadata with the user message; hydrate safe text and supported image/PDF content into provider requests and stage original bytes into the selected Code sandbox.
 - Complete focused API, sandbox-write, and browser composer checks before marking this phase complete. Upload files remain on the single `dataDir` storage layer; shared multi-node object storage is not implemented here.
+
+### Phase K: Local In-Process Workspace Runtime — In Progress
+- Run local workspace tools through an in-process `oh-sandboxd` daemon with the existing workspace policy, command approval, timeout, and cancellation flow; default non-Modal egress to open.
+- Verify filesystem containment, local task/long-task execution, and honest `osEnforced: false` reporting before marking this behavior complete.

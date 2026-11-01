@@ -34,7 +34,11 @@ Use `.env.example` as the environment variable template. The server reads JSON s
 | `SSE_MAX_BUFFER` / `SSE_MAX_PER_USER` | `1000` / `10` | Bounded queued SSE envelopes and per-user stream limit. |
 | `OPENHARNESS_SECRET_KEY` | Generated local key | Optional secret-store encryption key material; set a stable high-entropy value for portable deployments. |
 | `OPENHARNESS_PROVIDER` | `mock` (local development) | Provider selection; `mock` supports offline use in local development and evaluation. |
-| `OPENHARNESS_MODEL` | `mock/demo` (local development) | Default model ID for local offline use; production web UI requires a configured provider. |
+| `OPENHARNESS_MODEL` | `muse-spark-1.3` when a Meta key is set; otherwise unset | Default model ID. `mock/demo` is reserved for explicit local development/evaluation configuration. |
+| `MODEL_API_KEY` | Unset | Meta Model API key. When set, the default model is `OPENHARNESS_MODEL` or `muse-spark-1.3`, and the default endpoint is `OPENHARNESS_BASE_URL` or `https://api.meta.ai/v1`. |
+| `META_API_KEY` | Unset | Alias accepted for `MODEL_API_KEY`. |
+| `OPENHARNESS_BASE_URL` | `https://api.meta.ai/v1` when a Meta key is set | Overrides the default OpenAI-compatible provider endpoint. |
+| `OPENHARNESS_API_KEY` | Unset | Generic OpenAI-compatible API key alias; `OPENAI_API_KEY` remains supported for OpenAI profiles. |
 | `OPENAI_API_KEY` | Unset | OpenAI-compatible API credential when provider configuration uses this environment value. |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible provider endpoint. |
 | `OPENHARNESS_CONFIG_DIR` | Platform config directory | Global discovery root for agents, skills, and commands. |
@@ -63,7 +67,7 @@ The settings endpoint accepts JSON objects for `model`, `smallModel`, `defaultAg
 - `skills.paths` accepts workspace-relative directories containing skill subdirectories with `SKILL.md`. Absolute paths and paths escaping the workspace are ignored. Built-in global and workspace skill roots are also searched.
 - Agent, skill, and command Markdown frontmatter supports nested mappings/lists, common scalar types, and inline lists. Malformed metadata, duplicate keys, and YAML features outside this bounded subset (such as anchors and aliases) cause the resource to be skipped.
 - `verify.maxIterations` caps verifier calls. The verifier accepts only fixed check names; checks may run repository scripts and require permission. `verify.auto: true` asks the agent to run configured entries whose `name` is one of `typecheck`, `server-build`, `web-build`, or `diff-check`. Prompt requests may select those names, or their matching configured command strings; unsupported commands are rejected. Failed checks are returned to the agent so it can attempt a fix within the same call limit, with progress sent as `fix.status` events.
-- `providers` configures OpenAI-compatible models and base URLs. Model entries may specify non-negative `inputCostPerMillion` and `outputCostPerMillion` values; these are used for cost reporting and required when a hard cost limit is set. Keep credentials in environment or secret references rather than plain JSON.
+- `providers` configures OpenAI-compatible models and base URLs. Meta Model API is available directly with `MODEL_API_KEY` (or `META_API_KEY`) and serves Muse Spark as the default when no model is selected. Model entries may specify non-negative `inputCostPerMillion` and `outputCostPerMillion` values; these are used for cost reporting and required when a hard cost limit is set. Keep credentials in environment or secret references rather than plain JSON.
 - `codeMode` is persisted for SDK/UI compatibility; the general TypeScript `run_code` sandbox is not implemented yet.
 
 See [the JSON schema](config.schema.json) and [API route reference](API.md) for the current contract.
@@ -90,7 +94,7 @@ Unknown keys in `openharness.json` or `/v1/admin/settings` are rejected fail-clo
 - `agents.<name>`: `{ model, tools, description }` — e.g. `reviewer` (`model: "openai/gpt-5"`, `tools: ["read_file", "search", "glob", "list"]`).
 - `sandbox`:
   - `default`: `"local" | "srt-local" | "docker" | "modal"`
-  - `allowUnsandboxedAutonomy`: `boolean` (default `false`; refuses autonomous runs on `local` when `false`).
+  - `allowUnsandboxedAutonomy`: `boolean` (legacy option; local task modes are available without it. The `local` runtime has no OS-level isolation).
   - `docker`: `{ image, cpus, memoryMb, diskMb }`
   - `modal`: `{ app, runtime: "vm", idleTtlSec }`
   - `filesystem`: `{ extraAllowWrite: string[], extraDenyRead: string[] }`

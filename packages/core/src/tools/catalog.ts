@@ -9,7 +9,8 @@ import type {
   ToolExecutionResult,
   ToolRouter,
 } from "../agent/deps.ts";
-import { getActiveSandboxDaemon } from "../sandbox/providers.ts";
+import { getActiveSandboxDaemon, LocalSandboxProvider } from "../sandbox/providers.ts";
+import { compileSandboxPolicy } from "../sandbox/policy.ts";
 import { enforceToolOutputLimit } from "./output-limit.ts";
 import { resolveInside, PathEscapeError } from "../util/safe-path.ts";
 
@@ -146,6 +147,8 @@ export interface SandboxToolRouterOptions {
 export class StandardToolRouter implements ToolRouter {
   private tools = new Map<string, RegisteredTool>();
   private opts: SandboxToolRouterOptions;
+  private localFallbackProvider = new LocalSandboxProvider();
+  private localFallbackHandles = new Map<string, Promise<{ id: string }>>();
 
   constructor(opts: SandboxToolRouterOptions) {
     this.opts = opts;
@@ -155,17 +158,12 @@ export class StandardToolRouter implements ToolRouter {
   }
 
   listTools(state: RunState): RegisteredTool[] {
-    const hasSandbox = Boolean(state.sandboxHandleId || this.opts.sandboxEnabled);
     const isReadOnlyPhase = state.phase === "planning" || state.agent === "plan" || state.agent === "explore";
     const isAskMode = state.mode === "ask";
 
     return Array.from(this.tools.values())
       .filter((t) => {
-        // Sandbox-only tools are advertised only when a sandbox runtime is active (§5 C.3, §6)
         if (isAskMode && !t.readOnly && t.name !== "ask_user") {
-          return false;
-        }
-        if (t.requiresSandbox && !hasSandbox) {
           return false;
         }
         return true;
@@ -200,13 +198,10 @@ export class StandardToolRouter implements ToolRouter {
     if (!tool) {
       return { output: null, error: `Unknown tool: ${name}` };
     }
-    if (!HOST_TOOLS.has(name) && !SANDBOX_CONTROL_TOOLS.has(name) && !ctx.sandboxHandleId && this.opts.ensureSandbox && ctx.state?.runtime && ctx.state.runtime !== "local") {
+    if (!HOST_TOOLS.has(name) && !ctx.sandboxHandleId && this.opts.ensureSandbox && ctx.state) {
       const h = await this.opts.ensureSandbox(ctx.state);
       ctx.sandboxHandleId = h.id;
       ctx.state.sandboxHandleId = h.id;
-    }
-    if (!HOST_TOOLS.has(name) && !SANDBOX_CONTROL_TOOLS.has(name) && ctx.state?.runtime && ctx.state.runtime !== "local" && !this.getDaemonAndHeaders(ctx)) {
-      return { output: null, error: "sandbox unavailable" };
     }
     const rawRes = await tool.execute(input, ctx);
     if (typeof rawRes.output === "string") {
@@ -221,10 +216,53 @@ export class StandardToolRouter implements ToolRouter {
     return rawRes;
   }
 
-  private getDaemonAndHeaders(ctx: ToolExecutionContext) {
-    if (!ctx.sandboxHandleId) return null;
-    const daemon = getActiveSandboxDaemon(ctx.sandboxHandleId);
-    if (!daemon) return null;
+  private async getDaemonAndHeaders(ctx: ToolExecutionContext) {
+    let daemon = ctx.sandboxHandleId
+      ? getActiveSandboxDaemon(ctx.sandboxHandleId)
+      : undefined;
+    if (!daemon) {
+      const key = JSON.stringify([
+        ctx.tenantId,
+        ctx.sessionId,
+        ctx.runId,
+        path.resolve(ctx.workspaceRoot),
+      ]);
+      let pendingHandle = this.localFallbackHandles.get(key);
+      if (!pendingHandle) {
+        pendingHandle = this.localFallbackProvider.create({
+          runId: ctx.runId,
+          sessionId: ctx.sessionId,
+          tenantId: ctx.tenantId,
+          workspace: {
+            type: "bind",
+            kind: "local",
+            hostPath: ctx.workspaceRoot,
+            path: ctx.workspaceRoot,
+          },
+          policy: compileSandboxPolicy({
+            runId: ctx.runId,
+            phase: "agent",
+            workspacePath: ctx.workspaceRoot,
+            networkMode: "open",
+          }),
+        });
+        this.localFallbackHandles.set(key, pendingHandle);
+      }
+      let handle: Awaited<typeof pendingHandle>;
+      try {
+        handle = await pendingHandle;
+      } catch (error) {
+        this.localFallbackHandles.delete(key);
+        throw error;
+      }
+      ctx.sandboxHandleId = handle.id;
+      ctx.state.sandboxHandleId = handle.id;
+      ctx.state.runtime = "local";
+      daemon = getActiveSandboxDaemon(handle.id);
+    }
+    if (!daemon) {
+      throw new Error("could not initialize the in-process workspace daemon");
+    }
     return {
       daemon,
       headers: { "x-session-key": daemon.config.sessionKey },
@@ -279,7 +317,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           const hasPaging = input.offset !== undefined || input.limit !== undefined;
           if (d) {
             const res = await d.daemon.handleRequest("POST", "/files/view", d.headers, input);
@@ -330,7 +368,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (d) {
             const res = await d.daemon.handleRequest("POST", "/files/create", d.headers, input);
             if (res.status !== 200) {
@@ -369,7 +407,7 @@ export class StandardToolRouter implements ToolRouter {
         },
         execute: async (input, ctx) => {
           const cmd = String(input.command ?? "str_replace");
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (d) {
             const route =
               cmd === "insert"
@@ -419,7 +457,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (d) {
             const res = await d.daemon.handleRequest("POST", "/files/apply_patch", d.headers, input);
             if (res.status !== 200) {
@@ -444,7 +482,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (d) {
             const res = await d.daemon.handleRequest("POST", "/files/view", d.headers, {
               path: input.path ?? ".",
@@ -480,7 +518,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (d) {
             const res = await d.daemon.handleRequest("POST", "/search/glob", d.headers, input);
             return { output: res.body };
@@ -519,7 +557,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (d) {
             const res = await d.daemon.handleRequest("POST", "/search/grep", d.headers, input);
             return { output: res.body };
@@ -608,7 +646,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "bash requires an active sandbox" };
           const sid = String(input.sessionId ?? "main");
           const maxCmdSec = ctx.state.budgets.maxCommandSec ?? 1800;
@@ -652,7 +690,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "bash_input requires an active sandbox" };
           const sid = String(input.sessionId ?? "main");
           const res = await d.daemon.handleRequest("POST", `/shell/${sid}/input`, d.headers, input);
@@ -674,7 +712,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "bash_interrupt requires an active sandbox" };
           const sid = String(input.sessionId ?? "main");
           const res = await d.daemon.handleRequest("POST", `/shell/${sid}/interrupt`, d.headers, {});
@@ -699,7 +737,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "process_start requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/processes", d.headers, input);
           return { output: res.body, error: res.status !== 200 ? String(res.body.error) : undefined };
@@ -722,7 +760,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "process_logs requires an active sandbox" };
           const since = Number(input.since ?? 0);
           const res = await d.daemon.handleRequest(
@@ -749,7 +787,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "process_stop requires an active sandbox" };
           const res = await d.daemon.handleRequest(
             "DELETE",
@@ -774,7 +812,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "preview_url requires an active sandbox" };
           const res = await d.daemon.handleRequest("GET", "/ports", d.headers);
           const ports = (res.body.ports as Array<{ port: number; previewUrl: string }>) ?? [];
@@ -818,7 +856,7 @@ export class StandardToolRouter implements ToolRouter {
         idempotent: true,
         parameters: { type: "object", properties: {} },
         execute: async (_input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) {
             return { output: { active: false, sandboxId: ctx.sandboxHandleId ?? null } };
           }
@@ -870,7 +908,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_navigate requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/browser/navigate", d.headers, input);
           return {
@@ -891,7 +929,7 @@ export class StandardToolRouter implements ToolRouter {
         requiresSandbox: true,
         parameters: { type: "object", properties: {} },
         execute: async (_input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_snapshot requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/browser/snapshot", d.headers, {});
           return {
@@ -915,7 +953,7 @@ export class StandardToolRouter implements ToolRouter {
           properties: { ref: { type: "string" } },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_click requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/browser/click", d.headers, input);
           return { output: res.body, error: res.status !== 200 ? String(res.body.error) : undefined };
@@ -938,7 +976,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_type requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/browser/type", d.headers, input);
           return { output: res.body, error: res.status !== 200 ? String(res.body.error) : undefined };
@@ -958,7 +996,7 @@ export class StandardToolRouter implements ToolRouter {
           properties: { key: { type: "string" } },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_press requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/browser/press", d.headers, input);
           return { output: res.body };
@@ -974,7 +1012,7 @@ export class StandardToolRouter implements ToolRouter {
         requiresSandbox: true,
         parameters: { type: "object", properties: {} },
         execute: async (_input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_screenshot requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/browser/screenshot", d.headers, {});
           return { output: res.body };
@@ -990,7 +1028,7 @@ export class StandardToolRouter implements ToolRouter {
         requiresSandbox: true,
         parameters: { type: "object", properties: {} },
         execute: async (_input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_console requires an active sandbox" };
           const logs = await d.daemon.handleRequest("GET", "/browser/console_logs", d.headers);
           const errs = await d.daemon.handleRequest("GET", "/browser/network_errors", d.headers);
@@ -1312,7 +1350,7 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (d) {
             const res = await d.daemon.handleRequest("POST", "/checkpoints/create", d.headers, input);
             if (typeof res.body.sha === "string") {
@@ -1442,7 +1480,7 @@ export class StandardToolRouter implements ToolRouter {
           properties: { code: { type: "string" } },
         },
         execute: async (input, ctx) => {
-          const d = this.getDaemonAndHeaders(ctx);
+          const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "ipython requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/ipython/exec", d.headers, input);
           return { output: res.body };

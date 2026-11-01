@@ -6,7 +6,7 @@ OpenHarness supports multi-hour, multi-session software engineering workflows (`
 
 - **`chat`**: Interactive conversational mode with tool support (`maxIterations: 25`, `maxRunDurationSec: 600`).
 - **`task`**: Bounded single-objective engineering loop (`Plan -> Build -> Test -> Fix -> Review -> Checkpoint`, `maxIterations: 150`, `maxRunDurationSec: 3,600`).
-- **`long_task`**: Multi-feature autonomous engineering protocol (`500` iterations per session, `5,000` per task, `28,800s` wall clock, required cost cap). Requires a sandboxed runtime (`srt-local`, `docker`, or `modal`).
+- **`long_task`**: Multi-feature autonomous engineering protocol (`500` iterations per session, `5,000` per task, `28,800s` wall clock, required cost cap). It can use the in-process `local` workspace daemon; choose `srt-local`, `docker`, or `modal` when OS-level isolation is required.
 
 ## 2. The `Plan -> Build -> Test -> Fix -> Review -> Checkpoint` Loop
 

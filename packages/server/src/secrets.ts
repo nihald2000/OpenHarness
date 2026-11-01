@@ -3,6 +3,20 @@ import fs from "node:fs";
 import path from "node:path";
 import type { SecretItem } from "@openharness/sdk";
 
+/** Secret names that identify provider credentials. Values are provider IDs, never secret contents. */
+export const SECRET_KEY_TO_PROVIDER: Record<string, string> = {
+  MODEL_API_KEY: "meta",
+  META_API_KEY: "meta",
+  OPENAI_API_KEY: "openai",
+  OPENHARNESS_API_KEY: "openai",
+};
+
+/** Preferred environment/secret-store key for each provider. */
+export const ENV_SECRET_MAP: Record<string, string> = {
+  meta: "MODEL_API_KEY",
+  openai: "OPENAI_API_KEY",
+};
+
 interface StoredCiphertextRecord {
   iv: string;
   tag: string;
@@ -80,6 +94,22 @@ export class EncryptedSecretStore {
       decipher.final(),
     ]);
     return out.toString("utf8");
+  }
+
+  getProviderApiKey(providerId: string): string | undefined {
+    const preferred = ENV_SECRET_MAP[providerId];
+    const names = preferred
+      ? [preferred, ...Object.entries(SECRET_KEY_TO_PROVIDER)
+          .filter(([, provider]) => provider === providerId)
+          .map(([name]) => name)]
+      : [];
+    for (const name of new Set(names)) {
+      const stored = this.getDecrypted(name);
+      if (stored) return stored;
+      const fromEnv = process.env[name];
+      if (fromEnv) return fromEnv;
+    }
+    return undefined;
   }
 
   /** Encrypt an opaque value for storage by adapters such as the Modal sandbox record store. */

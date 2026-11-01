@@ -66,16 +66,6 @@ export function createRunHooks(ctx: RunHooksContext) {
       throw new Error("No runtime is selected. Configure a default runtime or choose one for this chat.");
     }
 
-    if (
-      (state.mode === "task" || state.mode === "long_task") &&
-      runtime === "local" &&
-      !ctx.allowUnsandboxedAutonomy
-    ) {
-      throw new Error(
-        `${state.mode} mode requires a sandboxed runtime (srt-local, docker, or modal); set allowUnsandboxedAutonomy: true to override`
-      );
-    }
-
     const provider = ctx.providers.get(runtime);
     if (!provider) {
       throw new Error(`unknown sandbox runtime: ${runtime}`);
@@ -99,6 +89,13 @@ export function createRunHooks(ctx: RunHooksContext) {
     }
 
     const spec = ctx.defaultSpecFor(state);
+    // Modal's toModalNetwork adapter rejects open egress; keep its configured allowlist.
+    if (runtime !== "modal") {
+      spec.policy = {
+        ...spec.policy,
+        network: { ...spec.policy.network, mode: "open" },
+      };
+    }
     if (ctx.allowUnsandboxedAutonomy) {
       spec.allowUnsandboxedAutonomy = true;
     }

@@ -30,6 +30,21 @@ export const CONSERVATIVE_DEFAULT_PROFILE: ModelProfile = {
 };
 
 export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
+  // Meta Model API (OpenAI-compatible Chat Completions)
+  "meta-muse": {
+    wire: "openai-chat",
+    contextWindow: 128_000,
+    maxOutputTokens: 16_384,
+    outputParam: "max_completion_tokens",
+    toolCalling: "native",
+    streamingToolCalls: true,
+    parallelToolCalls: "supported",
+    promptCaching: "none",
+    usageInStream: true,
+    strictSchemas: false,
+    baseUrl: "https://api.meta.ai/v1",
+    apiKeyEnv: "MODEL_API_KEY",
+  },
   // OpenAI GPT-4.x / GPT-5.x
   "gpt-4o": {
     wire: "openai-chat",
@@ -347,6 +362,17 @@ export function resolveModelProfile(
   modelId: string,
   overrides?: Record<string, Partial<ModelProfile>>
 ): ModelProfile {
+  if (
+    modelId === "muse-wonder-1.0" ||
+    modelId === "muse-spark-1.3" ||
+    modelId === "muse-spark-1.3-contributor" ||
+    modelId === "sam-3.1" ||
+    modelId === "muse-image-1.0"
+  ) {
+    // These IDs belong to Meta Model API; don't allow another provider's
+    // measured/configured profile to redirect them to a paid aggregator.
+    return { ...BUILT_IN_MODEL_PROFILES["meta-muse"]! };
+  }
   if (measuredProfiles.has(modelId)) {
     return {
       ...measuredProfiles.get(modelId)!,

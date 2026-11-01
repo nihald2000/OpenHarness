@@ -109,13 +109,46 @@ test("Step 6b (H3, H5): DurableRunWorker pauses on ask_user, resumes on answerQu
   const pausedRun = sm.getRun(run.id);
   assert.equal(pausedRun?.status, "awaiting_input", "Run must pause in awaiting_input on ask_user");
   assert.equal(pausedRun?.pendingQuestion?.question, "Which framework should I use?");
-
-  await worker.answerQuestion(run.id, "React");
   await runPromise;
+  const savedQuestion = await stateStore.getStepCheckpoint("default", run.id);
+  assert.equal(savedQuestion?.state.pendingQuestion?.question, "Which framework should I use?");
+  assert.equal(
+    savedQuestion?.state.phase,
+    "awaiting_input",
+    "The worker must release its run loop with a durable waiting checkpoint"
+  );
+
+  // Answer through a new worker instance to verify the checkpoint is enough to resume.
+  const resumedWorker = new DurableRunWorker({
+    stateMachine: sm,
+    emitter,
+    deps,
+    activeSandboxes: new Map(),
+  });
+  await resumedWorker.answerQuestion(run.id, "React");
+  for (let i = 0; i < 80; i++) {
+    if (sm.getRun(run.id)?.status === "completed" || sm.getRun(run.id)?.status === "failed") break;
+    await new Promise((r) => setTimeout(r, 15));
+  }
 
   const completedRun = sm.getRun(run.id);
   assert.equal(completedRun?.status, "completed");
   assert.equal(receivedAnswerInTurn2, true, "Model must receive user answer in tool result");
+  const answeredCheckpoint = await stateStore.getStepCheckpoint("default", run.id);
+  assert.equal(answeredCheckpoint?.state.pendingQuestion, null);
+  assert.deepEqual(answeredCheckpoint?.state.completedToolCalls.call_ask_1?.output, {
+    question: "Which framework should I use?",
+    answer: "React",
+  });
+  const { messages } = await stateStore.getMessages("default", "sess_ask_1");
+  const answeredPart = messages
+    .flatMap((message) => message.parts)
+    .find((part) => part.type === "tool" && part.callId === "call_ask_1");
+  assert.equal(answeredPart?.type, "tool");
+  if (answeredPart?.type === "tool") {
+    assert.equal(answeredPart.state, "completed");
+    assert.deepEqual(answeredPart.output, { question: "Which framework should I use?", answer: "React" });
+  }
 
   // Now test cancelRun (H3) while awaiting_input
   const { run: runToCancel } = await worker.enqueueAndStart({
@@ -130,8 +163,8 @@ test("Step 6b (H3, H5): DurableRunWorker pauses on ask_user, resumes on answerQu
     if (sm.getRun(runToCancel.id)?.status === "awaiting_input") break;
     await new Promise((r) => setTimeout(r, 15));
   }
-  await worker.cancelRun(runToCancel.id, "User clicked Stop");
   await cancelPromise;
+  await worker.cancelRun(runToCancel.id, "User clicked Stop");
 
   const cancelled = sm.getRun(runToCancel.id);
   assert.equal(cancelled?.status, "cancelled");

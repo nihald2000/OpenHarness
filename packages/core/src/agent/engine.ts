@@ -13,6 +13,7 @@ import type {
 import type {
   BudgetState,
   EngineDeps,
+  PendingQuestion,
   RunState,
   StepCheckpoint,
 } from "./deps.ts";
@@ -355,6 +356,11 @@ export async function runStep(
     return { state, events };
   }
 
+  if (state.phase === "awaiting_input") {
+    if (state.pendingQuestion) return { state, events };
+    await transitionPhase(deps, state, "building", events);
+  }
+
   const signal = deps.signalFor?.(state.runId);
   if (signal?.aborted) {
     await transitionPhase(deps, state, "cancelled", events, {
@@ -379,14 +385,6 @@ export async function runStep(
   // 1. Handle pending approval state
   if (state.phase === "awaiting_permission") {
     if (state.pendingApproval) {
-      return { state, events };
-    }
-    await transitionPhase(deps, state, "building", events);
-  }
-
-  // 1b. Handle pending clarifying question state
-  if (state.phase === "awaiting_input") {
-    if (state.pendingQuestion) {
       return { state, events };
     }
     await transitionPhase(deps, state, "building", events);
@@ -799,156 +797,6 @@ export async function runStep(
         continue;
       }
 
-      // Durable clarifying-question pause (`ask_user`). The run releases its worker
-      // slot in `awaiting_input` and resumes the same run once the user answers.
-      if (toolDef.name === "ask_user") {
-        const startedAt = deps.clock.now();
-        const question = String(parsedInput.question ?? "").trim();
-        if (!question) {
-          const errText = "ask_user requires a non-empty `question`.";
-          const errPart: ToolPart = {
-            type: "tool",
-            tool: "ask_user",
-            callId,
-            state: "error",
-            input: parsedInput,
-            error: errText,
-            startedAt,
-            endedAt: startedAt,
-          };
-          updateMessageToolPart(assistantMsg, errPart);
-          state.completedToolCalls[callId] = { output: null, error: errText, state: "error" };
-          await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
-          await emitAndPersist(deps, state, events, {
-            type: "part.updated",
-            sessionId: state.sessionId,
-            messageId: assistantMsg.info.id,
-            part: errPart,
-          });
-          await persistStepCheckpoint(deps, state);
-          continue;
-        }
-
-        const options = Array.isArray(parsedInput.options)
-          ? parsedInput.options.map(String)
-          : undefined;
-
-        if (deps.requestUserAnswer) {
-          const pendingPart: ToolPart = {
-            type: "tool",
-            tool: "ask_user",
-            callId,
-            state: "pending",
-            input: parsedInput,
-            startedAt,
-          };
-          updateMessageToolPart(assistantMsg, pendingPart);
-          await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
-          await emitAndPersist(deps, state, events, {
-            type: "part.updated",
-            sessionId: state.sessionId,
-            messageId: assistantMsg.info.id,
-            part: pendingPart,
-          });
-
-          const answer = await deps.requestUserAnswer(
-            state.runId,
-            question,
-            options,
-            callId
-          );
-          const completedPart: ToolPart = {
-            ...pendingPart,
-            state: "completed",
-            output: { question, answer },
-            endedAt: deps.clock.now(),
-          };
-          updateMessageToolPart(assistantMsg, completedPart);
-          state.completedToolCalls[callId] = {
-            output: { question, answer },
-            state: "completed",
-          };
-          state.questionsAsked = (state.questionsAsked ?? 0) + 1;
-          await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
-          await emitAndPersist(deps, state, events, {
-            type: "part.updated",
-            sessionId: state.sessionId,
-            messageId: assistantMsg.info.id,
-            part: completedPart,
-          });
-          await persistStepCheckpoint(deps, state);
-          continue;
-        }
-
-        const maxQuestions = Number(process.env.OH_MAX_QUESTIONS ?? 3);
-        if ((state.questionsAsked ?? 0) >= maxQuestions) {
-          const fallback =
-            "Maximum clarifying questions reached for this run. Proceed with your best judgment.";
-          const part: ToolPart = {
-            type: "tool",
-            tool: "ask_user",
-            callId,
-            state: "completed",
-            input: parsedInput,
-            output: { question, answer: fallback },
-            startedAt,
-            endedAt: deps.clock.now(),
-          };
-          updateMessageToolPart(assistantMsg, part);
-          state.completedToolCalls[callId] = {
-            output: { question, answer: fallback },
-            state: "completed",
-          };
-          await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
-          await emitAndPersist(deps, state, events, {
-            type: "part.updated",
-            sessionId: state.sessionId,
-            messageId: assistantMsg.info.id,
-            part,
-          });
-          await persistStepCheckpoint(deps, state);
-          continue;
-        }
-
-        const questionId = `q_${state.runId}_${(state.questionsAsked ?? 0) + 1}`;
-        state.pendingQuestion = {
-          questionId,
-          question,
-          options,
-          callId,
-          askedAt: startedAt,
-        };
-        state.questionsAsked = (state.questionsAsked ?? 0) + 1;
-
-        const pendingPart: ToolPart = {
-          type: "tool",
-          tool: "ask_user",
-          callId,
-          state: "pending",
-          input: parsedInput,
-          startedAt,
-        };
-        updateMessageToolPart(assistantMsg, pendingPart);
-        await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
-        await emitAndPersist(deps, state, events, {
-          type: "part.updated",
-          sessionId: state.sessionId,
-          messageId: assistantMsg.info.id,
-          part: pendingPart,
-        });
-        await emitAndPersist(deps, state, events, {
-          type: "question.requested",
-          sessionId: state.sessionId,
-          runId: state.runId,
-          questionId,
-          question,
-          options,
-        });
-        await transitionPhase(deps, state, "awaiting_input", events);
-        await persistStepCheckpoint(deps, state);
-        return { state, events };
-      }
-
       // Automatic shadow-git checkpoint before the first mutating call of each step (§11 Phase I)
       if (!toolDef.readOnly && !checkpointedBeforeMutating && deps.onCreateCheckpoint) {
         checkpointedBeforeMutating = true;
@@ -1078,6 +926,106 @@ export async function runStep(
         return { state, events };
       }
 
+      // Durably pause on ask_user after policy checks and before marking the tool in flight.
+      if (toolDef.name === "ask_user") {
+        const startedAt = deps.clock.now();
+        const question = String(parsedInput.question ?? "").trim();
+        if (!question) {
+          const errText = "ask_user requires a non-empty `question`.";
+          const errPart: ToolPart = {
+            type: "tool",
+            tool: "ask_user",
+            callId,
+            state: "error",
+            input: parsedInput,
+            error: errText,
+            startedAt,
+            endedAt: startedAt,
+          };
+          updateMessageToolPart(assistantMsg, errPart);
+          state.completedToolCalls[callId] = { output: null, error: errText, state: "error" };
+          await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
+          await emitAndPersist(deps, state, events, {
+            type: "part.updated",
+            sessionId: state.sessionId,
+            messageId: assistantMsg.info.id,
+            part: errPart,
+          });
+          await persistStepCheckpoint(deps, state);
+          continue;
+        }
+
+        const maxQuestions = Number(process.env.OH_MAX_QUESTIONS ?? 3);
+        if ((state.questionsAsked ?? 0) >= maxQuestions) {
+          const fallback =
+            "Maximum clarifying questions reached for this run. Proceed with your best judgment.";
+          const part: ToolPart = {
+            type: "tool",
+            tool: "ask_user",
+            callId,
+            state: "completed",
+            input: parsedInput,
+            output: { question, answer: fallback },
+            startedAt,
+            endedAt: deps.clock.now(),
+          };
+          updateMessageToolPart(assistantMsg, part);
+          state.completedToolCalls[callId] = {
+            output: { question, answer: fallback },
+            state: "completed",
+          };
+          await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
+          await emitAndPersist(deps, state, events, {
+            type: "part.updated",
+            sessionId: state.sessionId,
+            messageId: assistantMsg.info.id,
+            part,
+          });
+          await persistStepCheckpoint(deps, state);
+          continue;
+        }
+
+        const options = Array.isArray(parsedInput.options)
+          ? parsedInput.options.map(String)
+          : undefined;
+        const questionId = `q_${state.runId}_${(state.questionsAsked ?? 0) + 1}`;
+        const pendingQuestion: PendingQuestion = {
+          questionId,
+          question,
+          options,
+          callId,
+          askedAt: startedAt,
+        };
+        const pendingPart: ToolPart = {
+          type: "tool",
+          tool: "ask_user",
+          callId,
+          state: "pending",
+          input: parsedInput,
+          startedAt,
+        };
+        updateMessageToolPart(assistantMsg, pendingPart);
+        state.pendingQuestion = pendingQuestion;
+        state.questionsAsked = (state.questionsAsked ?? 0) + 1;
+        await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
+        await emitAndPersist(deps, state, events, {
+          type: "part.updated",
+          sessionId: state.sessionId,
+          messageId: assistantMsg.info.id,
+          part: pendingPart,
+        });
+        await transitionPhase(deps, state, "awaiting_input", events);
+        await persistStepCheckpoint(deps, state);
+        await emitAndPersist(deps, state, events, {
+          type: "question.requested",
+          sessionId: state.sessionId,
+          runId: state.runId,
+          questionId,
+          question,
+          options,
+        });
+        return { state, events };
+      }
       // Record in-flight tool call and checkpoint before execution so a mid-call crash knows it was running (§3 A.2)
       const startedAt = deps.clock.now();
       state.inFlightToolCalls = [
@@ -1134,7 +1082,11 @@ export async function runStep(
               new Set([...(state.changedFiles ?? []), ...paths])
             );
           }
-        } else if (toolDef.name === "preview_url") {
+        } else if (
+          toolDef.name === "preview_url" ||
+          toolDef.name === "process_start" ||
+          toolDef.name === "process_logs"
+        ) {
           const out = execResult.output as { previewUrl?: unknown } | null;
           const url = out && typeof out.previewUrl === "string" ? out.previewUrl : undefined;
           if (url) {
@@ -1374,6 +1326,7 @@ export async function applyQuestionAnswerToState(
   if (!question) {
     if (next.phase === "awaiting_input") {
       await transitionPhase(deps, next, "building", events);
+      await persistStepCheckpoint(deps, next);
     }
     return { state: next, events };
   }
@@ -1398,6 +1351,9 @@ export async function applyQuestionAnswerToState(
     output: { question: question.question, answer },
     state: "completed",
   };
+  next.inFlightToolCalls = next.inFlightToolCalls.filter(
+    (call) => call.callId !== question.callId
+  );
   next.pendingQuestion = null;
   next.updatedAt = deps.clock.now();
 

@@ -55,6 +55,14 @@ export function assertEnforcementAvailable(checkFn: () => boolean = isSrtInstall
 
 export function buildCleanEnv(userEnv: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = { ...BASE_ENV };
+  if (process.platform === "win32") {
+    // Keep host executable discovery functional for in-process local runtimes.
+    // PATH carries executable locations, not application credentials.
+    if (process.env.PATH) env.PATH = process.env.PATH;
+    if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
+    if (process.env.TEMP) env.TEMP = process.env.TEMP;
+    if (process.env.TMP) env.TMP = process.env.TMP;
+  }
   for (const [k, v] of Object.entries(userEnv)) {
     if (/^[A-Z_][A-Z0-9_]*$/i.test(k) && !SECRETISH.test(k) && typeof v === "string") {
       env[k] = v;

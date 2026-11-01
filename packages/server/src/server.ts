@@ -101,6 +101,7 @@ export interface OpenHarnessServerConfig {
   maxBodyBytes?: number;
   defaultAgent?: string;
   defaultModel?: string;
+  defaultBaseUrl?: string;
   defaultRuntime?: string;
   osEnforcedSandbox?: boolean;
   allowUnsandboxedAutonomy?: boolean;
@@ -246,6 +247,20 @@ export class OpenHarnessServer {
     fs.writeFileSync(this.settingsPath, JSON.stringify(cfg, null, 2), "utf8");
   }
 
+  private getMetaApiKey(): string | undefined {
+    return this.secretStore.getProviderApiKey("meta");
+  }
+
+  private getDefaultModel(): string | undefined {
+    const configured = this.readUserSettings().model ?? this.config.defaultModel;
+    if (configured) return configured;
+    return this.getMetaApiKey() ? process.env.OPENHARNESS_MODEL ?? "muse-spark-1.3" : undefined;
+  }
+
+  private getDefaultBaseUrl(): string {
+    return this.config.defaultBaseUrl ?? process.env.OPENHARNESS_BASE_URL ?? "https://api.meta.ai/v1";
+  }
+
   constructor(config?: OpenHarnessServerConfig) {
     this.config = {
       loopback: true,
@@ -287,11 +302,12 @@ export class OpenHarnessServer {
       this.config.providers ??
       new Map<string, SandboxProvider>([
         ["local", new LocalSandboxProvider()],
-        ["srt-local", new SrtLocalSandboxProvider({ checkHostBinary: true })],
-        ["docker", new DockerSandboxProvider({ checkHostBinary: true })],
+        ["srt-local", new SrtLocalSandboxProvider({ checkHostBinary: false })],
+        ["docker", new DockerSandboxProvider({ checkHostBinary: false })],
         [
           "modal",
           (() => {
+            // Modal uses its SDK, image manifest, and API credentials; it does not probe local SRT or Docker binaries.
             const manifestPath = path.resolve("deploy/modal/image-manifest.json");
             let imageId = process.env.OH_MODAL_IMAGE_ID ?? "";
             if (!imageId && fs.existsSync(manifestPath)) {
@@ -436,7 +452,14 @@ export class OpenHarnessServer {
             usage: { prompt_tokens: 64, completion_tokens: 24 },
           };
         };
-        const httpTransport = createHttpTransport(async (_profile, model) => {
+        const httpTransport = createHttpTransport(async (profile, model) => {
+          if (profile.apiKeyEnv === "MODEL_API_KEY") {
+            const apiKey = this.getMetaApiKey();
+            if (!apiKey) {
+              throw new ProviderHttpError(401, "missing Meta Model API key (MODEL_API_KEY)");
+            }
+            return { baseUrl: this.getDefaultBaseUrl(), apiKey };
+          }
           const userCfg = this.readUserSettings();
           const providers = (userCfg.providers && typeof userCfg.providers === "object" ? userCfg.providers : {}) as Record<string, any>;
           let customBaseUrl: string | undefined;
@@ -462,8 +485,14 @@ export class OpenHarnessServer {
               break;
             }
           }
-          const apiKey = customApiKey;
-          const baseUrl = customBaseUrl;
+          const profileApiKey = profile.apiKeyEnv
+            ? this.secretStore.getDecrypted(profile.apiKeyEnv) ?? process.env[profile.apiKeyEnv]
+            : undefined;
+          const genericApiKey = !profile.apiKeyEnv || profile.apiKeyEnv === "OPENAI_API_KEY"
+            ? this.secretStore.getProviderApiKey("openai")
+            : undefined;
+          const apiKey = customApiKey ?? profileApiKey ?? genericApiKey;
+          const baseUrl = customBaseUrl ?? profile.baseUrl;
           if (!baseUrl) {
             throw new ProviderHttpError(400, `model ${model} is not configured with a provider endpoint`);
           }
@@ -653,7 +682,7 @@ export class OpenHarnessServer {
           id: sessionId,
           title: `Scheduled: ${req.prompt.slice(0, 40)}`,
           agent: req.agent,
-          model: this.readUserSettings().model ?? this.config.defaultModel ?? "",
+          model: this.getDefaultModel() ?? "",
           runtime: this.defaultRuntime,
           status: "queued",
           mode: req.mode,
@@ -668,7 +697,7 @@ export class OpenHarnessServer {
           tenantId,
           prompt: textOrEmpty(req.prompt),
           agent: req.agent,
-          model: this.readUserSettings().model ?? this.config.defaultModel ?? "",
+          model: this.getDefaultModel() ?? "",
           mode: req.mode,
         });
         return { runId: req.runId, sessionId };
@@ -803,15 +832,15 @@ export class OpenHarnessServer {
   async listRuntimes(): Promise<RuntimeInfo[]> {
     const descriptions: Record<string, { description: string; remote: boolean }> = {
       local: {
-        description: "Local unsandboxed runtime (offline demo default).",
+        description: "In-process workspace daemon with open network and no OS-level isolation; shell commands run as the server user.",
         remote: false,
       },
       "srt-local": {
-        description: "Host child process isolated by Anthropic Sandbox Runtime (srt).",
+        description: "In-process workspace daemon; OS enforcement is reported only when available.",
         remote: false,
       },
       docker: {
-        description: "Container-isolated sandbox with srt defense-in-depth and shadow-git checkpoints.",
+        description: "Managed workspace daemon; may run without container isolation when host runtime checks are disabled.",
         remote: false,
       },
       modal: {
@@ -1075,7 +1104,7 @@ export class OpenHarnessServer {
           version: "0.2.0",
           workspace: this.deps.workspaceRoot,
           defaultAgent: this.config.defaultAgent ?? "assistant",
-          defaultModel: this.config.defaultModel,
+          defaultModel: this.getDefaultModel(),
           defaultRuntime: this.defaultRuntime,
         },
       };
@@ -1168,7 +1197,7 @@ export class OpenHarnessServer {
           effective: {
             ...visibleCfg,
             defaultRuntime: this.defaultRuntime,
-            defaultModel: cfg.model ?? this.config.defaultModel ?? "",
+            defaultModel: this.getDefaultModel() ?? "",
           },
           file: this.settingsPath,
           exists: fs.existsSync(this.settingsPath),
@@ -1206,7 +1235,7 @@ export class OpenHarnessServer {
 
     if (method === "GET" && pathname === "/v1/models") {
       const userCfg = this.readUserSettings();
-      const defaultModelId = userCfg.model ?? this.config.defaultModel;
+      const defaultModelId = this.getDefaultModel();
       const modelMap = new Map<string, any>();
       const isLocalUrl = (url: unknown): boolean =>
         typeof url === "string" && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(?:\/|$)/i.test(url.trim());
@@ -1239,6 +1268,17 @@ export class OpenHarnessServer {
           });
         }
       }
+      if (this.getMetaApiKey()) {
+        for (const mId of ["muse-spark-1.3", "muse-spark-1.3-contributor", "muse-wonder-1.0"]) {
+          modelMap.set(mId, {
+            id: mId,
+            name: mId === "muse-spark-1.3" ? "Muse Spark 1.3" : mId,
+            provider: "Meta Model API",
+            contextWindow: 128000,
+            isDefault: mId === defaultModelId,
+          });
+        }
+      }
       return { status: 200, body: Array.from(modelMap.values()) };
     }
 
@@ -1257,7 +1297,7 @@ export class OpenHarnessServer {
       const userCfg = this.readUserSettings();
       const selectedModel = typeof payload.model === "string"
         ? payload.model
-        : userCfg.model ?? this.config.defaultModel;
+        : this.getDefaultModel();
       if (!selectedModel) {
         return {
           status: 400,
