@@ -126,6 +126,12 @@ export function useSession(
               error: ev.error,
               updatedAt: Date.now(),
             };
+          } else if (ev.type === "run.phase" && ev.sessionId === sessionId && current) {
+            current = {
+              ...current,
+              phase: ev.phase,
+              updatedAt: Date.now(),
+            };
           }
         }
         return current;

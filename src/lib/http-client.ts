@@ -20,6 +20,7 @@ import type {
   SecretItem,
   ServerInfo,
   Session,
+  SessionPendingState,
   SettingsPreviewResponse,
   SkillInfo,
   ToolInfo,
@@ -179,6 +180,13 @@ export class HttpOpenHarnessClient {
       return this.request<{ messages: Message[]; lastSeq: number; activeRunId?: string | null }>(
         "GET",
         `/v1/sessions/${encodeURIComponent(id)}/messages`
+      );
+    },
+
+    pending: async (id: string): Promise<SessionPendingState> => {
+      return this.request<SessionPendingState>(
+        "GET",
+        `/v1/sessions/${encodeURIComponent(id)}/pending`
       );
     },
 

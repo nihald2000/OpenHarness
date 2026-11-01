@@ -56,6 +56,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   const [sending, setSending] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number } | null>(null);
   const [stopping, setStopping] = useState(false);
+  const [questionSubmitting, setQuestionSubmitting] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [stickTrigger, setStickTrigger] = useState(0);
 
@@ -74,11 +75,13 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     recoverable?: boolean;
   } | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [changedFiles, setChangedFiles] = useState<string[]>([]);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [contextError, setContextError] = useState<string | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
 
   const composerRef = useRef<ComposerHandle>(null);
+  const pendingStateRevision = useRef(0);
 
   const handleStreamEvent = useCallback(
     (ev: OpenHarnessEvent) => {
@@ -97,6 +100,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
           );
         }
       } else if (ev.type === "question.requested") {
+        pendingStateRevision.current += 1;
         setPendingQuestion({
           runId: ev.runId,
           questionId: ev.questionId,
@@ -104,11 +108,15 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
           options: ev.options,
         });
       } else if (ev.type === "question.answered") {
+        pendingStateRevision.current += 1;
         setPendingQuestion(null);
         setQuestionAnswer("");
       } else if (ev.type === "preview.ready") {
+        pendingStateRevision.current += 1;
         setPreviewUrl(ev.url);
       } else if (ev.type === "run.completed") {
+        pendingStateRevision.current += 1;
+        if (ev.changedFiles) setChangedFiles(ev.changedFiles);
         if (ev.previewUrl) setPreviewUrl(ev.previewUrl);
       } else if (ev.type === "run.error") {
         setRunError({
@@ -180,6 +188,35 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     setActiveSessionId(sessionId ?? null);
     return () => setActiveSessionId(null);
   }, [sessionId, setActiveSessionId]);
+
+  useEffect(() => {
+    pendingStateRevision.current += 1;
+    setPendingQuestion(null);
+    setQuestionAnswer("");
+    setPreviewUrl(null);
+    setChangedFiles([]);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || loading || notFound) return;
+    let cancelled = false;
+    const revisionAtRequest = pendingStateRevision.current;
+    void client.session.pending(sessionId).then((pending) => {
+      if (cancelled || revisionAtRequest !== pendingStateRevision.current) return;
+      setPendingQuestion(
+        pending.runId && pending.pendingQuestion
+          ? { ...pending.pendingQuestion, runId: pending.runId }
+          : null
+      );
+      setPreviewUrl(pending.previewUrl);
+      setChangedFiles(pending.changedFiles ?? []);
+    }).catch((err) => {
+      if (!cancelled) notify("error", `Could not restore run state: ${errorMessage(err)}`);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, loading, notFound, notify]);
 
   useEffect(() => {
     const pageTitle = session?.title || "Chat";
@@ -455,6 +492,40 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     }
   };
 
+  const handleQuestionAnswer = async (answer: string) => {
+    if (!pendingQuestion || !answer.trim() || questionSubmitting) return;
+    setQuestionSubmitting(true);
+    try {
+      await client.runs.answer(pendingQuestion.runId, answer.trim());
+      setPendingQuestion(null);
+      setQuestionAnswer("");
+    } catch (err) {
+      notify("error", errorMessage(err));
+    } finally {
+      setQuestionSubmitting(false);
+    }
+  };
+
+  const handleDownloadArchive = async () => {
+    if (!sessionId) return;
+    try {
+      const archive = await client.session.archive(sessionId);
+      const binary = atob(archive.archiveBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/gzip" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = archive.filename || `${sessionId}.tar.gz`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      notify("error", `Could not download the session archive: ${errorMessage(err)}`);
+    }
+  };
+
   const handleCompact = async () => {
     if (!sessionId) return;
     setCompacting(true);
@@ -480,6 +551,14 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     [messages]
   );
   const activeRun = isActive(session?.status) || compacting;
+  const showStopButton = !readOnly && !stopping && (
+    session?.status === "running" ||
+    session?.status === "verifying" ||
+    session?.phase === "planning" ||
+    session?.phase === "building" ||
+    session?.phase === "testing" ||
+    session?.phase === "fixing"
+  );
   const isActivePlan = Boolean(plan && !planStale && !optimisticPrompt);
   const prog = plan ? planProgress(plan) : null;
 
@@ -575,6 +654,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
           <Transcript
             messages={messages}
             status={session?.status}
+            phase={session?.phase}
             error={session?.error}
             optimisticPrompt={optimisticPrompt}
             permissions={permissions}
@@ -590,6 +670,18 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
               onReply={replyPermission}
             />
 
+            {showStopButton && (
+              <div className="mx-auto mb-3 flex w-full max-w-[720px] justify-end px-4">
+                <button
+                  type="button"
+                  onClick={() => void handleStop()}
+                  className="inline-flex items-center gap-2 rounded-lg border border-danger/50 bg-danger/10 px-4 py-2 text-sm font-semibold text-danger shadow-sm transition-colors hover:bg-danger/20"
+                >
+                  Stop
+                </button>
+              </div>
+            )}
+
             {pendingQuestion && (
               <div className="mx-auto mb-3 w-full max-w-[720px] px-4">
                 <div className="rounded-xl border border-accent/40 bg-elev p-4 shadow-sm">
@@ -603,13 +695,9 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                         <button
                           key={opt}
                           type="button"
-                          onClick={() => {
-                            void client.runs
-                              .answer(pendingQuestion.runId, opt)
-                              .then(() => setPendingQuestion(null))
-                              .catch((err) => notify("error", errorMessage(err)));
-                          }}
-                          className="rounded-lg border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg hover:bg-hover"
+                          onClick={() => setQuestionAnswer(opt)}
+                          aria-pressed={questionAnswer === opt}
+                          className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${questionAnswer === opt ? "border-accent bg-accent/15 text-accent" : "border-border bg-bg text-fg hover:bg-hover"}`}
                         >
                           {opt}
                         </button>
@@ -622,27 +710,23 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                       e.preventDefault();
                       if (!questionAnswer.trim()) return;
                       const ans = questionAnswer.trim();
-                      void client.runs
-                        .answer(pendingQuestion.runId, ans)
-                        .then(() => {
-                          setPendingQuestion(null);
-                          setQuestionAnswer("");
-                        })
-                        .catch((err) => notify("error", errorMessage(err)));
+                      void handleQuestionAnswer(ans);
                     }}
                   >
                     <input
                       type="text"
                       value={questionAnswer}
                       onChange={(e) => setQuestionAnswer(e.target.value)}
+                      disabled={questionSubmitting}
                       placeholder="Type your answer..."
                       className="flex-1 rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg"
                     />
                     <button
                       type="submit"
+                      disabled={!questionAnswer.trim() || questionSubmitting}
                       className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-strong"
                     >
-                      Reply
+                      {questionSubmitting ? "Submitting…" : "Submit"}
                     </button>
                   </form>
                 </div>
@@ -676,6 +760,53 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                   )}
                 </div>
               </div>
+            )}
+
+            {(changedFiles.length > 0 || previewUrl) && (
+              <section
+                aria-label="Run Results"
+                className="mx-auto mb-3 w-full max-w-[720px] rounded-xl border border-success/35 bg-success/5 px-4 py-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-success">
+                      Run Results
+                    </h3>
+                    {changedFiles.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {changedFiles.map((file) => (
+                          <span
+                            key={file}
+                            className="max-w-full truncate rounded-md border border-border bg-bg px-2 py-1 font-mono text-[11px] text-fg"
+                            title={file}
+                          >
+                            {file}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    {previewUrl && (
+                      <a
+                        href={previewUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-accent-fg hover:bg-accent-strong"
+                      >
+                        Open Preview ↗
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void handleDownloadArchive()}
+                      className="rounded-lg border border-border bg-elev px-3 py-2 text-xs font-semibold text-fg hover:bg-hover"
+                    >
+                      Download Archive (.tar.gz)
+                    </button>
+                  </div>
+                </div>
+              </section>
             )}
 
             <div className="mx-auto mb-1 flex w-full max-w-[720px] items-center justify-between px-4 text-xs text-muted">

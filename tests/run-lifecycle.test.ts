@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { LocalStateStore } from "../packages/core/src/index.ts";
+import { PROMPT_VERSION } from "../packages/core/src/context/prompts.ts";
 import { RunStateMachine } from "../packages/server/src/worker/run-state.ts";
 
 test("Step 6b (H1, H10): RunStateMachine enforces one active run per session, deduplicates clientTurnId, freezes snapshot, and validates compare-and-set transitions", async () => {
@@ -31,7 +32,7 @@ test("Step 6b (H1, H10): RunStateMachine enforces one active run per session, de
   assert.equal(dedup1, false);
   assert.equal(run1.status, "queued");
   assert.equal(run1.snapshot.model, "gpt-4o");
-  assert.equal(run1.snapshot.promptVersion, "coding-agent@1");
+  assert.equal(run1.snapshot.promptVersion, PROMPT_VERSION);
   assert.deepEqual(run1.snapshot.tools, ["read_file", "write_file"]);
 
   // 2. Duplicate submit with same clientTurnId returns existing run (H1)

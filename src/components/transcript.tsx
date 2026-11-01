@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, ArrowDown } from "lucide-react";
-import type { Message, PermissionRequest, RunStatus } from "@openharness/sdk";
-import { activityLabel, isActive } from "@/lib/format";
+import type { Message, PermissionRequest, RunPhase, RunStatus } from "@openharness/sdk";
+import { isActive, statusLabel } from "@/lib/format";
 import { MessageList, WorkingIndicator } from "./message-row";
 
 export function Transcript({
   messages,
   status,
+  phase,
   error,
   optimisticPrompt,
   permissions,
@@ -15,6 +16,7 @@ export function Transcript({
 }: {
   messages: Message[];
   status?: RunStatus;
+  phase?: RunPhase;
   error?: string;
   optimisticPrompt?: string | null;
   permissions: PermissionRequest[];
@@ -111,7 +113,7 @@ export function Transcript({
             status &&
             status !== "running" && (
               <div className="pt-1">
-                <WorkingIndicator label={activityLabel(status)} />
+                <WorkingIndicator label={statusLabel(status, phase)} />
               </div>
             )}
 

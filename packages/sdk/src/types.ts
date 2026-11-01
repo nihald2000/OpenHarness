@@ -126,6 +126,22 @@ export interface RunRecord {
   cost: number;
 }
 
+export interface PendingQuestion {
+  questionId: string;
+  question: string;
+  options?: string[];
+  callId?: string;
+  askedAt?: number;
+}
+
+export interface SessionPendingState {
+  runId: string | null;
+  phase: RunPhase | null;
+  pendingQuestion: PendingQuestion | null;
+  previewUrl: string | null;
+  changedFiles: string[];
+}
+
 export interface ScheduleRecord {
   id: string;
   name: string;
@@ -582,6 +598,7 @@ export interface OpenHarnessClient {
   updateSession(id: string, input: UpdateSessionInput): Promise<Session>;
   deleteSession(id: string): Promise<void>;
   getMessages(sessionId: string): Promise<{ messages: Message[]; lastSeq?: number; activeRunId?: string | null }>;
+  getPendingState?(sessionId: string): Promise<SessionPendingState>;
   prompt(sessionId: string, input: PromptInput): Promise<PromptResponse>;
   uploadAttachment?(sessionId: string, input: {
     file: Blob;

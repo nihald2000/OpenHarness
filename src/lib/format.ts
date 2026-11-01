@@ -1,4 +1,4 @@
-import { ACTIVE_RUN_STATUSES, OpenHarnessError, type RunStatus } from "@openharness/sdk";
+import { ACTIVE_RUN_STATUSES, OpenHarnessError, type RunPhase, type RunStatus } from "@openharness/sdk";
 
 export function isActive(status?: RunStatus | null): boolean {
   if (!status) return false;
@@ -18,6 +18,16 @@ export function activityLabel(status?: RunStatus | null): string {
     default:
       return "The agent is still working on this session, wait or press Stop.";
   }
+}
+
+export function statusLabel(
+  status?: RunStatus | null,
+  phase?: RunPhase | null
+): string {
+  if (status === "awaiting_input" || phase === "awaiting_input") {
+    return "Waiting for your answer";
+  }
+  return activityLabel(status);
 }
 
 export function isStatus(err: unknown, status: number): boolean {
