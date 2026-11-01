@@ -17,7 +17,7 @@ export type ResolvedEndpoint = (profile: ModelProfile, model: string) => Promise
 export type TransportOpts = {
   idleTimeoutMs?: number;
   signal?: AbortSignal;
-  onDelta?: (delta: { text?: string; reasoning?: string }) => void;
+  onDelta?: (delta: { text?: string; reasoning?: string; activity?: boolean }) => void;
 };
 
 function combineAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal {
@@ -139,6 +139,7 @@ async function openaiChat(
     body,
     opts
   );
+  opts.onDelta?.({ activity: true });
   try {
     if (!stream || !(res.headers.get("content-type") ?? "").includes("text/event-stream")) {
       const j: any = await res.json();
@@ -173,6 +174,7 @@ async function openaiChat(
         if (r.length > 0) opts.onDelta?.({ reasoning: r });
       }
       for (const tc of d.tool_calls ?? []) {
+        opts.onDelta?.({ activity: true });
         const k = tc.index ?? calls.size;
         const c = calls.get(k) ?? { name: "", args: "" };
         if (tc.id) c.id = tc.id;
@@ -212,6 +214,7 @@ async function anthropic(
     const tools = new Map<number, { id: string; name: string; json: string }>();
     for await (const ev of sse(res, touch)) {
       if (ev.type === "message_start") {
+        opts.onDelta?.({ activity: true });
         usage.input = ev.message?.usage?.input_tokens ?? 0;
         usage.cache_read_input_tokens = ev.message?.usage?.cache_read_input_tokens ?? 0;
       } else if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
@@ -229,6 +232,7 @@ async function anthropic(
           if (ev.delta.thinking) opts.onDelta?.({ reasoning: ev.delta.thinking });
         }
         else if (ev.delta?.type === "input_json_delta" && tools.has(ev.index)) {
+          opts.onDelta?.({ activity: true });
           tools.get(ev.index)!.json += ev.delta.partial_json;
         }
       } else if (ev.type === "message_delta") {

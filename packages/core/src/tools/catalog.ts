@@ -828,7 +828,19 @@ export class StandardToolRouter implements ToolRouter {
             `/processes/${String(input.id)}/logs?since=${since}`,
             d.headers
           );
-          return { output: res.body, error: res.status !== 200 ? String(res.body.error) : undefined };
+          const body = res.body as Record<string, unknown>;
+          const rawPreviewUrl = typeof body.previewUrl === "string" ? body.previewUrl : undefined;
+          const portFromUrl = rawPreviewUrl?.match(/^https?:\/\/127\.0\.0\.1:(\d+)/)?.[1];
+          const port = typeof body.port === "number" ? body.port : Number(portFromUrl);
+          const externalUrl = rawPreviewUrl && Number.isFinite(port) && port > 0 && ctx.sandboxHandleId
+            ? await this.opts.resolvePreviewUrl?.(ctx.sandboxHandleId, port)
+            : undefined;
+          return {
+            output: externalUrl && rawPreviewUrl
+              ? { ...body, previewUrl: externalUrl, internalUrl: rawPreviewUrl }
+              : body,
+            error: res.status !== 200 ? String(res.body.error) : undefined,
+          };
         },
       },
 
@@ -889,7 +901,21 @@ export class StandardToolRouter implements ToolRouter {
             const entry = match ?? { port: input.port, previewUrl: `http://127.0.0.1:${input.port}` };
             return { output: await resolvePort(entry) };
           }
-          return { output: { ports: await Promise.all(ports.map(resolvePort)) } };
+          const resolvedPorts = await Promise.all(ports.map(resolvePort));
+          return {
+            output: {
+              ports: resolvedPorts,
+              ...(resolvedPorts[0]
+                ? {
+                    port: resolvedPorts[0].port,
+                    previewUrl: resolvedPorts[0].previewUrl,
+                    ...(typeof (resolvedPorts[0] as { internalUrl?: unknown }).internalUrl === "string"
+                      ? { internalUrl: (resolvedPorts[0] as { internalUrl: string }).internalUrl }
+                      : {}),
+                  }
+                : {}),
+            },
+          };
         },
       },
 

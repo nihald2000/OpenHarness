@@ -81,9 +81,9 @@ export class ModalSandboxProvider implements SandboxProvider {
     this.api = api;
     this.cfg = {
       baseImageId: cfg.baseImageId,
-      cpu: cfg.cpu ?? 0.25,
+      cpu: cfg.cpu ?? 0.5,
       cpuLimit: cfg.cpuLimit ?? 4,
-      memoryMiB: cfg.memoryMiB ?? 512,
+      memoryMiB: cfg.memoryMiB ?? 1024,
       memoryLimitMiB: cfg.memoryLimitMiB ?? 8192,
       timeoutMs: cfg.timeoutMs ?? 1_800_000,
       idleTimeoutMs: cfg.idleTimeoutMs ?? 300_000,

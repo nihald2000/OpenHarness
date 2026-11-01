@@ -11,6 +11,10 @@ WRAPPER = """#!/usr/bin/env bash
 set -euo pipefail
 export NODE_PATH=/opt/oh/node_modules
 export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+export OH_VM_ISOLATED=1
+if [ -f /opt/oh/oh-sandboxd.mjs ]; then
+  exec node /opt/oh/oh-sandboxd.mjs "$@"
+fi
 exec /opt/oh/node_modules/.bin/tsx /opt/oh/packages/sandboxd/src/bin.ts "$@"
 """
 
@@ -43,6 +47,7 @@ def build_sandbox_image() -> modal.Image:
         .add_local_file(str(ROOT / "package.json"), remote_path="/opt/oh/package.json", copy=True)
         .run_commands(
             f"cd /opt/oh && npm install --no-audit --no-fund tsx@^4.19.0 playwright@{PLAYWRIGHT}",
+            'cd /opt/oh && npx --yes esbuild packages/sandboxd/src/bin.ts --bundle --platform=node --target=node22 --format=esm "--banner:js=import { createRequire as __ohCreateRequire } from \'node:module\'; const require = __ohCreateRequire(import.meta.url);" --external:playwright --external:playwright-core --outfile=/opt/oh/oh-sandboxd.mjs',
             "cd /opt/oh && npx playwright install --with-deps chromium && chmod -R a+rX /ms-playwright",
             f"printf %s {json.dumps(WRAPPER)} > /usr/local/bin/oh-sandboxd && chmod 0755 /usr/local/bin/oh-sandboxd",
             "install -d -o agent -g agent -m 0755 /workspace /memories /tmp/oh /oh/.shadow-git",

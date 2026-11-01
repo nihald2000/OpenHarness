@@ -93,9 +93,9 @@ export class RunStateMachine {
         maxIterations: input.limits?.maxIterations ?? 40,
         maxFixAttempts: input.limits?.maxFixAttempts ?? Number(process.env.OH_MAX_FIX_ATTEMPTS ?? 5),
         maxQuestions: input.limits?.maxQuestions ?? 3,
-        firstActivityTimeoutMs: input.limits?.firstActivityTimeoutMs ?? 45_000,
-        toolTimeoutMs: input.limits?.toolTimeoutMs ?? 120_000,
-        stallTimeoutMs: input.limits?.stallTimeoutMs ?? 180_000,
+        firstActivityTimeoutMs: input.limits?.firstActivityTimeoutMs ?? Number(process.env.OH_FIRST_ACTIVITY_TIMEOUT_MS ?? 180_000),
+        toolTimeoutMs: input.limits?.toolTimeoutMs ?? 180_000,
+        stallTimeoutMs: input.limits?.stallTimeoutMs ?? 240_000,
       },
     };
 

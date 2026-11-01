@@ -1062,7 +1062,10 @@ export class OpenHarnessServer {
       "cache-control": "no-cache, no-transform",
       connection: "keep-alive",
       "x-accel-buffering": "no",
+      "x-vercel-cache": "MISS",
     });
+    (res as any).flushHeaders?.();
+    res.write(`: open ${" ".repeat(2048)}\nretry: 1000\n\n`);
 
     let last = after;
     let replaying = true;

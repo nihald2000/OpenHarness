@@ -49,6 +49,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     defaultAgent,
     defaultModel,
     defaultRuntime,
+    loading: catalogLoading,
   } = useCatalog();
 
   const [settleTick, setSettleTick] = useState(0);
@@ -214,6 +215,37 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   }, [sessionId, loading, notFound, notify]);
 
   useEffect(() => {
+    if (!sessionId || loading || notFound) return;
+    let cancelled = false;
+    const refreshRunState = async () => {
+      const revisionAtRequest = pendingStateRevision.current;
+      try {
+        const pending = await client.session.pending(sessionId);
+        if (cancelled) return;
+        if (revisionAtRequest === pendingStateRevision.current) {
+          setPendingQuestion(
+            pending.runId && pending.pendingQuestion
+              ? { ...pending.pendingQuestion, runId: pending.runId }
+              : null
+          );
+          setPreviewUrl(pending.previewUrl);
+          setChangedFiles(pending.changedFiles ?? []);
+        }
+      } catch {
+        // SSE remains the primary update path; polling repairs missed events.
+      }
+      if (!cancelled) await loadPermissions(sessionId);
+    };
+    void refreshRunState();
+    if (!isActive(session?.status)) return () => { cancelled = true; };
+    const timer = setInterval(() => void refreshRunState(), 2_500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [sessionId, session?.status, loading, notFound, loadPermissions]);
+
+  useEffect(() => {
     const pageTitle = session?.title || "Chat";
     document.title = `${pageTitle} - OpenHarness`;
   }, [session?.title]);
@@ -289,6 +321,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
           fix: opts?.fix,
           attachments: opts?.attachmentIds,
         });
+      void refreshSession();
+      setTimeout(() => void refreshSession(), 1_500);
       } catch (err) {
         setOptimisticPrompt(null);
         composerRef.current?.setText(text);
@@ -298,7 +332,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         setSending(false);
       }
     },
-    [notify, resetFix, runMode]
+    [notify, resetFix, runMode, refreshSession]
   );
 
   useEffect(() => {
@@ -869,7 +903,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
               </div>
             ) : (
               <>
-                {!selectedModelConfigured && messages.length > 0 && (
+                {!catalogLoading && !selectedModelConfigured && messages.length > 0 && (
                   <div
                     className="mx-auto mb-3 w-full max-w-[720px] rounded-xl border border-border bg-elev px-4 py-3 text-xs text-muted"
                     role="status"

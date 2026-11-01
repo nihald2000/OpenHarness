@@ -286,7 +286,7 @@ export class DurableRunWorker implements RunWorker {
       void this.stateMachine.heartbeat(runId);
     }, this.heartbeatIntervalMs);
 
-    const firstActivityLimit = run.snapshot.limits.firstActivityTimeoutMs ?? 45_000;
+    const firstActivityLimit = run.snapshot.limits.firstActivityTimeoutMs ?? 180_000;
     const firstActivityTimer = setTimeout(() => {
       const latest = this.stateMachine.getRun(runId);
       if (latest && latest.status === "running" && !latest.firstActivityAt) {
@@ -297,6 +297,10 @@ export class DurableRunWorker implements RunWorker {
         );
       }
     }, firstActivityLimit);
+    const markActivity = () => {
+      void this.stateMachine.heartbeat(runId, true);
+      clearTimeout(firstActivityTimer);
+    };
 
     try {
       const existingCp = await this.deps.stateStore.getStepCheckpoint(tenantId, runId);
@@ -321,26 +325,37 @@ export class DurableRunWorker implements RunWorker {
         new ToolLoopGuard({ maxRepeatedIdentical: 3, maxPerPhase: 25 });
       this.loopGuards.set(runId, loopGuard);
 
-      const toolTimeoutMs = run.snapshot.limits.toolTimeoutMs ?? 120_000;
+      const toolTimeoutMs = run.snapshot.limits.toolTimeoutMs ?? 180_000;
 
       // Wrap provider & toolRouter with signal, first-activity tracking, tool timeout, and ToolLoopGuard
       const scopedDeps: EngineDeps = {
         ...this.deps,
+        ensureSandbox: this.deps.ensureSandbox
+          ? async (s) => {
+              void this.stateMachine.heartbeat(runId);
+              const handle = await this.deps.ensureSandbox!(s);
+              markActivity();
+              return handle;
+            }
+          : undefined,
+        onTextDelta: (...args) => {
+          markActivity();
+          this.deps.onTextDelta?.(...args);
+        },
+        onReasoningDelta: (...args) => {
+          markActivity();
+          this.deps.onReasoningDelta?.(...args);
+        },
         provider: {
           generateTurn: async (req) => {
             if (ctrl.signal.aborted) {
               throw ctrl.signal.reason ?? Object.assign(new Error("Cancelled"), { code: "CANCELLED" });
             }
-            let firstDeltaSeen = false;
             const res = await this.deps.provider.generateTurn({
               ...req,
               signal: ctrl.signal,
               onDelta: (delta) => {
-                if (!firstDeltaSeen) {
-                  firstDeltaSeen = true;
-                  void this.stateMachine.heartbeat(runId, true);
-                  clearTimeout(firstActivityTimer);
-                }
+                markActivity();
                 req.onDelta?.(delta);
               },
             });

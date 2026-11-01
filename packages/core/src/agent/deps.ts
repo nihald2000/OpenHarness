@@ -151,7 +151,7 @@ export interface ProviderTurnRequest {
   }>;
   maxOutputTokens?: number;
   signal?: AbortSignal;
-  onDelta?: (delta: { text?: string; reasoning?: string }) => void;
+  onDelta?: (delta: { text?: string; reasoning?: string; activity?: boolean }) => void;
 }
 
 export interface ProviderTurnResponse {

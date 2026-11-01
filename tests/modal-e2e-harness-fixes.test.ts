@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,14 +13,24 @@ import {
   createInitialRunState,
   resolveModelProfile,
   StandardToolRouter,
+  LayeredContextManager,
   supportsVisionModel,
   toWireMessages,
+  InProcessEventBus,
+  LocalStateStore,
+  ModelAgnosticProviderAdapter,
+  createHttpTransport,
   registerSandboxTransport,
   unregisterSandboxTransport,
 } from "../packages/core/src/index.ts";
 import type { ModalApi, ModalCreateParams, ModalSandboxRef } from "../packages/core/src/sandbox/modal-api.ts";
 import { SandboxDaemon } from "../packages/sandboxd/src/server.ts";
 import { OpenHarnessServer } from "../packages/server/src/server.ts";
+import { createHttpServer } from "../packages/server/src/main.ts";
+import { createRunHooks } from "../packages/server/src/run-hooks.ts";
+import { RunEventEmitter } from "../packages/server/src/worker/emitter.ts";
+import { RunStateMachine } from "../packages/server/src/worker/run-state.ts";
+import { DurableRunWorker } from "../packages/server/src/worker/run-worker.ts";
 
 test("Modal E2E fixes: Muse profiles and the tool catalog retain the full harness surface", () => {
   const glimmer = resolveModelProfile("meta-models/Muse-Glimmer-30B");
@@ -118,9 +129,9 @@ test("Modal E2E fixes: SDK connect token uses one object argument and Modal prov
   }, new InMemorySandboxRecordStore());
   const policy = compileSandboxPolicy({ runId: "default", phase: "agent", networkMode: "allowlist", additionalAllowedDomains: ["example.com"] });
   const handle = await provider.create({ runId: "default", sessionId: "s", workspace: { kind: "empty" } as any, policy });
-  assert.equal(created?.cpu, 0.25);
+  assert.equal(created?.cpu, 0.5);
   assert.equal(created?.cpuLimit, 4);
-  assert.equal(created?.memoryMiB, 512);
+  assert.equal(created?.memoryMiB, 1024);
   assert.equal(created?.memoryLimitMiB, 8192);
   assert.equal(created?.idleTimeoutMs, 300_000);
   assert.equal(created?.runtime, "gvisor");
@@ -134,6 +145,7 @@ test("Modal E2E fixes: process_start and preview_url return tunnel and in-sandbo
     async request(_method, route) {
       if (route === "/processes") return { status: 200, body: { id: "p1", port: 3000, previewUrl: "http://127.0.0.1:3000" } };
       if (route === "/ports") return { status: 200, body: { ports: [{ port: 3000, previewUrl: "http://127.0.0.1:3000" }] } };
+      if (route === "/processes/p1/logs?since=0") return { status: 200, body: { port: 3000, previewUrl: "http://127.0.0.1:3000", logs: "ready" } };
       return { status: 404, body: {} };
     },
   });
@@ -146,9 +158,125 @@ test("Modal E2E fixes: process_start and preview_url return tunnel and in-sandbo
     const preview = await router.executeTool("c2", "preview_url", { port: 3000 }, ctx);
     assert.equal((preview.output as any).previewUrl, "https://preview-3000.modal.host");
     assert.equal((preview.output as any).internalUrl, "http://127.0.0.1:3000");
+    const logs = await router.executeTool("c3", "process_logs", { id: "p1" }, ctx);
+    assert.equal((logs.output as any).previewUrl, "https://preview-3000.modal.host");
+    assert.equal((logs.output as any).internalUrl, "http://127.0.0.1:3000");
+    const defaultPreview = await router.executeTool("c4", "preview_url", {}, ctx);
+    assert.equal((defaultPreview.output as any).previewUrl, "https://preview-3000.modal.host");
+    assert.equal((defaultPreview.output as any).internalUrl, "http://127.0.0.1:3000");
   } finally {
     unregisterSandboxTransport("modal-preview");
     fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("Modal E2E fixes: delayed sandbox startup and streaming tool-call activity complete without first-activity timeout", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oh-modal-activity-"));
+  const server = new OpenHarnessServer({ dataDir: root, workspaceRoot: root, defaultModel: "gpt-4o", defaultRuntime: "modal" });
+  let requestCount = 0;
+  const providerServer = http.createServer((_req, res) => {
+    requestCount++;
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    if (requestCount === 1) {
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-ping", type: "function", function: { name: "ping", arguments: "{}" } }] }, finish_reason: null }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n`);
+    } else {
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] })}\n\n`);
+    }
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => providerServer.listen(0, "127.0.0.1", resolve));
+  const providerPort = (providerServer.address() as { port: number }).port;
+  const stateStore = server.stateStore;
+  const eventBus = new InProcessEventBus();
+  const stateMachine = new RunStateMachine({ dataDir: root, stateStore });
+  const emitter = new RunEventEmitter({ stateStore, eventBus });
+  const workspaceRoot = path.join(root, "workspace");
+  fs.mkdirSync(workspaceRoot);
+  const tool = {
+    name: "ping", description: "Return a small success result.", parameters: { type: "object", properties: {} },
+    readOnly: true, idempotent: true, execute: async () => ({ output: { ok: true } }),
+  } as any;
+  server.deps.toolRouter = {
+    listTools: () => [tool], getTool: (name: string) => name === "ping" ? tool : undefined,
+    executeTool: async () => ({ output: { ok: true } }),
+  } as any;
+  server.deps.contextManager = new LayeredContextManager({ workspaceRoot });
+  server.deps.workspaceRoot = workspaceRoot;
+  server.deps.provider = new ModelAgnosticProviderAdapter({
+    transport: createHttpTransport(async () => ({ baseUrl: `http://127.0.0.1:${providerPort}/v1` })),
+    maxRetryAttempts: 1,
+  });
+  server.deps.ensureSandbox = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    return { id: "modal-delayed", workspacePath: "/workspace" };
+  };
+  server.deps.onRunVerification = async () => ({ passed: true, signature: "ok", condensedError: "", results: [] });
+  await stateStore.saveSession("default", {
+    id: "sess-delayed", title: "Delayed sandbox", model: "gpt-4o", agent: "assistant", runtime: "modal", status: "idle", updatedAt: Date.now(),
+  });
+  const worker = new DurableRunWorker({ stateMachine, emitter, deps: server.deps, activeSandboxes: new Map() });
+  try {
+    const { run } = await worker.enqueueAndStart({ sessionId: "sess-delayed", prompt: "Run ping", model: "gpt-4o", runtime: "modal", mode: "task" });
+    await worker.startRun(run.id);
+    const completed = stateMachine.getRun(run.id);
+    assert.equal(completed?.status, "completed", JSON.stringify(completed?.diagnostic));
+    assert.ok(completed?.firstActivityAt, "sandbox creation and streamed tool-call activity must mark first activity");
+    assert.equal(requestCount, 2, "the streamed tool call should be followed by a final model turn");
+  } finally {
+    await new Promise<void>((resolve) => providerServer.close(() => resolve()));
+    await server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Modal E2E fixes: Modal sandbox creation does not publish preallocated preview tunnels", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oh-modal-preview-ready-"));
+  const stateStore = new LocalStateStore({ dataDir: root });
+  await stateStore.saveSession("tenant", { id: "sess", title: "Modal", model: "gpt-4o", agent: "assistant", runtime: "modal", status: "idle", updatedAt: Date.now() });
+  const handle = { id: "modal-handle", providerId: "modal", status: "running", ports: { 3000: "https://preview-3000.modal.host", 8000: "https://preview-8000.modal.host" }, policy: {} } as any;
+  const provider = { id: "modal", async health() { return { ok: true }; }, async create() { return handle; } } as any;
+  const activeSandboxes = new Map();
+  const emitted: any[] = [];
+  const hooks = createRunHooks({
+    providers: new Map([["modal", provider]]) as any, activeSandboxes, sandboxRecords: new InMemorySandboxRecordStore(),
+    stateStore, eventBus: new InProcessEventBus(), provider: {} as any, workspaceRoot: root,
+    emit: async (_tenant, _session, event) => { emitted.push(event); },
+    defaultSpecFor: (state) => ({ runId: state.runId, sessionId: state.sessionId, tenantId: state.tenantId, workspace: { type: "empty" } as any, policy: compileSandboxPolicy({ runId: state.runId, phase: "agent", networkMode: "allowlist" }) }),
+  });
+  const state = createInitialRunState({ runId: "run", sessionId: "sess", tenantId: "tenant", runtime: "modal" });
+  try {
+    await hooks.ensureSandbox(state);
+    assert.ok(!state.previewUrl);
+    assert.equal(emitted.some((event) => event.type === "preview.ready"), false);
+  } finally {
+    (stateStore as any).close?.();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Modal E2E fixes: SSE endpoint flushes its Vercel preamble immediately", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oh-modal-sse-flush-"));
+  const server = new OpenHarnessServer({ dataDir: root, serverToken: "s".repeat(48), defaultModel: "mock/demo" });
+  const app = createHttpServer(server);
+  await server.start();
+  await new Promise<void>((resolve) => app.listen(0, "127.0.0.1", resolve));
+  const port = (app.address() as { port: number }).port;
+  const controller = new AbortController();
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+      headers: { authorization: `Bearer ${"s".repeat(48)}` }, signal: controller.signal,
+    });
+    assert.equal(response.headers.get("x-vercel-cache"), "MISS");
+    const first = await response.body!.getReader().read();
+    const chunk = new TextDecoder().decode(first.value);
+    assert.match(chunk, /^: open /);
+    assert.ok((first.value?.byteLength ?? 0) >= 2_000);
+  } finally {
+    controller.abort();
+    await new Promise<void>((resolve) => app.close(() => resolve()));
+    await server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

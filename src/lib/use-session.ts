@@ -232,6 +232,18 @@ export function useSession(
     };
   }, [sessionId]);
 
+  useEffect(() => {
+    if (!sessionId) return;
+    const active = session?.status === "queued" ||
+      session?.status === "running" ||
+      session?.status === "verifying" ||
+      session?.status === "awaiting_input" ||
+      session?.status === "awaiting_permission";
+    if (!active && connection === "open") return;
+    const timer = setInterval(() => void refreshSession(), 2_000);
+    return () => clearInterval(timer);
+  }, [sessionId, session?.status, connection, refreshSession]);
+
   return {
     session,
     messages,

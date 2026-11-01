@@ -142,7 +142,7 @@ export function createRunHooks(ctx: RunHooksContext) {
       status: "running",
     });
 
-    for (const [portStr, url] of Object.entries(handle.ports ?? {})) {
+    for (const [portStr, url] of Object.entries(handle.providerId === "modal" ? {} : handle.ports ?? {})) {
       if (url) {
         state.previewUrl = url;
         await ctx.emit(state.tenantId, state.sessionId, {
