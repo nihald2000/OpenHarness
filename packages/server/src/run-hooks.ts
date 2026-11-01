@@ -237,6 +237,20 @@ export function createRunHooks(ctx: RunHooksContext) {
 
   const onRunVerification = async (state: RunState) => {
     if (!state.sandboxHandleId) {
+      await ctx.emit(state.tenantId, state.sessionId, {
+        type: "verification.finished",
+        sessionId: state.sessionId,
+        runId: state.runId,
+        passed: true,
+        results: [],
+      });
+      await ctx.emit(state.tenantId, state.sessionId, {
+        type: "fix.status",
+        sessionId: state.sessionId,
+        phase: "succeeded",
+        iteration: state.verifyFailures.length + 1,
+        maxIterations: 5,
+      });
       return {
         passed: true,
         signature: "pass",
@@ -309,15 +323,23 @@ export function createRunHooks(ctx: RunHooksContext) {
     }
 
     const { signature, condensedError } = condenseVerificationFailure(results);
+    const passed = results.every((r) => r.passed);
     await ctx.emit(state.tenantId, state.sessionId, {
       type: "verification.finished",
       sessionId: state.sessionId,
       runId: state.runId,
-      passed: results.every((r) => r.passed),
+      passed,
       results,
     });
+    await ctx.emit(state.tenantId, state.sessionId, {
+      type: "fix.status",
+      sessionId: state.sessionId,
+      phase: passed ? "succeeded" : "fixing",
+      iteration: state.verifyFailures.length + 1,
+      maxIterations: 5,
+    });
     return {
-      passed: results.every((r) => r.passed),
+      passed,
       signature,
       condensedError,
       results,

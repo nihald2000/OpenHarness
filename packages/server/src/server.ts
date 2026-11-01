@@ -319,6 +319,13 @@ export class OpenHarnessServer {
       workspaceRoot,
       sandboxEnabled: Boolean(this.config.osEnforcedSandbox),
       ensureSandbox: (s) => hooksRef!.ensureSandbox(s),
+      onVerify: async (_cmds, toolCtx) => {
+        const res = await hooksRef!.onRunVerification(toolCtx.state);
+        return { output: res };
+      },
+      onHandoff: async (brief) => ({
+        output: { handoffInitiated: true, brief },
+      }),
       onDelegate: (input, ctx) =>
         runSubagent({
           input,

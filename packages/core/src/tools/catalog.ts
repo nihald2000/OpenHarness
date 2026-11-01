@@ -13,6 +13,90 @@ import { getActiveSandboxDaemon } from "../sandbox/providers.ts";
 import { enforceToolOutputLimit } from "./output-limit.ts";
 import { resolveInside, PathEscapeError } from "../util/safe-path.ts";
 
+const IGNORED_WORKSPACE_DIRS = new Set(["node_modules", ".git", "dist", ".openharness"]);
+
+function walkWorkspaceFiles(root: string): string[] {
+  const files: string[] = [];
+  const visit = (directory: string, relativeDirectory: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory() && IGNORED_WORKSPACE_DIRS.has(entry.name)) continue;
+      const relativePath = relativeDirectory
+        ? `${relativeDirectory}/${entry.name}`
+        : entry.name;
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(fullPath, relativePath);
+      else if (entry.isFile()) files.push(relativePath.replace(/\\/g, "/"));
+    }
+  };
+  visit(root, "");
+  return files;
+}
+
+function globToRegExp(pattern: string): RegExp {
+  const normalized = pattern.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+  let source = "^";
+  for (let i = 0; i < normalized.length; i++) {
+    const char = normalized[i]!;
+    if (char === "*") {
+      if (normalized[i + 1] === "*") {
+        i++;
+        if (normalized[i + 1] === "/") {
+          source += "(?:.*/)?";
+          i++;
+        } else {
+          source += ".*";
+        }
+      } else {
+        source += "[^/]*";
+      }
+    } else if (char === "?") {
+      source += "[^/]";
+    } else {
+      source += char.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
+    }
+  }
+  return new RegExp(`${source}$`);
+}
+
+function htmlToReadableText(html: string): string {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
+    .replace(/<!--([\s\S]*?)-->/g, " ")
+    .replace(/<(?:br|hr)\b[^>]*\/?\s*>/gi, "\n")
+    .replace(/<\/(?:p|div|section|article|li|h[1-6]|tr|blockquote)\s*>/gi, "\n")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_entity, decimal: string) => {
+      const codePoint = Number(decimal);
+      return codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? String.fromCodePoint(codePoint)
+        : "\uFFFD";
+    })
+    .replace(/&#x([\da-f]+);/gi, (_entity, hexadecimal: string) => {
+      const codePoint = parseInt(hexadecimal, 16);
+      return codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? String.fromCodePoint(codePoint)
+        : "\uFFFD";
+    })
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export const HOST_TOOLS = new Set([
   "update_plan",
   "todo_write",
@@ -390,7 +474,21 @@ export class StandardToolRouter implements ToolRouter {
             const res = await d.daemon.handleRequest("POST", "/search/glob", d.headers, input);
             return { output: res.body };
           }
-          return { output: { matches: [] } };
+          const pattern = String(input.pattern ?? "**/*");
+          const requestedLimit = Number(input.limit ?? 100);
+          const limit = Number.isFinite(requestedLimit)
+            ? Math.min(500, Math.max(1, Math.floor(requestedLimit)))
+            : 100;
+          let matcher: RegExp;
+          try {
+            matcher = globToRegExp(pattern);
+          } catch (err) {
+            return { output: null, error: `Invalid glob pattern: ${(err as Error).message}` };
+          }
+          const matches = walkWorkspaceFiles(ctx.workspaceRoot)
+            .filter((file) => matcher.test(file))
+            .slice(0, limit);
+          return { output: { pattern, matches, count: matches.length } };
         },
       },
 
@@ -415,7 +513,37 @@ export class StandardToolRouter implements ToolRouter {
             const res = await d.daemon.handleRequest("POST", "/search/grep", d.headers, input);
             return { output: res.body };
           }
-          return { output: { results: [], count: 0 } };
+          const pattern = String(input.pattern ?? input.query ?? "");
+          const requestedLimit = Number(input.limit ?? 50);
+          const limit = Number.isFinite(requestedLimit)
+            ? Math.min(200, Math.max(1, Math.floor(requestedLimit)))
+            : 50;
+          let matcher: RegExp;
+          try {
+            matcher = new RegExp(pattern, input.caseSensitive ? "" : "i");
+          } catch (err) {
+            return { output: null, error: `Invalid search pattern: ${(err as Error).message}` };
+          }
+          const results: Array<{ file: string; line: number; text: string }> = [];
+          for (const file of walkWorkspaceFiles(ctx.workspaceRoot)) {
+            if (results.length >= limit) break;
+            const fullPath = path.join(ctx.workspaceRoot, file);
+            try {
+              if (fs.statSync(fullPath).size > 5_000_000) continue;
+              const content = fs.readFileSync(fullPath, "utf8");
+              if (content.includes("\u0000")) continue;
+              const lines = content.split("\n");
+              for (let i = 0; i < lines.length; i++) {
+                if (matcher.test(lines[i]!)) {
+                  results.push({ file, line: i + 1, text: lines[i]!.slice(0, 240) });
+                  if (results.length >= limit) break;
+                }
+              }
+            } catch {
+              // Skip unreadable or binary files.
+            }
+          }
+          return { output: { pattern, results, count: results.length } };
         },
       },
 
@@ -803,7 +931,7 @@ export class StandardToolRouter implements ToolRouter {
       {
         name: "webfetch",
         description:
-          "Fetches an allowlisted URL through the sandbox egress proxy, converts HTML to cleaned Markdown, paginates, and marks the output as untrusted external data. Example: {\"url\": \"https://nodejs.org/en/docs\"}",
+          "Fetches an HTTP(S) URL, converts HTML to readable text, paginates with offset and limit, and marks the result as untrusted external data. Example: {\"url\": \"https://nodejs.org/en/docs\"}",
         readOnly: true,
         idempotent: true,
         parameters: {
@@ -815,9 +943,56 @@ export class StandardToolRouter implements ToolRouter {
             limit: { type: "number" },
           },
         },
-        execute: async (input, _ctx) => {
+        execute: async (input, ctx) => {
           const url = String(input.url ?? "");
-          const content = `<untrusted_content source="${url}">\n# Fetched from ${url}\n${String(input.mockContent ?? "Content fetched via egress proxy.")}\n</untrusted_content>`;
+          if (typeof input.mockContent === "string") {
+            const content = `<untrusted_content source="${url}">\n# Fetched from ${url}\n${input.mockContent}\n</untrusted_content>`;
+            return {
+              output: content,
+              untrusted: true,
+              provenance: `webfetch:${url}`,
+            };
+          }
+
+          let parsedUrl: URL;
+          try {
+            parsedUrl = new URL(url);
+            if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+              throw new Error("Only HTTP and HTTPS URLs are supported");
+            }
+          } catch (err) {
+            return { output: null, error: `Invalid webfetch URL: ${(err as Error).message}` };
+          }
+
+          let response: Response;
+          try {
+            response = await fetch(parsedUrl, {
+              headers: { "User-Agent": "OpenHarness/1.0" },
+              signal: ctx.signal
+                ? AbortSignal.any([ctx.signal, AbortSignal.timeout(15_000)])
+                : AbortSignal.timeout(15_000),
+            });
+          } catch (err) {
+            return { output: null, error: `webfetch failed: ${(err as Error).message}` };
+          }
+          if (!response.ok) {
+            return { output: null, error: `webfetch failed: HTTP ${response.status} ${response.statusText}` };
+          }
+
+          const readable = htmlToReadableText(await response.text());
+          const requestedOffset = Number(input.offset ?? 0);
+          const requestedLimit = Number(input.limit ?? 12_000);
+          const offset = Number.isFinite(requestedOffset)
+            ? Math.max(0, Math.floor(requestedOffset))
+            : 0;
+          const limit = Number.isFinite(requestedLimit)
+            ? Math.min(50_000, Math.max(1, Math.floor(requestedLimit)))
+            : 12_000;
+          const sourceUrl = parsedUrl.href
+            .replace(/&/g, "&amp;")
+            .replace(/"/g, "&quot;")
+            .replace(/</g, "&lt;");
+          const content = `<untrusted_content source="${sourceUrl}">\n# Fetched from ${parsedUrl.href}\n${readable.slice(offset, offset + limit)}\n</untrusted_content>`;
           return {
             output: content,
             untrusted: true,
