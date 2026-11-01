@@ -322,7 +322,7 @@ export class DurableRunWorker implements RunWorker {
 
       const loopGuard =
         this.loopGuards.get(runId) ??
-        new ToolLoopGuard({ maxRepeatedIdentical: 3, maxPerPhase: 25 });
+        new ToolLoopGuard({ maxRepeatedIdentical: 3, maxPerPhase: 150 });
       this.loopGuards.set(runId, loopGuard);
 
       const toolTimeoutMs = run.snapshot.limits.toolTimeoutMs ?? 180_000;

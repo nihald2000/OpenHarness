@@ -11,37 +11,28 @@ import subprocess
 import modal
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+def find_repo_root() -> pathlib.Path:
+    source = pathlib.Path(__file__).resolve()
+    candidates = [source.parent, *source.parents, pathlib.Path.cwd()]
+    for candidate in candidates:
+        if (candidate / "packages").is_dir() and (candidate / "package.json").is_file():
+            return candidate
+    # Modal imports the uploaded module from /root at runtime. The repository
+    # sources are already present at /opt/oh in the image at that point.
+    image_root = pathlib.Path("/opt/oh")
+    if (image_root / "packages").is_dir() and (image_root / "package.json").is_file():
+        return image_root
+    raise RuntimeError("Could not locate the OpenHarness repository root")
+
+
+ROOT = find_repo_root()
 APP_NAME = "openharness-sandboxd"
 PLAYWRIGHT = "1.48.2"
 
 app = modal.App(APP_NAME)
 workspaces_vol = modal.Volume.from_name("openharness-workspaces", create_if_missing=True)
 
-smoke_test = """bash -lc '
-OH_MODAL_SANDBOX_KEY=smoke_key OH_VM_ISOLATED=1 OH_DISABLE_SRT=1 \
-  node /opt/oh/oh-sandboxd-hub.mjs --host 127.0.0.1 --port 18080 --root /tmp/oh-smoke >/tmp/oh-hub-smoke.log 2>&1 &
-PID=$!
-trap "kill $PID 2>/dev/null || true" EXIT
-for i in $(seq 1 50); do
-  if curl -fsS http://127.0.0.1:18080/health | jq -e ".ok == true and .mode == \\\"pinned-hub\\\"" >/dev/null 2>&1; then
-    break
-  fi
-  if ! kill -0 $PID 2>/dev/null; then cat /tmp/oh-hub-smoke.log >&2; exit 1; fi
-  sleep 0.2
-done
-curl -fsS -X POST http://127.0.0.1:18080/sessions/init \\
-  -H "x-session-key: smoke_key" -H "x-oh-sandbox-id: smoke_session" \\
-  -H "content-type: application/json" -d "{}" | jq -e ".ok == true" >/dev/null
-curl -fsS -X POST http://127.0.0.1:18080/shell/main/exec \\
-  -H "x-session-key: smoke_key" -H "x-oh-sandbox-id: smoke_session" \\
-  -H "content-type: application/json" \\
-  -d "{\\\"command\\\":\\\"python3 -c \\\\\\\"print(42)\\\\\\\"\\\",\\\"timeoutSec\\\":10}" \\
-  | jq -e ".exitCode == 0 and (.output | contains(\\\"42\\\"))" >/dev/null
-rm -rf /tmp/oh-smoke /tmp/oh/smoke_session /tmp/oh-hub-smoke.log
-'"""
-
-
+smoke_test = """bash -lc 'OH_MODAL_SANDBOX_KEY=smoke_key OH_VM_ISOLATED=1 OH_DISABLE_SRT=1 node /opt/oh/oh-sandboxd-hub.mjs --host 127.0.0.1 --port 18080 --root /tmp/oh-smoke >/tmp/oh-hub-smoke.log 2>&1 & PID=$!; trap "kill $PID 2>/dev/null || true" EXIT; curl --retry 20 --retry-connrefused --retry-delay 1 -fsS http://127.0.0.1:18080/health | jq -e ".ok == true and .mode == \\\"pinned-hub\\\"" >/dev/null; curl -fsS -X POST http://127.0.0.1:18080/sessions/init -H "x-session-key: smoke_key" -H "x-oh-sandbox-id: smoke_session" -H "content-type: application/json" -d "{}" | jq -e ".ok == true" >/dev/null; curl -fsS -X POST http://127.0.0.1:18080/shell/main/exec -H "x-session-key: smoke_key" -H "x-oh-sandbox-id: smoke_session" -H "content-type: application/json" -d "{\\\"command\\\":\\\"python3 -c \\\\\\\"print(42)\\\\\\\"\\\",\\\"timeoutSec\\\":10}" | jq -e ".exitCode == 0 and (.output | contains(\\\"42\\\"))" >/dev/null; rm -rf /tmp/oh-smoke /tmp/oh/smoke_session /tmp/oh-hub-smoke.log'"""
 sandbox_image = (
     modal.Image.from_registry("node:22-bookworm-slim", add_python="3.11")
     .apt_install(
