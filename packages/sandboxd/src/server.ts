@@ -104,6 +104,7 @@ export class SandboxDaemon {
   private ipythonVars = new Map<string, unknown>();
   private shadowGitInitialized = false;
   private initialCheckpointSha?: string;
+  private readonly constructedAt = Date.now();
   private httpServer?: http.Server;
   private osEnforced = false;
   private enforcementError?: string;
@@ -122,8 +123,6 @@ export class SandboxDaemon {
     fs.mkdirSync(this.config.shadowGitDir, { recursive: true });
     this.srtSettingsPath =
       this.config.srtSettingsPath ?? path.join(this.config.tmpPath, "srt-settings.json");
-    // Snapshot the workspace as soon as the daemon starts, before tools can create files.
-    this.runShadowGit(["rev-parse", "HEAD"]);
     if (this.config.policy.network.mode !== "open") {
       try {
         writeSrtSettings(this.srtSettingsPath, this.config.policy);
@@ -246,6 +245,14 @@ export class SandboxDaemon {
     parsedUrl: URL,
     payload: Record<string, unknown>
   ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const fileMutation = method === "POST" && /^\/files\/(?:create|write_bytes|str_replace|insert|undo_edit|apply_patch)$/.test(pathname);
+    const shellMutation = method === "POST" && (
+      pathname === "/exec" || pathname === "/processes" ||
+      /^\/shell\/[^/]+\/exec$/.test(pathname)
+    );
+    const checkpointMutation = method === "POST" && /^\/checkpoints\/(?:create|diff|restore)$/.test(pathname);
+    if (fileMutation || shellMutation || checkpointMutation) this.ensureShadowGitBaseline();
+
     const isExecRoute =
       pathname === "/exec" ||
       /^\/shell\/[^/]+\/exec$/.test(pathname) ||
@@ -1358,7 +1365,14 @@ export class SandboxDaemon {
     if (!this.shadowGitInitialized) {
       if (!fs.existsSync(path.join(this.config.shadowGitDir, "HEAD"))) {
         spawnConfinedArgv(["git", ...baseArgs, "init"], this.config.workspacePath, gitEnv);
-        spawnConfinedArgv(["git", ...baseArgs, "add", "-A"], this.config.workspacePath, gitEnv);
+        const initialFiles = this.initialWorkspaceFiles();
+        for (let offset = 0; offset < initialFiles.length; offset += 200) {
+          spawnConfinedArgv(
+            ["git", ...baseArgs, "add", "-A", "--", ...initialFiles.slice(offset, offset + 200)],
+            this.config.workspacePath,
+            gitEnv
+          );
+        }
         spawnConfinedArgv([
           "git", ...baseArgs, "-c", "user.name=OpenHarness", "-c", "user.email=oh@local",
           "commit", "--allow-empty", "--no-gpg-sign", "-m", "Initial workspace baseline",
@@ -1375,6 +1389,33 @@ export class SandboxDaemon {
       stdout: res.stdout.trim(),
       stderr: res.stderr.trim(),
     };
+  }
+
+  private initialWorkspaceFiles(): string[] {
+    const files: string[] = [];
+    const visit = (dir: string, prefix = "") => {
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+      catch { return; }
+      for (const entry of entries) {
+        const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+        const absolute = path.join(dir, entry.name);
+        if (entry.isDirectory()) visit(absolute, relative);
+        else if (entry.isFile()) {
+          try {
+            if (fs.statSync(absolute).birthtimeMs <= this.constructedAt) files.push(`./${relative}`);
+          } catch {
+            // Ignore files that disappear while the initial baseline is made.
+          }
+        }
+      }
+    };
+    visit(this.config.workspacePath);
+    return files;
+  }
+
+  private ensureShadowGitBaseline(): void {
+    if (!this.shadowGitInitialized) this.runShadowGit(["rev-parse", "HEAD"]);
   }
 
   private async createCheckpoint(

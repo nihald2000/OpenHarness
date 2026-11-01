@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import pathlib
 import json
+import hashlib
 import subprocess
 import modal
 
@@ -84,6 +85,18 @@ server_image = (
 @modal.web_server(4096, startup_timeout=60)
 def server():
     image_id = RESOLVED_IMAGE_ID.strip() or os.environ.get("OH_MODAL_IMAGE_ID", "").strip()
+    sandbox_url = os.environ.get("OH_MODAL_SANDBOX_URL", "").strip()
+    if not sandbox_url:
+        try:
+            sandbox_url = (modal.Function.from_name("openharness-sandboxd", "sandboxd").get_web_url() or "").strip()
+        except Exception as exc:
+            print(f"[openharness-server] warning: could not lookup openharness-sandboxd web url: {exc}", flush=True)
+            sandbox_url = ""
+    shared_key = os.environ.get("OH_MODAL_SANDBOX_KEY", "").strip()
+    if not shared_key and os.environ.get("MODAL_TOKEN_SECRET"):
+        shared_key = hashlib.sha256(
+            f"oh-sandboxd-v1:{os.environ['MODAL_TOKEN_SECRET']}".encode()
+        ).hexdigest()
     env = {
         **os.environ,
         # The Modal worker-local socket is not available to the Node subprocess
@@ -92,6 +105,8 @@ def server():
         "MODAL_SERVER_URL": "https://api.modal.com:443",
         "OH_MODAL_APP": os.environ.get("OH_MODAL_APP", "openharness"),
         "OH_MODAL_IMAGE_ID": image_id,
+        "OH_MODAL_SANDBOX_URL": sandbox_url,
+        "OH_MODAL_SANDBOX_KEY": shared_key,
         "OH_DEFAULT_RUNTIME": os.environ.get("OH_DEFAULT_RUNTIME", "modal"),
         "OH_MODAL_SANDBOX_RUNTIME": os.environ.get("OH_MODAL_SANDBOX_RUNTIME", "gvisor"),
         "OH_SANDBOX_IDLE_MS": os.environ.get("OH_SANDBOX_IDLE_MS", "180000"),
@@ -105,6 +120,7 @@ def server():
         "OPENHARNESS_DATA_DIR": "/data",
     }
     print(f"[openharness-server] active OH_MODAL_IMAGE_ID={image_id}", flush=True)
+    print(f"[openharness-server] active OH_MODAL_SANDBOX_URL={sandbox_url}", flush=True)
     subprocess.Popen(
         ["node", "--import", "tsx", "packages/server/src/main.ts"],
         cwd="/app",

@@ -1,0 +1,235 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import http, { type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import net from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { compileSandboxPolicy } from "../../core/src/sandbox/policy.ts";
+import { SandboxDaemon } from "./server.ts";
+
+const SANDBOX_ID = /^[A-Za-z0-9_-]{3,96}$/;
+const MAX_BODY_BYTES = 40 * 1024 * 1024;
+
+export interface SandboxHubOptions {
+  host?: string;
+  port?: number;
+  root?: string;
+  sessionKey?: string;
+}
+
+export type SandboxHubServer = Server & {
+  daemons: Map<string, SandboxDaemon>;
+  closeHub(): Promise<void>;
+};
+
+function sendJson(res: ServerResponse, status: number, body: Record<string, unknown>, headers: Record<string, string> = {}): void {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", ...headers });
+  res.end(JSON.stringify(body));
+}
+
+function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer | string) => {
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += data.byteLength;
+      if (size > MAX_BODY_BYTES) {
+        reject(Object.assign(new Error("request body is too large"), { status: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(data);
+    });
+    req.on("end", () => {
+      if (!size) return resolve({});
+      try {
+        const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("JSON body must be an object");
+        resolve(parsed as Record<string, unknown>);
+      } catch (err) {
+        reject(Object.assign(err instanceof Error ? err : new Error(String(err)), { status: 400 }));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function safeEquals(expected: string, actual: string | undefined): boolean {
+  if (!actual) return false;
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(actual, "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function proxyPreview(req: IncomingMessage, res: ServerResponse, port: number, targetPath: string): void {
+  const upstream = http.request({
+    hostname: "127.0.0.1",
+    port,
+    method: req.method,
+    path: targetPath,
+    headers: { ...req.headers, host: `127.0.0.1:${port}` },
+  }, (upstreamRes) => {
+    res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+    upstreamRes.pipe(res);
+  });
+  upstream.on("error", () => {
+    if (res.headersSent) return res.destroy();
+    const html = `<html><body><h1>Preview is starting</h1><p>Nothing is listening on port ${port} yet.</p></body></html>`;
+    res.writeHead(502, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html) });
+    res.end(html);
+  });
+  req.pipe(upstream);
+}
+
+function previewTarget(url: string | undefined): { port: number; path: string } | undefined {
+  if (!url) return undefined;
+  const match = url.match(/^\/preview\/(\d{1,5})(\/[^?#]*)?(\?[^#]*)?$/);
+  if (!match) return undefined;
+  const port = Number(match[1]);
+  if (port < 1024 || port > 65535 || port === 8080) return undefined;
+  return { port, path: `${match[2] || "/"}${match[3] || ""}` };
+}
+
+export function createSandboxHubServer(options: SandboxHubOptions = {}): SandboxHubServer {
+  const root = path.resolve(options.root ?? process.env.OH_WORKSPACES_ROOT ?? "/workspaces");
+  const sessionKey = options.sessionKey ?? process.env.OH_MODAL_SANDBOX_KEY ?? process.env.OH_SESSION_KEY ?? "dev-session-key";
+  // The hub is itself the isolation boundary. Never pass Modal credentials to
+  // shell or background-process environments spawned by its session daemons.
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("MODAL_")) delete process.env[key];
+  }
+
+  const daemons = new Map<string, SandboxDaemon>();
+  const getOrCreateDaemon = (sandboxId: string): SandboxDaemon => {
+    const existing = daemons.get(sandboxId);
+    if (existing) return existing;
+    const base = path.join(root, sandboxId);
+    const workspacePath = path.join(base, "workspace");
+    const runId = `hub_${sandboxId}`;
+    const daemon = new SandboxDaemon({
+      sessionId: sandboxId,
+      runId,
+      sessionKey,
+      workspacePath,
+      memoriesPath: path.join(base, "memories"),
+      tmpPath: path.join("/tmp/oh", sandboxId),
+      shadowGitDir: path.join(base, ".shadow-git"),
+      policy: compileSandboxPolicy({ runId, phase: "agent", workspacePath, networkMode: "open" }),
+    });
+    daemons.set(sandboxId, daemon);
+    return daemon;
+  };
+
+  const server = http.createServer(async (req, res) => {
+    const url = req.url ?? "/";
+    if (req.method === "GET" && url === "/health") {
+      return sendJson(res, 200, { ok: true, osEnforced: true, mode: "pinned-hub", activeSandboxes: daemons.size }, { "x-oh-daemon": "1" });
+    }
+
+    const preview = previewTarget(url);
+    if (preview) return proxyPreview(req, res, preview.port, preview.path);
+    if (url.startsWith("/preview/")) return sendJson(res, 400, { error: "Invalid preview port" });
+
+    const providedKey = req.headers["x-session-key"];
+    if (!safeEquals(sessionKey, Array.isArray(providedKey) ? providedKey[0] : providedKey)) {
+      return sendJson(res, 401, { error: "Unauthorized: invalid or missing X-Session-Key" }, { "x-oh-daemon": "1" });
+    }
+    const sandboxId = String(req.headers["x-oh-sandbox-id"] ?? "default");
+    if (!SANDBOX_ID.test(sandboxId)) return sendJson(res, 400, { error: "Invalid sandbox ID" }, { "x-oh-daemon": "1" });
+
+    let body: Record<string, unknown>;
+    try {
+      body = await readBody(req);
+    } catch (err) {
+      const status = Number((err as { status?: number }).status ?? 400);
+      return sendJson(res, status, { error: (err as Error).message }, { "x-oh-daemon": "1" });
+    }
+
+    if (req.method === "POST" && new URL(url, "http://127.0.0.1").pathname === "/sessions/init") {
+      const daemon = getOrCreateDaemon(sandboxId);
+      return sendJson(res, 200, { ok: true, sandboxId, workspacePath: daemon.config.workspacePath }, { "x-oh-daemon": "1" });
+    }
+    if (req.method === "DELETE" && new URL(url, "http://127.0.0.1").pathname === "/sessions") {
+      const daemon = daemons.get(sandboxId);
+      if (daemon) {
+        await daemon.handleRequest("POST", "/processes/stop-all", { "x-session-key": sessionKey });
+        await daemon.close();
+        daemons.delete(sandboxId);
+      }
+      return sendJson(res, 200, { ok: true }, { "x-oh-daemon": "1" });
+    }
+
+    const daemon = getOrCreateDaemon(sandboxId);
+    try {
+      const result = await daemon.handleRequest(req.method ?? "GET", url, {
+        "x-session-key": sessionKey,
+        "x-oh-request-id": String(req.headers["x-oh-request-id"] ?? ""),
+      }, body);
+      res.writeHead(result.status, { ...result.headers, "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(result.body));
+    } catch (err) {
+      sendJson(res, 500, { error: (err as Error).message }, { "x-oh-daemon": "1" });
+    }
+  });
+
+  server.on("upgrade", (req, clientSocket, head) => {
+    const target = previewTarget(req.url);
+    if (!target) {
+      clientSocket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      clientSocket.destroy();
+      return;
+    }
+    const upstream = net.connect(target.port, "127.0.0.1");
+    upstream.on("connect", () => {
+      const lines = [`${req.method ?? "GET"} ${target.path} HTTP/${req.httpVersion}`];
+      for (let i = 0; i < req.rawHeaders.length; i += 2) {
+        const name = req.rawHeaders[i]!;
+        const value = name.toLowerCase() === "host" ? `127.0.0.1:${target.port}` : req.rawHeaders[i + 1]!;
+        lines.push(`${name}: ${value}`);
+      }
+      upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
+      if (head.length) upstream.write(head);
+      upstream.pipe(clientSocket);
+      clientSocket.pipe(upstream);
+    });
+    upstream.on("error", () => {
+      clientSocket.write("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+      clientSocket.destroy();
+    });
+    clientSocket.on("error", () => upstream.destroy());
+  });
+
+  const hub = server as SandboxHubServer;
+  hub.daemons = daemons;
+  hub.closeHub = async () => {
+    await Promise.all(Array.from(daemons.values(), (daemon) => daemon.close().catch(() => {})));
+    daemons.clear();
+    if (server.listening) await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+  };
+  return hub;
+}
+
+function parseArgs(args: string[]): Required<SandboxHubOptions> {
+  const result: Required<SandboxHubOptions> = {
+    host: "0.0.0.0",
+    port: 8080,
+    root: process.env.OH_WORKSPACES_ROOT ?? "/workspaces",
+    sessionKey: process.env.OH_MODAL_SANDBOX_KEY ?? process.env.OH_SESSION_KEY ?? "dev-session-key",
+  };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--host" && args[i + 1]) result.host = args[++i]!;
+    else if (arg === "--port" && args[i + 1]) result.port = Number(args[++i]);
+    else if (arg === "--root" && args[i + 1]) result.root = args[++i]!;
+  }
+  return result;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const options = parseArgs(process.argv.slice(2));
+  const server = createSandboxHubServer(options);
+  server.listen(options.port, options.host, () => {
+    console.log(`[sandbox-hub] listening on ${options.host}:${options.port} (root=${options.root})`);
+  });
+}

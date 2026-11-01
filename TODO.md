@@ -2,8 +2,13 @@
 
 ## Modal E2E Harness & Muse Glimmer local verification
 - [x] Implement hosted workspace isolation, preview tunnel resolution, shadow-git baseline diffs, v2 permission/pause/resume routing, model profiles, vision screenshots, and Modal deployment assets.
-- [x] Run the full typecheck, test, build, and Modal Python syntax gates; all passed locally (52 tests passed, 1 credential-gated Modal integration test skipped).
-- [ ] Validate Modal and Vercel deployment commands with live credentials when explicitly requested.
+- [x] Run the full typecheck, test, build, and Modal Python syntax gates; all passed locally (63 tests passed, 1 credential-gated Modal integration test skipped).
+- [x] Validate Modal and Vercel deployment commands with live credentials when explicitly requested (previous deployment pass).
+
+## Pinned Modal Sandbox Hub follow-up
+- [x] Implement the opt-in pinned hub, server URL/key discovery, and existing Modal provider fallback when `OH_MODAL_SANDBOX_URL` is unset; local verification is complete.
+- [ ] Build and deploy `openharness-sandboxd`, then configure/deploy `openharness-server` with the discovered hub URL and shared key.
+- [ ] Confirm a live guest run, preview/WebSocket tunnel, persistent session reconnect, and workspace isolation against the deployed Modal volume before calling this deployment verified.
 
 ## Remediation & Modal Sandbox Integration (`fixprompt.md` Steps 1–10)
 

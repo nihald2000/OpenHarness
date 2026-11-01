@@ -32,6 +32,7 @@ import {
   LocalSandboxProvider,
   LocalStateStore,
   ModalSandboxProvider,
+  PinnedModalSandboxProvider,
   ModalSdkApi,
   McpClientManager,
   ModelAgnosticProviderAdapter,
@@ -290,7 +291,7 @@ export class OpenHarnessServer {
     const handleId = sess.sandboxHandleId;
     if (!handleId) return undefined;
     let daemon = getActiveSandboxDaemon(handleId);
-    if (!daemon && handleId.startsWith("modal-")) {
+    if (!daemon && handleId.startsWith("modal")) {
       const modalProvider = this.providers.get("modal") as
         | { attach?: (id: string) => Promise<unknown> }
         | undefined;
@@ -374,6 +375,11 @@ export class OpenHarnessServer {
     this.settingsPath = path.join(dataDir, "settings.json");
     const rawSavedRuntime = this.readUserSettings().defaultRuntime;
     const envDefaultRuntime = process.env.OH_DEFAULT_RUNTIME || undefined;
+    const pinnedModalUrl = process.env.OH_MODAL_SANDBOX_URL?.trim();
+    const pinnedModalKey = process.env.OH_MODAL_SANDBOX_KEY?.trim() ||
+      (process.env.MODAL_TOKEN_SECRET
+        ? crypto.createHash("sha256").update(`oh-sandboxd-v1:${process.env.MODAL_TOKEN_SECRET}`).digest("hex")
+        : "");
     this.defaultRuntime =
       rawSavedRuntime || envDefaultRuntime || this.config.defaultRuntime || "local";
     const modalImageId = process.env.OH_MODAL_IMAGE_ID || resolveModalImageId(serverCodeRoot);
@@ -390,6 +396,12 @@ export class OpenHarnessServer {
     ) {
       this.defaultRuntime = "modal";
     }
+    if (
+      this.hostedIsolation && pinnedModalUrl && pinnedModalKey &&
+      !rawSavedRuntime && !envDefaultRuntime && !this.config.defaultRuntime
+    ) {
+      this.defaultRuntime = "modal";
+    }
 
     this.providers =
       this.config.providers ??
@@ -400,6 +412,9 @@ export class OpenHarnessServer {
         [
           "modal",
           (() => {
+            if (pinnedModalUrl && pinnedModalKey) {
+              return new PinnedModalSandboxProvider({ endpointUrl: pinnedModalUrl, sharedKey: pinnedModalKey });
+            }
             // Modal uses its SDK, image manifest, and API credentials; it does not probe local SRT or Docker binaries.
             const hasCreds = Boolean(process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET);
             if (modalImageId && hasCreds) {
@@ -421,6 +436,9 @@ export class OpenHarnessServer {
           })(),
         ],
       ]);
+    if (this.config.providers && pinnedModalUrl && pinnedModalKey) {
+      this.providers.set("modal", new PinnedModalSandboxProvider({ endpointUrl: pinnedModalUrl, sharedKey: pinnedModalKey }));
+    }
 
     let hooksRef: ReturnType<typeof createRunHooks> | null = null;
     let emitRef: ((tenantId: string, sessionId: string, ev: OpenHarnessEvent) => Promise<void>) | null = null;

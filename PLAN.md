@@ -5,7 +5,14 @@
 - Modal startup uses verified credentials/image manifests, bounded boot waits, setup egress domains, public preview tunnels, and root-safe Playwright Chromium.
 - Shadow-git records an initial workspace baseline and reports modified and untracked file names; v2 runs route permission replies and pause/resume through the durable worker.
 - Provider profiles include Muse Glimmer 30B and Muse Spark Open; vision-capable profiles receive screenshots as image input, and Modal includes a scale-to-zero Glimmer vLLM service.
-- `npm run typecheck`, `npm test` (52 passed, one credential-gated skip), `npm run build`, and Python 3 `py_compile` passed. This does not claim distributed readiness or multi-node replay coverage.
+- The optional pinned Modal Sandbox Hub keeps deterministic tenant/session workspaces on a Modal Volume, accepts authenticated daemon requests, proxies preview HTTP/WebSockets, and retains the original per-sandbox provider as the fallback.
+- `npm run typecheck`, `npm test` (63 passed, 0 failed, one credential-gated skip), `npm run build`, and Python `py_compile` passed. This does not claim distributed readiness or multi-node replay coverage.
+
+## Pinned Modal Sandbox Hub — Implemented and locally verified
+- Add an opt-in long-lived Modal web-server hub with tenant/session deterministic workspace IDs, a persistent workspace volume, authenticated daemon calls, and unauthenticated HTTP/WebSocket preview proxying.
+- Keep `ModalSandboxProvider` unchanged when `OH_MODAL_SANDBOX_URL` is absent; the server can discover the pinned hub URL and derive its shared key from the existing Modal secret.
+- Defer shadow-Git initialization until the first workspace mutation, shell/process execution, or checkpoint request so health and session initialization avoid synchronous Git/SRT startup work.
+- The real-socket regression covers health latency, session isolation, shell execution, checkpoint diffs, preview proxying, deterministic reattachment, and authentication.
 
 ## Phase 1–5 Baseline — Complete
 - Bun server entrypoint, JSON-backed session persistence, SDK-compatible base APIs, server/admin auth, and replayable durable SSE event IDs.

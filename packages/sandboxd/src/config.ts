@@ -58,6 +58,7 @@ export function isSrtInstalled(): boolean {
 export function assertEnforcementAvailable(
   checkFn: () => boolean = () => isVmIsolated() || isSrtInstalled()
 ): void {
+  if (isVmIsolated()) return;
   if (!checkFn()) {
     throw new Error("srt is not installed; refusing to execute (fail closed)");
   }
@@ -135,8 +136,9 @@ export function spawnConfined(
   userEnv: Record<string, string> = {}
 ): ChildProcess {
   const env = buildCleanEnv(userEnv);
-  const requestedSrt = cfg.useSrt ?? isSrtInstalled();
-  const useSrt = requestedSrt && !(isVmIsolated() && !canExecuteUnderSrt(cfg.srtSettingsPath, cfg.srtProbe));
+  const disableSrt = process.env.OH_DISABLE_SRT === "1";
+  const requestedSrt = disableSrt ? false : cfg.useSrt ?? isSrtInstalled();
+  const useSrt = !disableSrt && requestedSrt && !(isVmIsolated() && !canExecuteUnderSrt(cfg.srtSettingsPath, cfg.srtProbe));
   let argv: string[];
   if (useSrt) {
     const drop = cfg.runAs

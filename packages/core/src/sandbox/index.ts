@@ -13,3 +13,4 @@ export * from "./records.ts";
 export * from "./workspace-io.ts";
 export * from "./modal-lifecycle.ts";
 export * from "./modal.ts";
+export * from "./pinned-modal.ts";
