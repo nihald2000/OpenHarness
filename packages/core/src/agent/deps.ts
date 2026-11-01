@@ -331,6 +331,12 @@ export interface EngineDeps {
     delta: string
   ) => void;
   onFlushDelta?: (sessionId: string) => Promise<void>;
+  requestUserAnswer?: (
+    runId: string,
+    question: string,
+    options?: string[],
+    callId?: string
+  ) => Promise<string>;
   /** Returns the cancellation signal for a run so in-flight model and tool calls can be interrupted. */
   signalFor?: (runId: string) => AbortSignal | undefined;
   ensureSandbox?: (state: RunState) => Promise<{ id: string; workspacePath: string }>;

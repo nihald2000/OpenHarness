@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { RunMode } from "@openharness/sdk";
 import type { StepCheckpoint } from "../agent/deps.ts";
 
 export type JobStatus =
@@ -19,7 +20,7 @@ export interface JobRecord {
   prompt: string;
   agent: string;
   model: string;
-  mode: "chat" | "task" | "long_task";
+  mode: RunMode;
   status: JobStatus;
   workerId: string | null;
   fenceToken: number;

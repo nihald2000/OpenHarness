@@ -81,7 +81,10 @@ export function createInitialRunState(params: {
   const mode = params.mode ?? "chat";
   const now = params.now ?? Date.now();
   const initialPhase: RunPhase =
-    params.phase ?? (params.agent === "plan" || mode !== "chat" ? "planning" : "building");
+    params.phase ??
+    (params.agent === "plan" || mode === "task" || mode === "long_task"
+      ? "planning"
+      : "building");
   return {
     runId: params.runId,
     jobId: params.jobId,
@@ -824,6 +827,54 @@ export async function runStep(
         const options = Array.isArray(parsedInput.options)
           ? parsedInput.options.map(String)
           : undefined;
+
+        if (deps.requestUserAnswer) {
+          const pendingPart: ToolPart = {
+            type: "tool",
+            tool: "ask_user",
+            callId,
+            state: "pending",
+            input: parsedInput,
+            startedAt,
+          };
+          updateMessageToolPart(assistantMsg, pendingPart);
+          await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
+          await emitAndPersist(deps, state, events, {
+            type: "part.updated",
+            sessionId: state.sessionId,
+            messageId: assistantMsg.info.id,
+            part: pendingPart,
+          });
+
+          const answer = await deps.requestUserAnswer(
+            state.runId,
+            question,
+            options,
+            callId
+          );
+          const completedPart: ToolPart = {
+            ...pendingPart,
+            state: "completed",
+            output: { question, answer },
+            endedAt: deps.clock.now(),
+          };
+          updateMessageToolPart(assistantMsg, completedPart);
+          state.completedToolCalls[callId] = {
+            output: { question, answer },
+            state: "completed",
+          };
+          state.questionsAsked = (state.questionsAsked ?? 0) + 1;
+          await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);
+          await emitAndPersist(deps, state, events, {
+            type: "part.updated",
+            sessionId: state.sessionId,
+            messageId: assistantMsg.info.id,
+            part: completedPart,
+          });
+          await persistStepCheckpoint(deps, state);
+          continue;
+        }
+
         const maxQuestions = Number(process.env.OH_MAX_QUESTIONS ?? 3);
         if ((state.questionsAsked ?? 0) >= maxQuestions) {
           const fallback =

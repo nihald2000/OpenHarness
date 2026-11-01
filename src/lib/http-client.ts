@@ -186,12 +186,13 @@ export class HttpOpenHarnessClient {
         mode?: RunMode;
         clientTurnId?: string;
         fix?: { commands: string[] };
+        async?: boolean;
       }
     ): Promise<{ messageId: string; runId?: string }> => {
       return this.request<{ messageId: string; runId?: string }>(
         "POST",
         `/v1/sessions/${encodeURIComponent(id)}/prompt`,
-        input
+        { async: true, ...input }
       );
     },
 

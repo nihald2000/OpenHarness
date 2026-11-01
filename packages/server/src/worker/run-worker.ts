@@ -362,6 +362,8 @@ export class DurableRunWorker implements RunWorker {
       // Wrap provider & toolRouter with signal, first-activity tracking, tool timeout, and ToolLoopGuard
       const scopedDeps: EngineDeps = {
         ...this.deps,
+        requestUserAnswer: (questionRunId, question, options, callId) =>
+          this.requestUserAnswer(questionRunId, question, options, callId),
         provider: {
           generateTurn: async (req) => {
             if (ctrl.signal.aborted) {

@@ -15,6 +15,7 @@ import type {
   OpenHarnessEvent,
   PermissionReply,
   RuntimeInfo,
+  RunRecord,
   Session,
 } from "@openharness/sdk";
 import {
@@ -1141,7 +1142,7 @@ export class OpenHarnessServer {
         model: selectedModel,
         runtime:
           typeof payload.runtime === "string" ? payload.runtime : this.defaultRuntime,
-        mode: (payload.mode as "chat" | "task" | "long_task") ?? "chat",
+        mode: (payload.mode as "chat" | "ask" | "task" | "long_task") ?? "chat",
         status: "idle",
         updatedAt: Date.now(),
         usage: { input: 0, output: 0 },
@@ -1348,7 +1349,7 @@ export class OpenHarnessServer {
 
       const payload = body ?? {};
       const text = String(payload.text ?? "");
-      const mode = (payload.mode as "chat" | "task" | "long_task") ?? session.mode ?? "chat";
+      const mode = (payload.mode as "chat" | "ask" | "task" | "long_task") ?? session.mode ?? "chat";
       const isAsync = Boolean(payload.async);
 
       const userMsgId = `msg_u_${Date.now()}`;
@@ -1373,16 +1374,31 @@ export class OpenHarnessServer {
       session.updatedAt = Date.now();
       await this.stateStore.saveSession(tenantId, session);
 
-      await this.jobQueue.enqueue({
-        id: jobId,
-        runId,
-        sessionId,
-        tenantId,
-        prompt: text,
-        agent: typeof payload.agent === "string" ? payload.agent : session.agent,
-        model: session.model ?? "",
-        mode,
-      });
+      if (isAsync) {
+        const { run, deduplicated } = await this.runWorker.enqueueAndStart({
+          runId,
+          sessionId,
+          tenantId,
+          prompt: text,
+          agent: typeof payload.agent === "string" ? payload.agent : session.agent,
+          model: session.model ?? "",
+          runtime: session.runtime ?? undefined,
+          mode,
+          clientTurnId:
+            typeof payload.clientTurnId === "string" ? payload.clientTurnId : undefined,
+        });
+        if (deduplicated) {
+          return {
+            status: 202,
+            body: { messageId: userMsgId, runId: run.id },
+          };
+        }
+        this.launcher.launch(run.id);
+        return {
+          status: 202,
+          body: { messageId: userMsgId, runId: run.id },
+        };
+      }
 
       const abortController = new AbortController();
       this.runAborts.set(runId, abortController);
@@ -1394,16 +1410,16 @@ export class OpenHarnessServer {
         }
       };
 
-      if (isAsync) {
-        void this.worker
-          .executeJobById(jobId)
-          .then((res) => releaseAbort(res.state?.phase))
-          .catch(() => releaseAbort("failed"));
-        return {
-          status: 202,
-          body: { messageId: userMsgId, runId },
-        };
-      }
+      await this.jobQueue.enqueue({
+        id: jobId,
+        runId,
+        sessionId,
+        tenantId,
+        prompt: text,
+        agent: typeof payload.agent === "string" ? payload.agent : session.agent,
+        model: session.model ?? "",
+        mode,
+      });
 
       try {
         const res = await this.worker.executeJobById(jobId);
@@ -1419,12 +1435,15 @@ export class OpenHarnessServer {
 
     if (method === "GET" && pathname === "/v1/runs") {
       const jobs = await this.jobQueue.listJobs({ tenantId });
-      const runs = [];
+      const runs = new Map<string, RunRecord>();
+      for (const run of this.runStateMachine.listRuns()) {
+        if ((run.tenantId ?? "default") === tenantId) runs.set(run.id, run);
+      }
       for (const j of jobs) {
         const r = await this.stateStore.getRun(tenantId, j.runId);
-        if (r) runs.push(r);
+        if (r) runs.set(r.id, r);
       }
-      return { status: 200, body: { runs } };
+      return { status: 200, body: { runs: Array.from(runs.values()) } };
     }
 
     // --- Sandboxes routes backed by SandboxRecordStore (Step 8 R4) ---
@@ -1515,6 +1534,11 @@ export class OpenHarnessServer {
         const answer = String(body?.answer ?? "");
         // Durable v1 runs store the pending question on the StepCheckpoint and
         // resume the same queued job; v2 runs keep it on the DurableRunRecord.
+        const durableRun = this.runWorker.stateMachine.getRun(runId);
+        if (durableRun?.status === "awaiting_input" && durableRun.pendingQuestion) {
+          const updated = await this.runWorker.answerQuestion(runId, answer);
+          return { status: 200, body: updated };
+        }
         const job = await this.jobQueue.getJobByRunId(runId);
         const checkpoint = await this.stateStore.getStepCheckpoint(tenantId, runId);
         if (job || checkpoint) {
@@ -1551,13 +1575,15 @@ export class OpenHarnessServer {
       const checkpoint = runId
         ? await this.stateStore.getStepCheckpoint(tenantId, runId)
         : null;
+      const durableRun = runId ? this.runWorker.stateMachine.getRun(runId) : null;
       return {
         status: 200,
         body: {
           runId: runId ?? null,
-          phase: checkpoint?.state.phase ?? session.phase ?? null,
+          phase: checkpoint?.state.phase ?? durableRun?.phase ?? session.phase ?? null,
           status: session.status,
-          pendingQuestion: checkpoint?.state.pendingQuestion ?? null,
+          pendingQuestion:
+            checkpoint?.state.pendingQuestion ?? durableRun?.pendingQuestion ?? null,
           pendingApproval: checkpoint?.state.pendingApproval ?? null,
           previewUrl: checkpoint?.state.previewUrl ?? null,
           changedFiles: checkpoint?.state.changedFiles ?? [],
