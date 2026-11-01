@@ -86,6 +86,7 @@ test("Step 5 (R6, F5, F7): LocalStateStore handles 1,000 concurrent events witho
     });
     const env = await pgStore.appendEvent("tenant_pg", "sess_pg", {
       type: "run.phase",
+      sessionId: "sess_pg",
       phase: "planning",
     });
     assert.equal(env.seq, 42);

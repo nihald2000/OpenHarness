@@ -55,6 +55,11 @@ const STATUS_META: Record<
     color: "bg-warning",
     pulse: true,
   },
+  awaiting_input: {
+    label: "Awaiting input",
+    color: "bg-warning",
+    pulse: true,
+  },
   verifying: { label: "Verifying", color: "bg-accent", pulse: true },
   completed: { label: "Completed", color: "bg-success" },
   failed: { label: "Failed", color: "bg-danger" },

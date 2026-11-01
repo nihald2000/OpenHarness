@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { InProcessEventBus, LocalStateStore } from "../packages/core/src/infra/index.ts";
 import { createInitialRunState, runStep } from "../packages/core/src/agent/engine.ts";
+import type { RunState } from "../packages/core/src/agent/deps.ts";
+import type { Message } from "../packages/sdk/src/types.ts";
 
 test("Ask mode completes a model turn without provisioning a sandbox", async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "oh-ask-no-sandbox-"));
@@ -37,13 +39,13 @@ test("Ask mode completes a model turn without provisioning a sandbox", async () 
     eventBus,
     workspaceRoot: dataDir,
     contextManager: {
-      prepareTurnContext: async (_state, messages) => ({
+      prepareTurnContext: async (_state: RunState, messages: Message[]) => ({
         systemPrompt: "Answer the user's question.",
         messages,
         estimatedTokens: 10,
         events: [],
       }),
-      handleContextOverflow: async (_state, messages) => messages,
+      handleContextOverflow: async (_state: RunState, messages: Message[]) => messages,
     },
     provider: {
       generateTurn: async () => ({

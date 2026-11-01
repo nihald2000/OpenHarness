@@ -61,7 +61,7 @@ export async function packLocal(dir: string): Promise<Uint8Array> {
   return Buffer.concat(chunks);
 }
 
-export type WorkspaceSource =
+export type WorkspaceMaterializationSource =
   | { kind: "local"; path: string; prepackedTar?: Uint8Array }
   | { kind: "git"; url: string; ref: string }
   | { kind: "snapshot"; imageId: string }

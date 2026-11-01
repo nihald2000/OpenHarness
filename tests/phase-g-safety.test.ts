@@ -8,6 +8,8 @@ import {
   runStep,
 } from "../packages/core/src/agent/engine.ts";
 import { StuckDetector } from "../packages/core/src/agent/stuck.ts";
+import type { EngineDeps, RunState } from "../packages/core/src/agent/deps.ts";
+import type { Message } from "../packages/sdk/src/types.ts";
 import {
   InProcessEventBus,
   LocalStateStore,
@@ -163,24 +165,24 @@ test("Phase G.3, G.4, G.5 Acceptance: rm -rf / inside bash -c is classified high
   });
 
   let turnCount = 0;
-  const deps = {
+  const deps: EngineDeps = {
     clock: { now: () => Date.now(), sleep: async () => {} },
     stateStore: store,
     eventBus: bus,
     workspaceRoot: tmpDir,
     policyGate,
     contextManager: {
-      prepareTurnContext: async (_s, messages) => ({
+      prepareTurnContext: async (_s: RunState, messages: Message[]) => ({
         systemPrompt: "System",
         messages,
         estimatedTokens: 100,
         events: [],
       }),
-      handleContextOverflow: async (_s, m) => m,
+      handleContextOverflow: async (_s: RunState, m: Message[]) => m,
     },
     toolRouter: {
       listTools: () => [safeBashTool],
-      getTool: (n) => (n === "bash" ? safeBashTool : undefined),
+      getTool: (n: string) => (n === "bash" ? safeBashTool : undefined),
       executeTool: async () => ({ output: "executed safe command" }),
     },
     provider: {

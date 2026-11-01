@@ -165,10 +165,12 @@ test("Step 4 (R2, S5, S6, S7): HTTP server, loadServerConfig guards, auth matrix
     // 7. SSE replay and deduplication with Last-Event-ID
     const ev1 = await app.stateStore.appendEvent("tenant_alpha", createdSession.id, {
       type: "run.phase",
+      sessionId: createdSession.id,
       phase: "planning",
     });
     const ev2 = await app.stateStore.appendEvent("tenant_alpha", createdSession.id, {
       type: "run.phase",
+      sessionId: createdSession.id,
       phase: "building",
     });
 
@@ -188,6 +190,7 @@ test("Step 4 (R2, S5, S6, S7): HTTP server, loadServerConfig guards, auth matrix
     // Emit a live event while stream is open
     const ev3 = await app.stateStore.appendEvent("tenant_alpha", createdSession.id, {
       type: "run.phase",
+      sessionId: createdSession.id,
       phase: "completed",
     });
     app.eventBus.publish(ev3);

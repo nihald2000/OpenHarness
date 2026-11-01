@@ -14,6 +14,7 @@ import type {
   AttachmentPart,
   Message,
   OpenHarnessEvent,
+  Part,
   PermissionReply,
   RuntimeInfo,
   RunRecord,
@@ -275,7 +276,7 @@ export class OpenHarnessServer {
       process.env.OPENHARNESS_DATABASE_URL;
 
     this.stateStore = dbUrl
-      ? new PostgresStateStore({ connectionString: dbUrl, dataDir })
+      ? new PostgresStateStore({ connectionString: dbUrl })
       : new LocalStateStore({ dataDir });
     this.eventBus = new InProcessEventBus();
     this.jobQueue = createJobQueue({ databaseUrl: dbUrl, dataDir });
@@ -360,7 +361,7 @@ export class OpenHarnessServer {
         }
         this.activeSandboxes.delete(sandboxId);
         await this.sandboxRecords
-          .update(sandboxId, { status: "destroyed" })
+          .update(sandboxId, { status: "terminated" })
           .catch(() => {});
         toolCtx.state.sandboxHandleId = null;
         toolCtx.sandboxHandleId = null;
@@ -1503,11 +1504,12 @@ export class OpenHarnessServer {
       if (!sess) return { status: 404, body: { error: "Session not found" } };
       const targetRunId = sess.activeRunId ?? sess.runId;
       if (targetRunId) {
+        this.worker.abortRun(targetRunId);
         this.runAborts
           .get(targetRunId)
           ?.abort(Object.assign(new Error("Cancelled by user"), { code: "CANCELLED" }));
-        await this.runWorker.cancelRun(targetRunId);
         await this.worker.cancelRun(tenantId, targetRunId).catch(() => null);
+        await this.runWorker.cancelRun(targetRunId);
       }
       await this.stateStore.saveSession(tenantId, {
         ...sess,
@@ -1745,32 +1747,13 @@ export class OpenHarnessServer {
       try {
         const runId = runAnswerMatch[1]!;
         const answer = String(body?.answer ?? "");
-        // Durable v1 runs store the pending question on the StepCheckpoint and
-        // resume the same queued job; v2 runs keep it on the DurableRunRecord.
-        const durableRun = this.runWorker.stateMachine.getRun(runId);
-        if (durableRun?.status === "awaiting_input" && durableRun.pendingQuestion) {
-          const updated = await this.runWorker.answerQuestion(runId, answer);
-          return { status: 200, body: updated };
+        const v1 = await this.worker.answerQuestion(tenantId, runId, answer);
+        if (v1.ok) return { status: 200, body: { answered: true } };
+        const tenantJobs = await this.jobQueue.listJobs({ tenantId });
+        if (tenantJobs.some((job) => job.runId === runId)) {
+          return { status: 409, body: { error: v1.error ?? "The v1 run could not accept this answer" } };
         }
-        const job = await this.jobQueue.getJobByRunId(runId);
-        const checkpoint = await this.stateStore.getStepCheckpoint(tenantId, runId);
-        if (job || checkpoint) {
-          const controller = this.runAborts.get(runId) ?? new AbortController();
-          this.runAborts.set(runId, controller);
-          try {
-            const res = await this.worker.answerQuestion(tenantId, runId, answer);
-            return {
-              status: 200,
-              body: { answered: true, phase: res.state?.phase ?? null },
-            };
-          } finally {
-            const phase = (await this.stateStore.getStepCheckpoint(tenantId, runId))?.state
-              .phase;
-            if (!phase || phase === "completed" || phase === "failed" || phase === "cancelled") {
-              if (this.runAborts.get(runId) === controller) this.runAborts.delete(runId);
-            }
-          }
-        }
+        // V2/legacy runs keep their pending question on the DurableRunRecord.
         const updated = await this.runWorker.answerQuestion(runId, answer);
         return { status: 200, body: updated };
       } catch (err) {
@@ -1831,6 +1814,7 @@ export class OpenHarnessServer {
         return { status: 200, body: resumed.run };
       }
       if (action === "cancel") {
+        this.worker.abortRun(runId);
         const v2Cancelled = await this.runWorker.cancelRun(runId);
         const cancelled = await this.worker.cancelRun(tenantId, runId);
         const finalRun = v2Cancelled ?? cancelled;
@@ -1903,9 +1887,9 @@ export class OpenHarnessServer {
           newTitle: typeof payload.title === "string" ? payload.title : undefined,
         });
         const copies = new Map<string, AttachmentPart>();
-        const forkMessages = res.messages.map((message) => ({
+        const forkMessages: Message[] = res.messages.map((message): Message => ({
           ...message,
-          parts: message.parts.flatMap((part) => {
+          parts: message.parts.flatMap((part): Part[] => {
             if (part.type !== "attachment") return [part];
             let copied = copies.get(part.id);
             if (!copied) {

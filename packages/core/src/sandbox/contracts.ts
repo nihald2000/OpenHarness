@@ -13,7 +13,7 @@ export interface SandboxCapabilities {
 }
 
 export interface WorkspaceSource {
-  type?: "bind" | "git" | "snapshot";
+  type?: "bind" | "git" | "snapshot" | "empty";
   kind?: "local" | "git" | "snapshot";
   hostPath?: string;
   path?: string;

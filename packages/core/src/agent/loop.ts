@@ -7,6 +7,7 @@ import type {
   OpenHarnessEvent,
 } from "@openharness/sdk";
 import type { RunState } from "./deps.ts";
+import type { VerificationCheckResult } from "./deps.ts";
 
 export interface VerificationCheckSpec {
   name: string;
@@ -20,14 +21,7 @@ export interface VerificationRecipe {
   checks: VerificationCheckSpec[];
 }
 
-export interface VerificationCheckResult {
-  name: string;
-  command: string;
-  passed: boolean;
-  exitCode: number;
-  output: string;
-  durationMs: number;
-}
+export type { VerificationCheckResult } from "./deps.ts";
 
 export interface VerificationRunSummary {
   passed: boolean;

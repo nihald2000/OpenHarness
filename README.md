@@ -7,6 +7,7 @@ OpenHarness is a model-agnostic, long-horizon AI agent harness and developer wor
 - **Durable Resumable Agent Engine (`packages/core/src/agent`, `packages/core/src/infra`)**:
   - State machine (`planning | building | testing | fixing | reviewing | awaiting_permission | paused | completed | failed | cancelled | stuck`) executed by `DurableWorker` over `InProcessJobQueue` or SQL-backed `PostgresJobQueue`.
   - Local persistence (`LocalStateStore`) appends events to `events.jsonl` and writes snapshots via `atomicWriteFileSync` (with Windows `EPERM`/`EBUSY` retry). PostgreSQL persistence (`PostgresStateStore`, `PostgresJobQueue`) executes real parameterized SQL and fails closed unless `OPENHARNESS_POSTGRES=1` is enabled.
+  - Both state-store adapters expose tenant-scoped schedule-record operations; PostgreSQL creates the `schedules` table through migration `003_schedules.sql`. `/v1/schedules` is still backed by the in-process `ScheduleManager` pending persistence wiring.
 - **Model-Agnostic Provider Layer (`packages/core/src/provider`)**:
   - Real `fetch` + `eventsource-parser` streaming SSE transport (`createHttpTransport`) for OpenAI-compatible `/chat/completions` and Anthropic `/messages` (`tool_use` content blocks), honoring `AbortSignal` cancellation and `Retry-After` headers.
   - Built-in capability profiles (`ModelProfile`), missing tool-call ID synthesis, malformed JSON argument repair, pythonic/XML text tool-call fallback parsing, and JSON schema validation.

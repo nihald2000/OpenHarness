@@ -248,6 +248,14 @@ export interface EventEnvelope {
   createdAt: number;
 }
 
+export interface EventBus {
+  publish(envelope: EventEnvelope): void;
+  subscribe(
+    filter: { tenantId?: string; sessionId?: string },
+    listener: (envelope: EventEnvelope) => void
+  ): () => void;
+}
+
 export interface StateStore {
   getSession(tenantId: string, sessionId: string): Promise<Session | null>;
   saveSession(tenantId: string, session: Session): Promise<void>;
@@ -276,7 +284,7 @@ export interface StateStore {
     tenantId: string,
     requestId: string,
     reply: PermissionReply
-  ): Promise<void>;
+  ): Promise<PermissionRequest | null>;
 
   saveCheckpointInfo(tenantId: string, sessionId: string, checkpoint: CheckpointInfo): Promise<void>;
   listCheckpoints(tenantId: string, sessionId: string): Promise<CheckpointInfo[]>;
@@ -293,6 +301,7 @@ export interface VerificationCheckResult {
   passed: boolean;
   exitCode: number;
   output: string;
+  durationMs?: number;
 }
 
 export interface VerificationResult {
@@ -311,9 +320,7 @@ export interface ReviewerResult {
 export interface EngineDeps {
   clock: Clock;
   stateStore: StateStore;
-  eventBus: {
-    publish(tenantId: string, sessionId: string, event: OpenHarnessEvent): Promise<void>;
-  };
+  eventBus: EventBus;
   provider: ProviderAdapter;
   toolRouter: ToolRouter;
   policyGate: PolicyGate;
@@ -335,6 +342,8 @@ export interface EngineDeps {
   /** Returns the cancellation signal for a run so in-flight model and tool calls can be interrupted. */
   signalFor?: (runId: string) => AbortSignal | undefined;
   ensureSandbox?: (state: RunState) => Promise<{ id: string; workspacePath: string }>;
+  onPauseSandbox?: (state: RunState) => Promise<{ snapshotId?: string } | void>;
+  onResumeSandbox?: (state: RunState) => Promise<{ sandboxHandleId: string }>;
   prepareAttachments?: (state: RunState, messages: Message[]) => Promise<Message[]>;
   onRunVerification?: (state: RunState) => Promise<VerificationResult>;
   onRunReviewer?: (state: RunState) => Promise<ReviewerResult>;

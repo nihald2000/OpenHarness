@@ -15,6 +15,7 @@ import {
   runStep,
 } from "../packages/core/src/agent/engine.ts";
 import { mapPhaseToSessionStatus } from "../packages/core/src/agent/phases.ts";
+import type { EngineDeps, EventBus, StateStore } from "../packages/core/src/agent/deps.ts";
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "oh-phase-a-"));
@@ -39,7 +40,7 @@ test("Phase A.2: mid-run restart resumes from last step checkpoint without re-ex
   let nonIdempotentExecCount = 0;
   let idempotentExecCount = 0;
 
-  const makeDeps = (store, bus) => ({
+  const makeDeps = (store: StateStore, bus: EventBus): EngineDeps => ({
     clock: {
       now: () => Date.now(),
       sleep: async () => {},
@@ -225,7 +226,7 @@ test("Phase A.2: mid-run restart resumes from last step checkpoint without re-ex
   // Verify SSE sequence IDs are strictly monotonic across restart with no gaps or duplicates
   const allEvents = await store2.listEventsAfter("default", 0, "sess-1");
   for (let i = 0; i < allEvents.length; i++) {
-    assert.equal(allEvents[i].seq, i + 1);
+    assert.equal(allEvents[i]!.seq, i + 1);
   }
   assert.ok(allEvents.length > seqBeforeRestart);
 });

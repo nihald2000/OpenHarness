@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createInitialRunState } from "../packages/core/src/agent/engine.ts";
 import { LayeredContextManager } from "../packages/core/src/context/index.ts";
+import type { Message } from "../packages/sdk/src/types.ts";
 
 test("Phase E Acceptance: scripted 300-step run with a 32K-context mock model completes without overflow; summary contains current feature, files, and next move; cleared tool outputs remain retrievable from disk; precomputed summary is used when available", async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "oh-phase-e-ws-"));
@@ -49,7 +50,7 @@ test("Phase E Acceptance: scripted 300-step run with a 32K-context mock model co
     },
   ];
 
-  let transcript = [
+  let transcript: Message[] = [
     {
       info: { id: "msg-u-0", role: "user" as const },
       createdAt: Date.now(),
@@ -123,9 +124,9 @@ test("Phase E Acceptance: scripted 300-step run with a 32K-context mock model co
   assert.ok(summaryMsg, "Expected compaction summary message in transcript");
   const compPart = summaryMsg.parts.find((p) => p.type === "compaction");
   assert.ok(compPart && compPart.type === "compaction");
-  assert.match(compPart.summary, /feat-auth-token/);
-  assert.match(compPart.summary, /src\/auth\/jwt\.ts/);
-  assert.match(compPart.summary, /Implement verifyJwt in src\/auth\/jwt\.ts/);
+  assert.match(compPart.summary ?? "", /feat-auth-token/);
+  assert.match(compPart.summary ?? "", /src\/auth\/jwt\.ts/);
+  assert.match(compPart.summary ?? "", /Implement verifyJwt in src\/auth\/jwt\.ts/);
 
   // Verify cleared tool outputs remain retrievable from disk (.openharness/outputs/<callId>.txt)
   const step1SpillFile = path.join(workspaceDir, ".openharness", "outputs", "call_step_1.txt");

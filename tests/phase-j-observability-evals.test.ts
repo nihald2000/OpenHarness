@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import type { GenAiSpanName } from "../packages/core/src/observability/otel.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -48,7 +49,7 @@ test("Phase J.1 & J.2 Acceptance: OpenTelemetry GenAI semantic spans (invoke_age
     "sandbox.exec",
     "verify.run",
     "compaction",
-  ]) {
+  ] as GenAiSpanName[]) {
     assert.ok(spanNames.includes(expectedName), `Missing OTel span: ${expectedName}`);
   }
   const chatSpan = tracer.spans.find((s) => s.name === "chat");
@@ -120,8 +121,8 @@ test("Phase J.3 & J.4 Acceptance: record/replay provider fixtures (OpenAI, Anthr
       ],
     });
     assert.equal(res.toolCalls.length, 1, `Expected 1 tool call for ${modelId}`);
-    assert.equal(res.toolCalls[0].name, "read_file");
-    assert.deepEqual(res.toolCalls[0].arguments, { path: "package.json" });
+    assert.equal(res.toolCalls[0]!.name, "read_file");
+    assert.deepEqual(res.toolCalls[0]!.arguments, { path: "package.json" });
   }
 
   // 1. 20-case smoke suite with k=3 trials and optional LLM judge

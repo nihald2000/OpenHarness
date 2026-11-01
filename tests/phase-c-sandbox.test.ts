@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { SandboxProviderId } from "../packages/core/src/sandbox/contracts.ts";
+import type { SandboxTelemetryEvent } from "../packages/sandboxd/src/server.ts";
 import {
   compileSandboxPolicy,
   getActiveSandboxDaemon,
@@ -33,10 +35,10 @@ test("Phase C Acceptance: on in-process daemon (docker/srt-local profiles), agen
   await localProvider.destroy(localHandle);
 
   // 2. Test both `srt-local` and `docker` providers
-  for (const providerId of ["srt-local", "docker"]) {
-    const violations = [];
-    const openedPorts = [];
-    const policySwitches = [];
+  for (const providerId of ["srt-local", "docker"] satisfies SandboxProviderId[]) {
+    const violations: SandboxTelemetryEvent[] = [];
+    const openedPorts: SandboxTelemetryEvent[] = [];
+    const policySwitches: Array<{ fromPhase: string; toPhase: string }> = [];
 
     const provider = new ManagedDaemonSandboxProvider(providerId, {
       secretValuesToRedact: ["ghp_supersecret1234567890abcdef"],
@@ -59,8 +61,8 @@ test("Phase C Acceptance: on in-process daemon (docker/srt-local profiles), agen
 
     // Setup phase switched to agent phase and recorded event
     assert.equal(policySwitches.length, 1);
-    assert.equal(policySwitches[0].fromPhase, "setup");
-    assert.equal(policySwitches[0].toPhase, "agent");
+    assert.equal(policySwitches[0]!.fromPhase, "setup");
+    assert.equal(policySwitches[0]!.toPhase, "agent");
 
     const daemon = getActiveSandboxDaemon(handle.id);
     assert.ok(daemon);
@@ -142,7 +144,7 @@ test("Phase C Acceptance: on in-process daemon (docker/srt-local profiles), agen
 
     const portsList = await daemon.handleRequest("GET", "/ports", authHeaders);
     assert.equal(portsList.status, 200);
-    assert.ok(portsList.body.ports.some((p) => p.port === 54321));
+    assert.ok((portsList.body.ports as Array<{ port: number }>).some((p) => p.port === 54321));
 
     // Navigate browser to the preview URL and snapshot accessibility tree
     const navRes = await daemon.handleRequest(

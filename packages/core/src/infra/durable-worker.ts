@@ -32,6 +32,7 @@ export class DurableWorker {
   private queue: JobQueue;
   private deps: EngineDeps;
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private abortControllers = new Map<string, AbortController>();
 
   constructor(queue: JobQueue, deps: EngineDeps, opts?: DurableWorkerOptions) {
     this.queue = queue;
@@ -39,6 +40,24 @@ export class DurableWorker {
     this.workerId = opts?.workerId ?? `worker-${process.pid}-${Math.random().toString(36).slice(2, 7)}`;
     this.leaseMs = opts?.leaseMs ?? 30_000;
     this.conversationIdleTtlSec = opts?.conversationIdleTtlSec ?? 300;
+  }
+
+  /** Returns the cancellation signal owned by this worker for an active run. */
+  signalFor(runId: string): AbortSignal | undefined {
+    return this.abortControllers.get(runId)?.signal;
+  }
+
+  /** Aborts an active run immediately. Persisting its cancelled status is handled by cancelRun. */
+  abortRun(runId: string): boolean {
+    const controller = this.abortControllers.get(runId);
+    if (!controller || controller.signal.aborted) return false;
+    controller.abort(Object.assign(new Error("Cancelled by user"), { code: "CANCELLED" }));
+    return true;
+  }
+
+  private async getTenantJob(tenantId: string, runId: string): Promise<JobRecord | null> {
+    const jobs = await this.queue.listJobs({ tenantId });
+    return jobs.filter((job) => job.runId === runId).sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
   }
 
   /**
@@ -64,9 +83,18 @@ export class DurableWorker {
     let job = await this.queue.getJob(jobId);
     if (!job) return { job: null, state: null, events: [] };
     if (job.status === "queued") {
-      const claimed = await this.queue.claim(this.workerId, this.leaseMs);
-      if (claimed && claimed.id === jobId) {
-        job = claimed;
+      const claimed = this.queue.claimById
+        ? await this.queue.claimById(jobId, this.workerId, this.leaseMs)
+        : await this.queue.claim(this.workerId, this.leaseMs);
+      if (claimed?.id === jobId) job = claimed;
+      else if (!this.queue.claimById && claimed) {
+        // Legacy queues can only claim the next job. Process that lease and
+        // retry the requested job afterwards rather than executing an unclaimed row.
+        await this.executeClaimedJob(claimed);
+        return this.executeJobById(jobId);
+      } else if (this.queue.claimById && !claimed) {
+        const current = await this.queue.getJob(jobId);
+        return { job: current, state: null, events: [] };
       }
     }
     return this.executeClaimedJob(job);
@@ -78,6 +106,8 @@ export class DurableWorker {
     events: OpenHarnessEvent[];
   }> {
     const allEvents: OpenHarnessEvent[] = [];
+    const controller = this.abortControllers.get(job.runId) ?? new AbortController();
+    this.abortControllers.set(job.runId, controller);
 
     // 1. Check if a step checkpoint exists in StateStore or on the job record (§3 A.2)
     const savedCheckpoint =
@@ -124,7 +154,12 @@ export class DurableWorker {
           break;
         }
 
-        const { state: nextState, events } = await runStep(state, this.deps);
+        const executionDeps: EngineDeps = {
+          ...this.deps,
+          signalFor: (runId) =>
+            runId === job.runId ? controller.signal : this.deps.signalFor?.(runId),
+        };
+        const { state: nextState, events } = await runStep(state, executionDeps);
         state = nextState;
         allEvents.push(...events);
 
@@ -138,6 +173,15 @@ export class DurableWorker {
       } else if (state.phase === "awaiting_input") {
         // Free the worker slot while waiting for a clarifying-question answer.
         await this.queue.moveToWaiting(job.id, this.workerId, job.fenceToken, "input");
+        // An answer can arrive after the checkpoint is saved but before the job
+        // transitions to waiting. Recheck after releasing the claim to avoid
+        // leaving an already answered run stranded in the input wait state.
+        const latest = await this.deps.stateStore.getStepCheckpoint(state.tenantId, state.runId);
+        if (latest && latest.state.phase !== "awaiting_input" && !isTerminalPhase(latest.state.phase)) {
+          if (await this.queue.resumeWaiting(job.id)) {
+            void this.executeJobById(job.id).catch(() => undefined);
+          }
+        }
       } else if (state.phase === "paused" || state.phase === "stuck") {
         await this.queue.moveToWaiting(job.id, this.workerId, job.fenceToken, "paused");
         this.scheduleSandboxIdleHibernation(state);
@@ -150,7 +194,7 @@ export class DurableWorker {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const aborted = this.deps.signalFor?.(state.runId)?.aborted === true;
+      const aborted = controller.signal.aborted || this.deps.signalFor?.(state.runId)?.aborted === true;
       state.phase = aborted ? "cancelled" : "failed";
       if (!aborted) state.error = message;
       if (aborted) state.pauseReason = "cancelled";
@@ -201,6 +245,7 @@ export class DurableWorker {
     }
 
     const updatedJob = (await this.queue.getJob(job.id)) ?? job;
+    if (this.abortControllers.get(job.runId) === controller) this.abortControllers.delete(job.runId);
     return { job: updatedJob, state, events: allEvents };
   }
 
@@ -229,7 +274,7 @@ export class DurableWorker {
       this.deps
     );
 
-    const job = await this.queue.getJobByRunId(runId);
+    const job = await this.getTenantJob(tenantId, runId);
     if (job) {
       await this.queue.resumeWaiting(job.id);
       const resumed = await this.executeJobById(job.id);
@@ -249,29 +294,60 @@ export class DurableWorker {
     tenantId: string,
     runId: string,
     answer: string
-  ): Promise<{ state: RunState | null; events: OpenHarnessEvent[] }> {
+  ): Promise<{ ok: boolean; error?: string }> {
     const cp = await this.deps.stateStore.getStepCheckpoint(tenantId, runId);
     if (!cp || !cp.state.pendingQuestion) {
-      return { state: cp?.state ?? null, events: [] };
+      return { ok: false, error: "No pending question for this run" };
+    }
+    let job = await this.getTenantJob(tenantId, runId);
+    // A v2/legacy run may also persist a core checkpoint, but it has no v1 job
+    // identity. Leave those runs to DurableRunWorker instead of claiming them.
+    if (!job && !cp.state.jobId) {
+      return { ok: false, error: "Run is not owned by the v1 job queue" };
+    }
+    // Do not race the worker's final awaiting_input checkpoint write. The
+    // engine persists the question first; the queue lease is released shortly
+    // afterwards. Wait for that release before applying the answer.
+    for (let attempt = 0; job?.status === "claimed" && attempt < 200; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      job = await this.getTenantJob(tenantId, runId);
+    }
+    if (job?.status === "claimed") {
+      return { ok: false, error: "Run is still saving its question pause; retry the answer shortly" };
     }
 
-    const { state: updatedState, events } = await applyQuestionAnswerToState(
+    const { state: updatedState } = await applyQuestionAnswerToState(
       cp.state,
       answer,
       this.deps
     );
 
-    const job = await this.queue.getJobByRunId(runId);
-    if (job) {
-      await this.queue.resumeWaiting(job.id);
-      const resumed = await this.executeJobById(job.id);
-      return {
-        state: resumed.state ?? updatedState,
-        events: [...events, ...resumed.events],
-      };
+    if (job && (job.status === "completed" || job.status === "failed" || job.status === "cancelled")) {
+      job = null;
     }
-
-    return { state: updatedState, events };
+    if (!job) {
+      job = await this.queue.enqueue({
+        id: `job_${runId}_resume_${Date.now()}`,
+        runId,
+        sessionId: updatedState.sessionId,
+        tenantId,
+        prompt: "",
+        agent: updatedState.agent,
+        model: updatedState.model,
+        mode: updatedState.mode,
+      });
+      updatedState.jobId = job.id;
+      await persistStepCheckpoint(this.deps, updatedState);
+    }
+    if (job.status === "waiting" || job.status === "paused") {
+      await this.queue.resumeWaiting(job.id);
+      void this.executeJobById(job.id).catch(() => undefined);
+    } else if (job.status === "queued") {
+      void this.executeJobById(job.id).catch(() => undefined);
+    }
+    // If another worker still owns the claim, it will observe the cleared
+    // pendingQuestion after moving the job to waiting and resume it above.
+    return { ok: true };
   }
 
   /**
@@ -287,7 +363,7 @@ export class DurableWorker {
     state.updatedAt = this.deps.clock.now();
     await persistStepCheckpoint(this.deps, state);
 
-    const job = await this.queue.getJobByRunId(runId);
+    const job = await this.getTenantJob(tenantId, runId);
     if (job && job.status === "claimed" && job.workerId) {
       await this.queue.moveToWaiting(job.id, job.workerId, job.fenceToken, "paused");
     }
@@ -363,7 +439,7 @@ export class DurableWorker {
     state.updatedAt = this.deps.clock.now();
     await persistStepCheckpoint(this.deps, state);
 
-    const job = await this.queue.getJobByRunId(runId);
+    const job = await this.getTenantJob(tenantId, runId);
     let events: OpenHarnessEvent[] = [];
     let finalState = state;
     if (job) {
@@ -378,8 +454,9 @@ export class DurableWorker {
   }
 
   async cancelRun(tenantId: string, runId: string): Promise<RunRecord | null> {
+    this.abortRun(runId);
     const cp = await this.deps.stateStore.getStepCheckpoint(tenantId, runId);
-    const job = await this.queue.getJobByRunId(runId);
+    const job = await this.getTenantJob(tenantId, runId);
     if (job) {
       await this.queue.cancel(job.id);
     }

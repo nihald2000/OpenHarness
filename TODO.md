@@ -33,3 +33,4 @@
   - [x] Delete `metadata.json` and update `README.md`, `TODO.md`, and `docs/*.md`.
 - [ ] **File attachment follow-up**: add focused integration coverage for tenant/session upload isolation, path traversal rejection, binary sandbox writes, image/PDF provider payloads, and browser file/folder selection; then mark the feature complete.
 - [ ] **Local runtime follow-up**: add focused coverage for daemon-backed workspace tools, filesystem boundaries, command approval/cancellation, and `osEnforced: false` health reporting before marking local task execution complete.
+- [ ] **Schedule persistence follow-up**: connect `/v1/schedules` CRUD and run history to tenant-scoped `StateStore` records; add PostgreSQL integration coverage before claiming multi-node scheduling.

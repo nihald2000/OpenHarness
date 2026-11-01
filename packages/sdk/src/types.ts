@@ -178,6 +178,7 @@ export type ToolCallState =
 export interface ToolPart {
   type: "tool";
   tool: string;
+  title?: string;
   callId: string;
   state: ToolCallState;
   input?: unknown;
@@ -199,6 +200,7 @@ export interface SkillPart {
   type: "skill";
   name: string;
   description?: string;
+  reason?: "trigger" | "agent";
 }
 
 export interface CompactionPart {
@@ -218,9 +220,14 @@ export interface CompactionPart {
 
 export interface VerifyPart {
   type: "verify";
+  name?: string;
   command?: string;
   passed?: boolean;
   exitCode?: number | null;
+  iteration?: number;
+  maxIterations?: number;
+  durationMs?: number;
+  output?: string;
   timedOut?: boolean;
   stdout?: string;
   stderr?: string;

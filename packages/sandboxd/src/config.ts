@@ -23,7 +23,7 @@ export function toSrtSettings(p: CompiledSandboxPolicy) {
       allowDomains: domains,
       allowedDomains: domains,
       denyDomains: [],
-      denyResolvedAddresses: p.network.denyResolvedAddresses,
+      denyResolvedAddresses: p.network.deniedResolvedAddresses,
       allowLocalBinding: true,
     },
     filesystem: {

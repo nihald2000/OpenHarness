@@ -189,8 +189,8 @@ test("Step 3 (R1): createHttpTransport handles OpenAI streaming SSE tool calls, 
     assert.equal(resOpenAi.toolCalls[0]!.id, "call_openai_1");
     assert.equal(resOpenAi.toolCalls[0]!.name, "read_file");
     assert.deepEqual(resOpenAi.toolCalls[0]!.arguments, { path: "src/index.ts" });
-    assert.equal(resOpenAi.usage.input, 120);
-    assert.equal(resOpenAi.usage.output, 30);
+    assert.equal(resOpenAi.usage!.input, 120);
+    assert.equal(resOpenAi.usage!.output, 30);
 
     // 2. Meta Llama 429 + Retry-After + missing tool call ID + trailing comma JSON
     const resLlama = await adapter.generateTurn({
@@ -203,7 +203,7 @@ test("Step 3 (R1): createHttpTransport handles OpenAI streaming SSE tool calls, 
     });
     assert.equal(llamaAttempts, 2);
     assert.equal(resLlama.toolCalls.length, 1);
-    assert.ok(resLlama.toolCalls[0]!.id.startsWith("call_run_http_2_"));
+    assert.ok(resLlama.toolCalls[0]!.id?.startsWith("call_run_http_2_"));
     assert.equal(resLlama.toolCalls[0]!.name, "list");
     assert.deepEqual(resLlama.toolCalls[0]!.arguments, { path: "src" });
 
@@ -239,9 +239,9 @@ test("Step 3 (R1): createHttpTransport handles OpenAI streaming SSE tool calls, 
       old_str: "x",
       new_str: "y",
     });
-    assert.equal(resAnthropic.usage.input, 210);
-    assert.equal(resAnthropic.usage.output, 45);
-    assert.equal(resAnthropic.usage.cacheRead, 150);
+    assert.equal(resAnthropic.usage!.input, 210);
+    assert.equal(resAnthropic.usage!.output, 45);
+    assert.equal(resAnthropic.usage!.cacheRead, 150);
 
     // 4. Cancellation via AbortSignal
     const abortCtrl = new AbortController();

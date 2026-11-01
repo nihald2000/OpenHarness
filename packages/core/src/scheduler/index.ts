@@ -1,5 +1,16 @@
-import type { RunMode, ScheduleInfo } from "@openharness/sdk";
+import type { RunMode, ScheduleRecord } from "@openharness/sdk";
 import { wrapUntrustedContent } from "../security/risk.ts";
+
+export interface ScheduleHistoryEntry {
+  runId: string;
+  sessionId: string;
+  startedAt: number;
+  status: "running" | "completed" | "failed";
+}
+
+export interface ScheduleInfo extends ScheduleRecord {
+  history: ScheduleHistoryEntry[];
+}
 
 export interface EnqueuedScheduledRun {
   runId: string;

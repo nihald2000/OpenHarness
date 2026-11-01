@@ -102,3 +102,97 @@ test("async session prompts register with DurableRunWorker and return 202", asyn
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("v1 durable worker answers a persisted question and resumes its queued job", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "oh-v1-question-resume-"));
+  const server = new OpenHarnessServer({ dataDir, workspaceRoot: dataDir, defaultModel: "mock/demo" });
+  let modelTurn = 0;
+  server.deps.provider.generateTurn = async () => {
+    modelTurn++;
+    return modelTurn === 1
+      ? {
+          text: "I need one detail.",
+          toolCalls: [{ id: "v1-ask", name: "ask_user", arguments: { question: "Which framework?" } }],
+        }
+      : { text: "React works.", toolCalls: [] };
+  };
+
+  try {
+    const created = await server.handleRequest("POST", "/v1/sessions", {}, { title: "V1 ask" });
+    const sessionId = (created.body as { id: string }).id;
+    const prompt = await server.handleRequest(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/prompt`,
+      {},
+      { text: "Start", mode: "ask" }
+    );
+    const runId = (prompt.body as { runId: string }).runId;
+    const checkpoint = await server.stateStore.getStepCheckpoint("default", runId);
+    assert.equal(checkpoint?.state.phase, "awaiting_input");
+    assert.equal((await server.jobQueue.getJobByRunId(runId))?.waitReason, "input");
+
+    const answered = await server.handleRequest(
+      "POST",
+      `/v1/runs/${encodeURIComponent(runId)}/answer`,
+      {},
+      { answer: "React" }
+    );
+    assert.equal(answered.status, 200);
+    assert.equal((answered.body as { answered: boolean }).answered, true);
+
+    for (let i = 0; i < 100; i++) {
+      const current = await server.stateStore.getStepCheckpoint("default", runId);
+      if (current?.state.phase === "completed" || current?.state.phase === "failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal((await server.stateStore.getStepCheckpoint("default", runId))?.state.phase, "completed");
+    assert.equal(modelTurn, 2);
+  } finally {
+    await server.stop();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("session abort signals the in-flight v1 model turn", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "oh-v1-abort-"));
+  const server = new OpenHarnessServer({ dataDir, workspaceRoot: dataDir, defaultModel: "mock/demo" });
+  let modelStarted!: () => void;
+  const started = new Promise<void>((resolve) => { modelStarted = resolve; });
+  let modelAborted = false;
+  server.deps.provider.generateTurn = async (req: any) => {
+    modelStarted();
+    return await new Promise((_resolve, reject) => {
+      if (req.signal?.aborted) {
+        modelAborted = true;
+        reject(req.signal.reason);
+        return;
+      }
+      req.signal?.addEventListener("abort", () => {
+        modelAborted = true;
+        reject(req.signal.reason);
+      }, { once: true });
+    });
+  };
+
+  try {
+    const created = await server.handleRequest("POST", "/v1/sessions", {}, { title: "Abort test" });
+    const sessionId = (created.body as { id: string }).id;
+    const promptPromise = server.handleRequest(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/prompt`,
+      {},
+      { text: "Wait", mode: "ask" }
+    );
+    await started;
+    const aborted = await server.handleRequest(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/abort`
+    );
+    assert.equal(aborted.status, 200);
+    await promptPromise;
+    assert.equal(modelAborted, true);
+  } finally {
+    await server.stop();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});

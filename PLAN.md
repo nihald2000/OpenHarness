@@ -44,6 +44,7 @@
 ### Phase H: Delegation, Parallelism, and Scheduling — Complete
 - Implemented `DelegationCoordinator` (`packages/core/src/agent/delegate.ts`) with permission intersection, bounded parallel read-only explorers (`maxParallel: 3`), isolated git-worktree parallel writers with conflict detection and post-merge verification, and durable background tasks (`delegate_status` / `delegate_result`).
 - Implemented `ScheduleManager` (`packages/core/src/scheduler/index.ts`) with `/v1/schedules` CRUD, concurrency-1 workspace locking, and tainted GitHub issue-to-PR workflows.
+- Completed tenant-scoped schedule storage methods in `StateStore`; local snapshots persist schedule records and PostgreSQL uses migration `003_schedules.sql`. The HTTP `ScheduleManager` remains process-local until its persistence lifecycle is wired through this adapter.
 
 ### Phase I: Checkpoints, Rewind, and Fork — Complete
 - Implemented `SessionCheckpointManager` (`packages/core/src/checkpoints/index.ts`), `POST /v1/sessions/:id/rewind` (`{ checkpoint, files: true, conversation: false }`), `POST /v1/sessions/:id/fork`, `oh session checkpoints|rewind|fork` CLI commands, and the Web UI `CheckpointsPopover` (`src/components/checkpoints-popover.tsx`).

@@ -14,8 +14,8 @@ test("Phase B Acceptance: Llama profile sends max_completion_tokens, omits paral
   assert.equal(profile.parallelToolCalls, "unsupported");
   assert.equal(profile.promptCaching, "none");
 
-  const capturedWirePayloads = [];
-  const retryEvents = [];
+  const capturedWirePayloads: any[] = [];
+  const retryEvents: Array<{ attempt: number; delayMs: number; reason: string }> = [];
   let callCounter = 0;
 
   // Recorded HTTP fixtures for turns 1..3 (with a 429 + Retry-After on turn 1 attempt 1)
@@ -34,9 +34,10 @@ test("Phase B Acceptance: Llama profile sends max_completion_tokens, omits paral
 
       // (d) First attempt returns HTTP 429 with Retry-After header
       if (callCounter === 1) {
-        const err = new Error("Rate limit exceeded");
-        err.status = 429;
-        err.headers = { "retry-after": "1" };
+        const err = Object.assign(new Error("Rate limit exceeded"), {
+          status: 429,
+          headers: { "retry-after": "1" },
+        });
         throw err;
       }
 
@@ -103,20 +104,20 @@ test("Phase B Acceptance: Llama profile sends max_completion_tokens, omits paral
   });
 
   // Verify wire payload uses max_completion_tokens and does NOT send max_tokens or parallel_tool_calls
-  assert.equal(capturedWirePayloads[0].max_completion_tokens, 2048);
-  assert.equal(capturedWirePayloads[0].max_tokens, undefined);
-  assert.equal(capturedWirePayloads[0].parallel_tool_calls, undefined);
+  assert.equal(capturedWirePayloads[0]!.max_completion_tokens, 2048);
+  assert.equal(capturedWirePayloads[0]!.max_tokens, undefined);
+  assert.equal(capturedWirePayloads[0]!.parallel_tool_calls, undefined);
 
   // Verify (d) 429 with Retry-After emitted run.retry with >= 1000ms delay and succeeded on retry
   assert.equal(retryEvents.length, 1);
-  assert.equal(retryEvents[0].attempt, 1);
-  assert.ok(retryEvents[0].delayMs >= 1000);
+  assert.equal(retryEvents[0]!.attempt, 1);
+  assert.ok(retryEvents[0]!.delayMs >= 1000);
 
   // Verify (a) stable ID synthesized and (b) trailing-comma + Python literal JSON repaired
   assert.equal(turn1.toolCalls.length, 1);
-  assert.equal(turn1.toolCalls[0].id, "call_run_llama_1_1");
-  assert.equal(turn1.toolCalls[0].name, "read_file");
-  assert.deepEqual(turn1.toolCalls[0].arguments, {
+  assert.equal(turn1.toolCalls[0]!.id, "call_run_llama_1_1");
+  assert.equal(turn1.toolCalls[0]!.name, "read_file");
+  assert.deepEqual(turn1.toolCalls[0]!.arguments, {
     path: "src/App.tsx",
     recursive: true,
   });
@@ -148,9 +149,9 @@ test("Phase B Acceptance: Llama profile sends max_completion_tokens, omits paral
 
   assert.equal(turn2.rawTextToolCall, true);
   assert.equal(turn2.toolCalls.length, 1);
-  assert.equal(turn2.toolCalls[0].id, "call_run_llama_1_1");
-  assert.equal(turn2.toolCalls[0].name, "search");
-  assert.deepEqual(turn2.toolCalls[0].arguments, {
+  assert.equal(turn2.toolCalls[0]!.id, "call_run_llama_1_1");
+  assert.equal(turn2.toolCalls[0]!.name, "search");
+  assert.deepEqual(turn2.toolCalls[0]!.arguments, {
     pattern: "useSession",
     maxResults: 10,
     caseSensitive: false,

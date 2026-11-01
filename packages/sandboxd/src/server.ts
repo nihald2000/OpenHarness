@@ -592,13 +592,13 @@ export class SandboxDaemon {
         });
       }, timeoutSec * 1000);
 
-      child.stdout.on("data", (chunk: Buffer) => {
+      child.stdout?.on("data", (chunk: Buffer) => {
         stdoutBuf += chunk.toString("utf8");
         session!.partialOutput = stdoutBuf + stderrBuf;
         resetIdleTimer();
       });
 
-      child.stderr.on("data", (chunk: Buffer) => {
+      child.stderr?.on("data", (chunk: Buffer) => {
         stderrBuf += chunk.toString("utf8");
         session!.partialOutput = stdoutBuf + stderrBuf;
         resetIdleTimer();
@@ -771,8 +771,8 @@ export class SandboxDaemon {
       });
     };
 
-    child.stdout.on("data", (c: Buffer) => onOutput("stdout", c));
-    child.stderr.on("data", (c: Buffer) => onOutput("stderr", c));
+    child.stdout?.on("data", (c: Buffer) => onOutput("stdout", c));
+    child.stderr?.on("data", (c: Buffer) => onOutput("stderr", c));
     child.on("close", () => {
       if (procState.status === "running") {
         procState.status = "exited";

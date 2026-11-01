@@ -141,8 +141,8 @@ test("Phase F Acceptance: on a sample repository with a 10-feature list, a long_
 
   assert.equal(summary2.featuresPassing.length, 9);
   assert.equal(summary2.featuresBlocked.length, 1);
-  assert.equal(summary2.featuresBlocked[0].id, "feat-4");
-  assert.match(summary2.featuresBlocked[0].reason, /No progress after 2 identical failure signatures/);
+  assert.equal(summary2.featuresBlocked[0]!.id, "feat-4");
+  assert.match(summary2.featuresBlocked[0]!.reason, /No progress after 2 identical failure signatures/);
 
   // Verify feature_list immutability guard rejects deleting features or model setting "passing"
   const immutCheck = validateModelFeatureListUpdate(state1.features, state1.features.slice(0, 5));

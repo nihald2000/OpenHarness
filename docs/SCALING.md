@@ -2,6 +2,8 @@
 
 OpenHarness separates the stateless HTTP/SSE API layer from durable worker execution and isolated sandbox runtimes (`oh-sandboxd`), while keeping zero-setup local development as the default.
 
+The adapter contract includes tenant-scoped schedule record storage. Migration `003_schedules.sql` adds the PostgreSQL table, and `LocalStateStore` stores records in its snapshot. This does not yet make the `/v1/schedules` manager durable: that route still uses process-local state, and PostgreSQL/Redis integration plus multi-node replay coverage remains required before distributed readiness can be claimed.
+
 ## Architecture Overview
 
 1. **Control Plane (`packages/server`, `packages/core`)**:

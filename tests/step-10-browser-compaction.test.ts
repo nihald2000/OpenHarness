@@ -94,5 +94,5 @@ test("Step 10 (F2, F3): /browser/* fails closed with 503 when requirePlaywright 
   const summaryMsg = prepared.messages[0]!;
   const compPart = summaryMsg.parts.find((p) => p.type === "compaction");
   assert.ok(compPart && compPart.type === "compaction");
-  assert.match(compPart.summary, /LLM_SUMMARY_MARKER/);
+  assert.match(compPart!.summary ?? "", /LLM_SUMMARY_MARKER/);
 });

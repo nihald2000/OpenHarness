@@ -5,6 +5,7 @@ import type {
   PermissionReply,
   PermissionRequest,
   RunRecord,
+  ScheduleRecord,
   Session,
 } from "@openharness/sdk";
 import type { EventEnvelope, StateStore, StepCheckpoint } from "../agent/deps.ts";
@@ -196,10 +197,10 @@ export class PostgresStateStore implements StateStore {
          state_json = EXCLUDED.state_json`,
       [
         checkpoint.runId,
-        checkpoint.step,
-        checkpoint.phase,
-        checkpoint.fenceToken,
-        checkpoint.state.sandboxId ?? null,
+        checkpoint.stepIndex,
+        checkpoint.state.phase,
+        0,
+        checkpoint.sandboxHandleId,
         JSON.stringify(checkpoint),
         Date.now(),
       ]
@@ -208,8 +209,11 @@ export class PostgresStateStore implements StateStore {
 
   async getStepCheckpoint(tenantId: string, runId: string): Promise<StepCheckpoint | null> {
     const res = await this.pool.query(
-      "SELECT state_json FROM run_steps WHERE run_id = $1 ORDER BY step DESC LIMIT 1",
-      [runId]
+      `SELECT rs.state_json FROM run_steps rs
+       JOIN runs r ON r.run_id = rs.run_id
+       WHERE rs.run_id = $1 AND r.tenant_id = $2
+       ORDER BY rs.step DESC LIMIT 1`,
+      [runId, tenantId]
     );
     if (res.rows.length === 0) return null;
     const cp = (typeof res.rows[0].state_json === "string"
@@ -253,6 +257,52 @@ export class PostgresStateStore implements StateStore {
     return (typeof res.rows[0].payload === "string"
       ? JSON.parse(res.rows[0].payload)
       : res.rows[0].payload) as RunRecord;
+  }
+
+  async listRuns(tenantId: string): Promise<RunRecord[]> {
+    const res = await this.pool.query(
+      "SELECT payload FROM runs WHERE tenant_id = $1 ORDER BY updated_at DESC",
+      [tenantId]
+    );
+    return res.rows.map((row) =>
+      (typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload) as RunRecord
+    );
+  }
+
+  async saveSchedule(tenantId: string, schedule: ScheduleRecord): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO schedules (schedule_id, tenant_id, payload, updated_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, schedule_id) DO UPDATE
+       SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`,
+      [schedule.id, tenantId, JSON.stringify(schedule), Date.now()]
+    );
+  }
+
+  async getSchedule(tenantId: string, id: string): Promise<ScheduleRecord | null> {
+    const res = await this.pool.query(
+      "SELECT payload FROM schedules WHERE tenant_id = $1 AND schedule_id = $2",
+      [tenantId, id]
+    );
+    if (res.rows.length === 0) return null;
+    return (typeof res.rows[0].payload === "string" ? JSON.parse(res.rows[0].payload) : res.rows[0].payload) as ScheduleRecord;
+  }
+
+  async listSchedules(tenantId: string): Promise<ScheduleRecord[]> {
+    const res = await this.pool.query(
+      "SELECT payload FROM schedules WHERE tenant_id = $1 ORDER BY updated_at DESC",
+      [tenantId]
+    );
+    return res.rows.map((row) =>
+      (typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload) as ScheduleRecord
+    );
+  }
+
+  async deleteSchedule(tenantId: string, id: string): Promise<void> {
+    await this.pool.query(
+      "DELETE FROM schedules WHERE tenant_id = $1 AND schedule_id = $2",
+      [tenantId, id]
+    );
   }
 
   async savePermissionRequest(tenantId: string, req: PermissionRequest): Promise<void> {

@@ -12,6 +12,8 @@ export type JobStatus =
   | "failed"
   | "cancelled";
 
+export type WaitReason = "permission" | "input" | "retry" | "quota" | "paused";
+
 export interface JobRecord {
   id: string;
   runId: string;
@@ -25,7 +27,7 @@ export interface JobRecord {
   workerId: string | null;
   fenceToken: number;
   leaseExpiresAt: number | null;
-  waitReason?: "permission" | "input" | "retry" | "quota" | "paused";
+  waitReason?: WaitReason;
   resumeAt?: number | null;
   checkpoint: StepCheckpoint | null;
   createdAt: number;
@@ -36,9 +38,10 @@ export interface JobRecord {
 export interface JobQueue {
   enqueue(job: Omit<JobRecord, "status" | "workerId" | "fenceToken" | "leaseExpiresAt" | "checkpoint" | "createdAt" | "updatedAt">): Promise<JobRecord>;
   claim(workerId: string, leaseMs?: number): Promise<JobRecord | null>;
+  claimById?(jobId: string, workerId: string, leaseMs?: number): Promise<JobRecord | null>;
   heartbeat(jobId: string, workerId: string, fenceToken: number, leaseMs?: number): Promise<boolean>;
   saveCheckpoint(jobId: string, workerId: string, fenceToken: number, checkpoint: StepCheckpoint): Promise<boolean>;
-  moveToWaiting(jobId: string, workerId: string, fenceToken: number, reason: "permission" | "input" | "retry" | "quota" | "paused", resumeAt?: number): Promise<boolean>;
+  moveToWaiting(jobId: string, workerId: string, fenceToken: number, reason: WaitReason, resumeAt?: number): Promise<boolean>;
   resumeWaiting(jobId: string): Promise<boolean>;
   complete(jobId: string, workerId: string, fenceToken: number): Promise<boolean>;
   fail(jobId: string, workerId: string, fenceToken: number, error: string): Promise<boolean>;
@@ -135,6 +138,20 @@ export class InProcessJobQueue implements JobQueue {
     return structuredClone(candidate);
   }
 
+  async claimById(jobId: string, workerId: string, leaseMs = 30_000): Promise<JobRecord | null> {
+    await this.reapExpiredLeases();
+    const job = this.jobs.get(jobId);
+    if (!job || job.status !== "queued") return null;
+    const now = Date.now();
+    job.status = "claimed";
+    job.workerId = workerId;
+    job.fenceToken += 1;
+    job.leaseExpiresAt = now + leaseMs;
+    job.updatedAt = now;
+    this.persistToDisk();
+    return structuredClone(job);
+  }
+
   async heartbeat(
     jobId: string,
     workerId: string,
@@ -172,7 +189,7 @@ export class InProcessJobQueue implements JobQueue {
     jobId: string,
     workerId: string,
     fenceToken: number,
-    reason: "permission" | "input" | "retry" | "quota" | "paused",
+    reason: WaitReason,
     resumeAt?: number
   ): Promise<boolean> {
     const job = this.jobs.get(jobId);
@@ -272,10 +289,9 @@ export class InProcessJobQueue implements JobQueue {
   }
 
   async getJobByRunId(runId: string): Promise<JobRecord | null> {
-    for (const job of this.jobs.values()) {
-      if (job.runId === runId) return structuredClone(job);
-    }
-    return null;
+    const matches = Array.from(this.jobs.values()).filter((job) => job.runId === runId);
+    const latest = matches.sort((a, b) => b.createdAt - a.createdAt)[0];
+    return latest ? structuredClone(latest) : null;
   }
 
   async listJobs(filter?: { tenantId?: string; status?: JobStatus }): Promise<JobRecord[]> {

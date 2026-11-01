@@ -7,6 +7,7 @@ import type {
   PermissionReply,
   PermissionRequest,
   RunRecord,
+  ScheduleRecord,
   Session,
 } from "@openharness/sdk";
 import type { EventBus, EventEnvelope, StateStore, StepCheckpoint } from "../agent/deps.ts";
@@ -22,6 +23,7 @@ export interface PersistedStateDocument {
   stepCheckpoints: Record<string, StepCheckpoint>;
   permissions: Record<string, PermissionRequest & { tenantId?: string; reply?: PermissionReply }>;
   checkpoints: Record<string, CheckpointInfo[]>;
+  schedules?: Record<string, ScheduleRecord & { tenantId?: string }>;
   sandboxes?: Record<string, any>;
   envImages?: Record<string, { imageId: string; expiresAt: number }>;
 }
@@ -98,6 +100,7 @@ export class LocalStateStore implements StateStore {
       stepCheckpoints: {},
       permissions: {},
       checkpoints: {},
+      schedules: {},
       sandboxes: {},
       envImages: {},
     };
@@ -114,6 +117,7 @@ export class LocalStateStore implements StateStore {
         empty.stepCheckpoints = parsed.stepCheckpoints ?? {};
         empty.permissions = parsed.permissions ?? {};
         empty.checkpoints = parsed.checkpoints ?? {};
+        empty.schedules = parsed.schedules ?? {};
         empty.sandboxes = parsed.sandboxes ?? {};
         empty.envImages = parsed.envImages ?? {};
       } catch {
@@ -311,6 +315,36 @@ export class LocalStateStore implements StateStore {
     if (!run) return null;
     if (run.tenantId && run.tenantId !== tenantId) return null;
     return structuredClone(run);
+  }
+
+  async listRuns(tenantId: string): Promise<RunRecord[]> {
+    return Object.values(this.doc.runs)
+      .filter((run) => !run.tenantId || run.tenantId === tenantId)
+      .map((run) => structuredClone(run));
+  }
+
+  async saveSchedule(tenantId: string, schedule: ScheduleRecord): Promise<void> {
+    this.doc.schedules ??= {};
+    this.doc.schedules[`${tenantId}:${schedule.id}`] = structuredClone({ ...schedule, tenantId });
+    this.persistToDisk(true);
+  }
+
+  async getSchedule(tenantId: string, id: string): Promise<ScheduleRecord | null> {
+    const record = this.doc.schedules?.[`${tenantId}:${id}`];
+    if (!record) return null;
+    const { tenantId: _tenantId, ...schedule } = record;
+    return structuredClone(schedule);
+  }
+
+  async listSchedules(tenantId: string): Promise<ScheduleRecord[]> {
+    return Object.values(this.doc.schedules ?? {})
+      .filter((record) => record.tenantId === tenantId)
+      .map(({ tenantId: _tenantId, ...schedule }) => structuredClone(schedule));
+  }
+
+  async deleteSchedule(tenantId: string, id: string): Promise<void> {
+    delete this.doc.schedules?.[`${tenantId}:${id}`];
+    this.persistToDisk(true);
   }
 
   async savePermissionRequest(tenantId: string, req: PermissionRequest): Promise<void> {

@@ -20,6 +20,7 @@ import {
 } from "../packages/core/src/index.ts";
 import { OpenHarnessServer } from "../packages/server/src/index.ts";
 import { runOhCli } from "../packages/cli/src/index.ts";
+import type { RunState } from "../packages/core/src/agent/deps.ts";
 
 test("§14 & §15 Acceptance: fail-closed configuration validation rejects unknown keys while accepting the full §14 config, and all §15 package layout modules exist", async () => {
   // 1. Validate exact §14 configuration structure
@@ -229,9 +230,10 @@ test("§13 Phase K CLI & §17 Final Acceptance Criterion #1: Meta Llama 4 Maveri
       httpAttempt += 1;
       // 1. First HTTP request hits a 429 rate limit with Retry-After
       if (httpAttempt === 1) {
-        const err = new Error("Llama API 429 Too Many Requests");
-        err.status = 429;
-        err.headers = { "retry-after-ms": "10" };
+        const err = Object.assign(new Error("Llama API 429 Too Many Requests"), {
+          status: 429,
+          headers: { "retry-after-ms": "10" },
+        });
         throw err;
       }
       // 2. Second request (Turn 1) publishes the plan via update_plan
@@ -338,7 +340,7 @@ test("§13 Phase K CLI & §17 Final Acceptance Criterion #1: Meta Llama 4 Maveri
       issues: [],
       tamperingDetected: false,
     }),
-    onCreateCheckpoint: async (state, message, automatic) => ({
+    onCreateCheckpoint: async (state: RunState, message: string, automatic: boolean) => ({
       sha: `cp_llama_${state.iteration}`,
       message,
       createdAt: Date.now(),

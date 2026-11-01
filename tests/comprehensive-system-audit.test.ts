@@ -34,6 +34,7 @@ import {
 import { EncryptedSecretStore, OpenHarnessServer } from "../packages/server/src/index.ts";
 import { runOhCli } from "../packages/cli/src/index.ts";
 import { applyEvent, latestPlan, planProgress } from "../packages/sdk/src/index.ts";
+import type { Message } from "../packages/sdk/src/index.ts";
 
 test("1. Security & Penetration Audit: path traversal, mandatory denies, SSRF/metadata IPs, shell sub-command injection, taint guard, AES-256-GCM secrets, and constant-time auth", async () => {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "oh-sec-audit-"));
@@ -261,26 +262,25 @@ test("3. Provider Fuzzing, Fallback Models & Rate Pacing Audit: malformed JSON s
 
   const c1 = parseTextToolCalls(hermesXml, advertised, "r1");
   assert.equal(c1.length, 1);
-  assert.equal(c1[0].name, "edit");
-  assert.equal(c1[0].arguments.path, "a.ts");
+  assert.equal(c1[0]!.name, "edit");
+  assert.equal(c1[0]!.arguments.path, "a.ts");
 
   const c2 = parseTextToolCalls(fnTag, advertised, "r1");
   assert.equal(c2.length, 1);
-  assert.equal(c2[0].name, "read_file");
+  assert.equal(c2[0]!.name, "read_file");
 
   const c3 = parseTextToolCalls(llamaPythonic, advertised, "r1");
   assert.equal(c3.length, 1, "Unadvertised tool must be ignored");
-  assert.equal(c3[0].name, "search");
-  assert.equal(c3[0].arguments.limit, 5);
+  assert.equal(c3[0]!.name, "search");
+  assert.equal(c3[0]!.arguments.limit, 5);
 
   // 3c. fallbackModels automatic model switch after consecutive overloaded 503 errors
-  const switchedModels = [];
+  const switchedModels: Array<{ from: string; to: string }> = [];
   const retryRes = await executeWithRetryAndFallback(
     "primary-model",
     async (modelId) => {
       if (modelId === "primary-model") {
-        const err = new Error("Service Unavailable Overloaded");
-        err.status = 503;
+        const err = Object.assign(new Error("Service Unavailable Overloaded"), { status: 503 });
         throw err;
       }
       return `Success from ${modelId}`;
@@ -368,7 +368,7 @@ test("4. Context Overflow Shrink Cascade, Hard Reset, Anthropic Cache Breakpoint
   assert.ok(shrunk.length >= 1);
 
   // 4c. SDK helper functions (`applyEvent`, `latestPlan`, `planProgress`)
-  let msgs = [];
+  let msgs: Message[] = [];
   msgs = applyEvent(msgs, {
     type: "message.updated",
     sessionId: "s1",

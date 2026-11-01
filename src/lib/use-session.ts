@@ -32,15 +32,15 @@ function deriveInitialFixState(
       if (session.status === "verifying") {
         return {
           phase: "verifying",
-          iteration: lastVerify.iteration,
-          maxIterations: lastVerify.maxIterations,
+          iteration: lastVerify.iteration ?? 0,
+          maxIterations: lastVerify.maxIterations ?? 0,
         };
       }
       if (session.status === "running" && !lastVerify.passed) {
         return {
           phase: "fixing",
-          iteration: lastVerify.iteration,
-          maxIterations: lastVerify.maxIterations,
+          iteration: lastVerify.iteration ?? 0,
+          maxIterations: lastVerify.maxIterations ?? 0,
         };
       }
     }

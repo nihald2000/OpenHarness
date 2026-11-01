@@ -75,7 +75,7 @@ export class LayeredContextManager implements ContextManager {
       if (part.type === "text" || part.type === "reasoning") {
         chars += part.text.length;
       } else if (part.type === "compaction") {
-        chars += part.summary.length;
+        chars += (part.summary ?? "").length;
       } else if (part.type === "tool") {
         chars +=
           part.tool.length +
@@ -431,7 +431,7 @@ export class LayeredContextManager implements ContextManager {
             if (decisions.length < 8 && !decisions.includes(d)) decisions.push(d);
           }
           // Preserve file paths mentioned in earlier compaction summaries
-          const fileMatches = p.summary.match(/\b[A-Za-z0-9_./-]+\.(?:ts|tsx|js|py|json|md)\b/g);
+          const fileMatches = (p.summary ?? "").match(/\b[A-Za-z0-9_./-]+\.(?:ts|tsx|js|py|json|md)\b/g);
           for (const fm of fileMatches ?? []) {
             if (filesSet.size < 15) filesSet.add(fm);
           }

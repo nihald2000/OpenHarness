@@ -55,9 +55,12 @@ export class HttpOpenHarnessClient {
       typeof import.meta !== "undefined" && (import.meta as any).env
         ? ((import.meta as any).env.VITE_OH_ACCESS_KEY as string | undefined)
         : undefined;
+    const browserWindow = (globalThis as typeof globalThis & {
+      window?: { localStorage?: { getItem(key: string): string | null } };
+    }).window;
     const storedKey =
-      typeof window !== "undefined" && window.localStorage
-        ? window.localStorage.getItem("oh_access_key") ?? undefined
+      browserWindow?.localStorage
+        ? browserWindow.localStorage.getItem("oh_access_key") ?? undefined
         : undefined;
     this.base = (opts.baseUrl ?? envUrl ?? "").replace(/\/$/, "");
     this.token = opts.token;

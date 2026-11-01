@@ -179,7 +179,7 @@ export class StuckDetector {
             stuck: true,
             detector: "alternating_ab",
             count: altWindow,
-            message: `Detected alternating A-B-A-B-A-B loop between "${tailAlt[0].action}" and "${tailAlt[1].action}". Break out of the cycle.`,
+            message: `Detected alternating A-B-A-B-A-B loop between "${tailAlt[0]!.action}" and "${tailAlt[1]!.action}". Break out of the cycle.`,
           };
         }
       }

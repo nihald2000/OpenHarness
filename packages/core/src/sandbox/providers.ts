@@ -265,7 +265,12 @@ export class ManagedDaemonSandboxProvider implements SandboxProvider {
     const agentPort = 30000 + Math.floor(Math.random() * 9999);
     const transport: DaemonTransport = {
       request: async (method, route, body) =>
-        daemon.handleRequest(method, route, { "x-session-key": sessionKey }, body),
+        daemon.handleRequest(
+          method,
+          route,
+          { "x-session-key": sessionKey },
+          body as Record<string, unknown> | undefined
+        ),
     };
     return {
       id: handleId,
