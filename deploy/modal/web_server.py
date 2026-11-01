@@ -59,9 +59,6 @@ def server():
         # in this deployment. Use the public control-plane endpoint so the JS
         # SDK authenticates with MODAL_TOKEN_ID / MODAL_TOKEN_SECRET.
         "MODAL_SERVER_URL": "https://api.modal.com:443",
-        # Keep ordinary web conversations on the model path until a sandbox
-        # runtime is explicitly selected for a Code run.
-        "OPENHARNESS_WEB_DISABLE_SANDBOX": "1",
         # Give each anonymous browser a signed, isolated tenant cookie; admin
         # routes still require the separate administrator session.
         "OPENHARNESS_WEB_GUEST": "1",

@@ -60,7 +60,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   const [compacting, setCompacting] = useState(false);
   const [stickTrigger, setStickTrigger] = useState(0);
 
-  const [runMode, setRunMode] = useState<"task" | "ask">("ask");
+  const [runMode, setRunMode] = useState<"task" | "ask">("task");
   const [pendingQuestion, setPendingQuestion] = useState<{
     runId: string;
     questionId: string;
@@ -177,12 +177,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     sessionModelConfigured && models.some((model) => model.id === selectedModel);
   const selectedRuntime = session?.runtime ?? draft.runtime ?? defaultRuntime;
   const selectedRuntimeInfo = runtimes.find((runtime) => runtime.id === selectedRuntime);
-  const runtimeReady =
-    runMode === "ask" ||
-    Boolean(
-      selectedRuntimeInfo?.active &&
-        selectedRuntimeInfo.capabilities?.osEnforced
-    );
+  const runtimeReady = runMode === "ask" || Boolean(selectedRuntimeInfo?.active);
 
   useEffect(() => {
     setActiveSessionId(sessionId ?? null);

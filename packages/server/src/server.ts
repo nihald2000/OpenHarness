@@ -256,8 +256,9 @@ export class OpenHarnessServer {
     return this.secretStore.getProviderApiKey("meta");
   }
 
-  private getDefaultModel(): string | undefined {
-    const configured = this.readUserSettings().model ?? this.config.defaultModel;
+  private getDefaultModel(): string {
+    const saved = this.readUserSettings().model;
+    const configured = (saved && saved !== "muse-wonder-1.0" ? saved : undefined) ?? this.config.defaultModel;
     if (configured) return configured;
     return this.getMetaApiKey() ? process.env.OPENHARNESS_MODEL ?? "muse-spark-1.3" : "mock/demo";
   }
