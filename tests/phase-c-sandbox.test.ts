@@ -12,7 +12,7 @@ import {
   ManagedDaemonSandboxProvider,
 } from "../packages/core/src/sandbox/index.ts";
 
-test("Phase C Acceptance: on in-process daemon (docker/srt-local profiles), agent cannot read ~/.ssh, cannot write outside /workspace, /tmp, /memories, cannot modify .git/hooks, and cannot reach non-allowlisted domains or 169.254.169.254; each yields sandbox.violation and tool error; processes publish preview URLs; pause/resume preserves files and shell state", async () => {
+test("Phase C Acceptance: on in-process daemon (docker/srt-local profiles), agent cannot read ~/.ssh, cannot write outside /workspace, /tmp, /memories, cannot modify .git/hooks, and cannot reach non-allowlisted domains or 169.254.169.254; each yields sandbox.violation and tool error; processes publish preview URLs; pause/resume preserves files and shell state", async (t) => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "oh-phase-c-ws-"));
 
   // 1. Verify `local` is an in-process workspace runtime with no claimed OS-level enforcement
@@ -58,6 +58,7 @@ test("Phase C Acceptance: on in-process daemon (docker/srt-local profiles), agen
       policy: basePolicy,
       setupCommands: ["echo 'setup complete' > setup.txt"],
     });
+    t.after(async () => { await provider.destroy(handle); });
 
     // Setup phase switched to agent phase and recorded event
     assert.equal(policySwitches.length, 1);
@@ -178,7 +179,8 @@ test("Phase C Acceptance: on in-process daemon (docker/srt-local profiles), agen
     );
     assert.equal(afterResumeShell.status, 200);
     assert.equal(afterResumeShell.body.output, "persisted_val");
-    assert.ok(String(afterResumeShell.body.cwd).endsWith("/subdir"));
+    const resumedCwd = String(afterResumeShell.body.cwd).replace(/\\/g, "/");
+    assert.ok(resumedCwd.endsWith("/subdir"), `Unexpected shell cwd after resume: ${resumedCwd}`);
 
     const snap = await provider.snapshot(handle);
     assert.ok(snap.id);

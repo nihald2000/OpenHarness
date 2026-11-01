@@ -129,7 +129,7 @@ test("Phase D Acceptance: in an in-process daemon sandbox, agent sets up a Node 
     "bash",
     {
       command:
-        "node --input-type=module -e \"import { add } from './math.js'; if (add(2, 3) !== 5) process.exit(1); console.log('NODE_TESTS_PASSED');\" && python3 test_all.py",
+        `node --input-type=module -e "import { add } from './math.js'; if (add(2, 3) !== 5) process.exit(1); console.log('NODE_TESTS_PASSED');" && ${process.platform === "win32" ? "python" : "python3"} test_all.py`,
     },
     ctx
   );

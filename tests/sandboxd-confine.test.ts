@@ -122,12 +122,17 @@ test("Step 6 (S2, S3, S10): spawnConfined scrubs secret env vars from shell and 
       }
     );
     assert.equal(bgRes.status, 200);
-    await new Promise((r) => setTimeout(r, 150));
-    const logsRes = await daemon.handleRequest(
-      "GET",
-      `/processes/${String(bgRes.body.id)}/logs`,
-      { "x-session-key": "key_env" }
-    );
+    let logsRes: Awaited<ReturnType<typeof daemon.handleRequest>> | undefined;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise((r) => setTimeout(r, 100));
+      logsRes = await daemon.handleRequest(
+        "GET",
+        `/processes/${String(bgRes.body.id)}/logs`,
+        { "x-session-key": "key_env" }
+      );
+      if (/BG_OPENAI=EMPTY;BG_MODAL=EMPTY/.test(String(logsRes.body.logs))) break;
+    }
+    assert.ok(logsRes);
     assert.match(String(logsRes.body.logs), /BG_OPENAI=EMPTY;BG_MODAL=EMPTY/);
 
     // 5. Idempotency via x-oh-request-id: retried POST runs command only once
@@ -157,6 +162,15 @@ test("Step 6 (S2, S3, S10): spawnConfined scrubs secret env vars from shell and 
     delete process.env.OH_SESSION_KEY;
     delete process.env.MODAL_TOKEN_SECRET;
     delete process.env.GITHUB_TOKEN;
-    fs.rmSync(base, { recursive: true, force: true });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+        break;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (process.platform !== "win32" || !["EBUSY", "EPERM"].includes(code ?? "") || attempt >= 20) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
   }
 });

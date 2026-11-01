@@ -206,5 +206,5 @@ test("Step 8 (R4, R5, S3, S4, S8): task run on local uses the in-process daemon;
     { checkpoint: preWriteCp.sha, files: true }
   );
   assert.equal(rewindValid.status, 200);
-  assert.equal(fs.readFileSync(path.join(workspaceDir, "app.txt"), "utf8"), "initial-v1\n");
+  assert.equal(fs.readFileSync(path.join(workspaceDir, "app.txt"), "utf8").replace(/\r\n/g, "\n"), "initial-v1\n");
 });

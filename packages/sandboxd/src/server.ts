@@ -9,6 +9,7 @@ import {
   assertEnforcementAvailable,
   isSrtInstalled,
   killConfinedProcessGroup,
+  pythonExecutable,
   spawnConfined,
   spawnConfinedArgv,
   writeSrtSettings,
@@ -504,7 +505,7 @@ export class SandboxDaemon {
     if (!session) {
       session = {
         sid,
-        cwd: this.config.workspacePath,
+        cwd: normalizeShellCwd(this.config.workspacePath),
         env: {
           HOME: this.config.workspacePath,
         },
@@ -613,14 +614,25 @@ export class SandboxDaemon {
         settled = true;
 
         let exitCode = code ?? 0;
-        const markerRegex = new RegExp(`${marker}:([^:\\n]+):(\\d+)\\s*$`);
+        const markerRegex = new RegExp(`${marker}:(.+):(\\d+)\\s*$`);
         const m = stdoutBuf.match(markerRegex);
         if (m) {
-          const newCwd = m[1]!.trim();
+          const newCwd = normalizeShellCwd(m[1]!.trim());
           exitCode = Number.parseInt(m[2]!, 10);
           stdoutBuf = stdoutBuf.replace(markerRegex, "");
           if (fs.existsSync(newCwd)) {
             session!.cwd = newCwd;
+          }
+        }
+        if (process.platform === "win32") {
+          const cdCommands = [...command.matchAll(/(?:^|&&|;)\s*cd\s+(?:"([^"]*)"|'([^']*)'|([^\s;&]+))/g)];
+          const lastCd = cdCommands.at(-1);
+          const target = lastCd?.[1] ?? lastCd?.[2] ?? lastCd?.[3];
+          if (target) {
+            const candidate = normalizeShellCwd(path.resolve(session!.cwd, normalizeShellCwd(target)));
+            const relative = path.relative(path.resolve(this.config.workspacePath), candidate);
+            const insideWorkspace = relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+            if (insideWorkspace && fs.existsSync(candidate)) session!.cwd = candidate;
           }
         }
 
@@ -893,7 +905,7 @@ export class SandboxDaemon {
         diagnostics.push((check.stderr || check.stdout || "JS syntax error").trim());
       }
     } else if (ext === ".py") {
-      const check = spawnConfinedArgv(["python3", "-m", "py_compile", resolvedPath], this.config.workspacePath);
+      const check = spawnConfinedArgv([pythonExecutable(), "-m", "py_compile", resolvedPath], this.config.workspacePath);
       if (check.status !== 0) {
         diagnostics.push((check.stderr || check.stdout || "Python syntax error").trim());
       }
@@ -1331,6 +1343,8 @@ export class SandboxDaemon {
       GIT_COMMITTER_EMAIL: "checkpoint@openharness.dev",
     };
     const baseArgs = [
+      "-c",
+      "core.autocrlf=false",
       `--git-dir=${this.config.shadowGitDir}`,
       `--work-tree=${this.config.workspacePath}`,
     ];
@@ -1412,6 +1426,10 @@ export class SandboxDaemon {
     payload: Record<string, unknown>
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const sha = String(payload.sha ?? "HEAD");
+    const verified = this.runShadowGit(["rev-parse", "--verify", `${sha}^{commit}`]);
+    if (verified.status !== 0 || !verified.stdout) {
+      return { status: 404, body: { error: "Checkpoint commit not found." } };
+    }
     const paths = Array.isArray(payload.paths) ? payload.paths.map(String) : [];
     if (paths.length > 0) {
       this.runShadowGit(["checkout", sha, "--", ...paths]);
@@ -1550,7 +1568,7 @@ export class SandboxDaemon {
     payload: Record<string, unknown>
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const code = String(payload.code ?? "");
-    const res = spawnConfinedArgv(["python3", "-c", code], this.config.workspacePath, {}, 30_000);
+    const res = spawnConfinedArgv([pythonExecutable(), "-c", code], this.config.workspacePath, {}, 30_000);
     return {
       status: 200,
       body: {
@@ -1601,12 +1619,20 @@ export class SandboxDaemon {
 
   async close(): Promise<void> {
     await this.browserBridge.close().catch(() => {});
+    const children = new Set<ChildProcess>();
     for (const proc of this.processes.values()) {
-      killConfinedProcessGroup(proc.child, "SIGTERM");
+      if (proc.child) children.add(proc.child);
+      killConfinedProcessGroup(proc.child, "SIGKILL");
     }
     for (const s of this.shellSessions.values()) {
-      killConfinedProcessGroup(s.runningChild, "SIGTERM");
+      if (s.runningChild) children.add(s.runningChild);
+      killConfinedProcessGroup(s.runningChild, "SIGKILL");
     }
+    await Promise.all([...children].map((child) => new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) return resolve();
+      const timer = setTimeout(resolve, 2000);
+      child.once("close", () => { clearTimeout(timer); resolve(); });
+    })));
     if (this.httpServer) {
       await new Promise<void>((r) => this.httpServer!.close(() => r()));
       this.httpServer = undefined;
@@ -1830,4 +1856,12 @@ function extractAccessibilityHandles(
   }
 
   return elements;
+}
+
+function normalizeShellCwd(value: string): string {
+  const normalized = value.replace(/\\/g, "/");
+  if (process.platform !== "win32") return normalized;
+  const msysPath = normalized.match(/^\/([a-z])(?:\/(.*))?$/i);
+  if (msysPath) return `${msysPath[1]!.toUpperCase()}:/${msysPath[2] ?? ""}`;
+  return normalized;
 }

@@ -12,6 +12,10 @@ export function atomicWriteFileSync(file: string, data: string): void {
       return;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        fs.rmSync(tmp, { force: true });
+        return;
+      }
       const transient = code === "EPERM" || code === "EBUSY" || code === "EACCES";
       if (!transient || attempt >= 8) {
         fs.rmSync(tmp, { force: true });

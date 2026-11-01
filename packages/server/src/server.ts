@@ -33,6 +33,7 @@ import {
   LocalStateStore,
   ModalSandboxProvider,
   ModalSdkApi,
+  McpClientManager,
   ModelAgnosticProviderAdapter,
   createHttpTransport,
   ProviderHttpError,
@@ -40,6 +41,7 @@ import {
   RiskPolicyGate,
   ScheduleManager,
   SessionCheckpointManager,
+  SkillsRegistry,
   SrtLocalSandboxProvider,
   StandardToolRouter,
   validateOpenHarnessConfig,
@@ -213,6 +215,8 @@ export class OpenHarnessServer {
   readonly secretStore: EncryptedSecretStore;
   readonly attachments: AttachmentStore;
   readonly checkpointManager: SessionCheckpointManager;
+  readonly skillsRegistry: SkillsRegistry;
+  readonly mcpManager: McpClientManager;
   readonly scheduleManager: ScheduleManager;
   readonly sessions: CookieSessionStore;
   readonly oidc?: OidcVerifier;
@@ -255,7 +259,7 @@ export class OpenHarnessServer {
   private getDefaultModel(): string | undefined {
     const configured = this.readUserSettings().model ?? this.config.defaultModel;
     if (configured) return configured;
-    return this.getMetaApiKey() ? process.env.OPENHARNESS_MODEL ?? "muse-spark-1.3" : undefined;
+    return this.getMetaApiKey() ? process.env.OPENHARNESS_MODEL ?? "muse-spark-1.3" : "mock/demo";
   }
 
   private getDefaultBaseUrl(): string {
@@ -283,6 +287,12 @@ export class OpenHarnessServer {
     this.secretStore = new EncryptedSecretStore({ dataDir });
     this.attachments = new AttachmentStore(dataDir);
     this.checkpointManager = new SessionCheckpointManager(this.stateStore);
+    this.skillsRegistry = new SkillsRegistry({ workspaceRoot, dataDir });
+    this.mcpManager = new McpClientManager({
+      workspaceRoot,
+      dataDir,
+      resolveSecret: (name) => this.secretStore.getDecrypted(name) ?? process.env[name],
+    });
     this.sandboxRecords = new FileSandboxRecordStore(dataDir);
     const cookieSecret =
       process.env.OPENHARNESS_WEB_GUEST_SECRET ??
@@ -296,14 +306,7 @@ export class OpenHarnessServer {
     }
     this.settingsPath = path.join(dataDir, "settings.json");
     const savedDefaultRuntime = this.readUserSettings().defaultRuntime;
-    const webSandboxDisabled =
-      this.config.loopback === false &&
-      process.env.OPENHARNESS_WEB_DISABLE_SANDBOX === "1";
-    this.defaultRuntime = webSandboxDisabled
-      ? ""
-      : savedDefaultRuntime ??
-        this.config.defaultRuntime ??
-        (this.config.loopback === false ? "" : "local");
+    this.defaultRuntime = savedDefaultRuntime ?? this.config.defaultRuntime ?? "local";
 
     this.providers =
       this.config.providers ??
@@ -351,6 +354,9 @@ export class OpenHarnessServer {
     let emitRef: ((tenantId: string, sessionId: string, ev: OpenHarnessEvent) => Promise<void>) | null = null;
     const toolRouter: StandardToolRouter = new StandardToolRouter({
       workspaceRoot,
+      dataDir,
+      skillsRegistry: this.skillsRegistry,
+      mcpManager: this.mcpManager,
       sandboxEnabled: Boolean(this.config.osEnforcedSandbox),
       ensureSandbox: (s) => hooksRef!.ensureSandbox(s),
       onSandboxStop: async (toolCtx) => {
@@ -754,6 +760,13 @@ export class OpenHarnessServer {
       clearInterval(this.sweepInterval);
       this.sweepInterval = undefined;
     }
+    for (const handle of this.activeSandboxes.values()) {
+      const provider = this.providers.get(handle.providerId);
+      try { await provider?.destroy(handle); } catch { /* Continue shutting down other handles. */ }
+    }
+    this.activeSandboxes.clear();
+    await this.mcpManager.close();
+    (this.stateStore as { close?: () => void }).close?.();
   }
 
   getAdminTokenPath(): string | undefined {
@@ -1172,11 +1185,32 @@ export class OpenHarnessServer {
     }
 
     if (method === "GET" && pathname === "/v1/skills") {
-      return { status: 200, body: [] };
+      return { status: 200, body: this.skillsRegistry.listSkills() };
+    }
+
+    if (method === "POST" && pathname === "/v1/skills") {
+      try {
+        if (typeof body?.url === "string" && body.url.trim()) {
+          return { status: 201, body: await this.skillsRegistry.importSkillFromUrl(body.url.trim(), typeof body.id === "string" ? body.id : undefined) };
+        }
+        if (typeof body?.content !== "string" || !body.content.trim()) return { status: 400, body: { error: "Provide skill Markdown content or a URL." } };
+        const name = typeof body.name === "string" && body.name.trim() ? body.name : typeof body.id === "string" ? body.id : "";
+        if (!name) return { status: 400, body: { error: "A skill name is required." } };
+        const skill = this.skillsRegistry.saveSkill({
+          id: typeof body.id === "string" ? body.id : name,
+          name,
+          description: typeof body.description === "string" ? body.description : undefined,
+          triggers: Array.isArray(body.triggers) ? body.triggers.map(String) : undefined,
+          content: body.content,
+        });
+        return { status: 201, body: skill };
+      } catch (error) {
+        return { status: 400, body: { error: error instanceof Error ? error.message : "Unable to import skill." } };
+      }
     }
 
     if (method === "GET" && pathname === "/v1/mcp") {
-      return { status: 200, body: [] };
+      return { status: 200, body: this.mcpManager.listPublicServers() };
     }
 
     if (method === "GET" && pathname === "/v1/tools") {
@@ -1255,7 +1289,7 @@ export class OpenHarnessServer {
           this.defaultRuntime =
             typeof cfg.defaultRuntime === "string"
               ? cfg.defaultRuntime
-              : this.config.defaultRuntime ?? (this.config.loopback === false ? "" : "local");
+              : this.config.defaultRuntime ?? "local";
         }
         this.writeUserSettings(cfg);
       }
@@ -1263,11 +1297,49 @@ export class OpenHarnessServer {
     }
 
     if (method === "GET" && pathname === "/v1/admin/mcp") {
-      return { status: 200, body: [] };
+      return { status: 200, body: this.mcpManager.listAdminServers() };
     }
 
     if (method === "GET" && pathname === "/v1/admin/mcp/presets") {
-      return { status: 200, body: [] };
+      return { status: 200, body: this.mcpManager.listPresets() };
+    }
+
+    const mcpPresetMatch = pathname.match(/^\/v1\/admin\/mcp\/presets\/([^/]+)$/);
+    if (method === "POST" && mcpPresetMatch) {
+      try {
+        return { status: 201, body: await this.mcpManager.installPreset(decodeURIComponent(mcpPresetMatch[1]!), body ?? {}) };
+      } catch (error) {
+        return { status: 400, body: { error: error instanceof Error ? error.message : "Unable to install MCP preset." } };
+      }
+    }
+
+    const mcpReconnectMatch = pathname.match(/^\/v1\/admin\/mcp\/([^/]+)\/reconnect$/);
+    if (method === "POST" && mcpReconnectMatch) {
+      try {
+        return { status: 200, body: await this.mcpManager.saveAndConnectServer(decodeURIComponent(mcpReconnectMatch[1]!), { enabled: true }) };
+      } catch (error) {
+        return { status: 400, body: { error: error instanceof Error ? error.message : "Unable to reconnect MCP server." } };
+      }
+    }
+
+    const mcpServerMatch = pathname.match(/^\/v1\/admin\/mcp\/([^/]+)$/);
+    if (mcpServerMatch) {
+      const name = decodeURIComponent(mcpServerMatch[1]!);
+      if (method === "PUT" || method === "PATCH") {
+        try {
+          return { status: 200, body: await this.mcpManager.saveAndConnectServer(name, body ?? {}) };
+        } catch (error) {
+          return { status: 400, body: { error: error instanceof Error ? error.message : "Unable to save MCP server." } };
+        }
+      }
+      if (method === "DELETE") {
+        try {
+          await this.mcpManager.removeServer(name);
+          return { status: 204, body: {} };
+        } catch (error) {
+          return { status: 400, body: { error: error instanceof Error ? error.message : "Unable to remove MCP server." } };
+        }
+      }
     }
 
     if (method === "GET" && pathname === "/v1/models") {
@@ -1339,12 +1411,6 @@ export class OpenHarnessServer {
         return {
           status: 400,
           body: { error: "Configure a model provider and choose a model in Settings before starting a chat." },
-        };
-      }
-      if (selectedModel.startsWith("mock/") && this.config.loopback === false) {
-        return {
-          status: 400,
-          body: { error: "Mock models are available only for local development and evaluation." },
         };
       }
       const id = `sess_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;

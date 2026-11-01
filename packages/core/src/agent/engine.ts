@@ -1151,7 +1151,7 @@ export async function runStep(
     }
 
     // If in planning phase and a plan was published, transition to building (or pause if approval required)
-    if (state.phase === "planning" && state.plan) {
+    if (state.phase === "planning" && (state.plan || state.todos.length > 0 || state.agent !== "plan")) {
       if (state.agent === "plan") {
         assistantMsg.completedAt = deps.clock.now();
         await deps.stateStore.saveMessage(state.tenantId, state.sessionId, assistantMsg);

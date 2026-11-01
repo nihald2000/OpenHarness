@@ -20,7 +20,14 @@ test("Step 2 (S1): resolveInside, fallback tools, and SandboxDaemon block .., ..
   fs.writeFileSync(outsideFile, "DO_NOT_TOUCH", "utf8");
   fs.writeFileSync(evilFile, "SIBLING_SECRET", "utf8");
   fs.writeFileSync(path.join(root, "inside.txt"), "hello world", "utf8");
-  fs.symlinkSync(outsideFile, path.join(root, "link-outside.txt"));
+  let symlinkAvailable = true;
+  try {
+    fs.symlinkSync(outsideFile, path.join(root, "link-outside.txt"));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (process.platform === "win32" && code === "EPERM") symlinkAvailable = false;
+    else throw error;
+  }
 
   try {
     // 1. Direct resolveInside checks
@@ -31,7 +38,7 @@ test("Step 2 (S1): resolveInside, fallback tools, and SandboxDaemon block .., ..
     assert.throws(() => resolveInside(root, ".."), PathEscapeError);
     assert.throws(() => resolveInside(root, "../../outside.txt"), PathEscapeError);
     assert.throws(() => resolveInside(root, outsideFile), PathEscapeError);
-    assert.throws(() => resolveInside(root, "link-outside.txt"), PathEscapeError);
+    if (symlinkAvailable) assert.throws(() => resolveInside(root, "link-outside.txt"), PathEscapeError);
     assert.throws(() => resolveInside(root, "../workspace-evil/secret.txt"), PathEscapeError);
     assert.throws(() => resolveInside(root, "bad\0file.txt"), PathEscapeError);
 
@@ -57,13 +64,15 @@ test("Step 2 (S1): resolveInside, fallback tools, and SandboxDaemon block .., ..
     assert.ok(editEscape.error, "edit outside workspace must fail");
     assert.equal(fs.readFileSync(outsideFile, "utf8"), "DO_NOT_TOUCH");
 
-    const editSymlink = await router.execute(
-      "edit",
-      { path: "link-outside.txt", old_str: "DO_NOT_TOUCH", new_str: "PWNED" },
-      "call_2",
-      dummyCtx
-    );
-    assert.ok(editSymlink.error, "edit via external symlink must fail");
+    if (symlinkAvailable) {
+      const editSymlink = await router.execute(
+        "edit",
+        { path: "link-outside.txt", old_str: "DO_NOT_TOUCH", new_str: "PWNED" },
+        "call_2",
+        dummyCtx
+      );
+      assert.ok(editSymlink.error, "edit via external symlink must fail");
+    }
     assert.equal(fs.readFileSync(outsideFile, "utf8"), "DO_NOT_TOUCH");
 
     const editSibling = await router.execute(
@@ -111,20 +120,22 @@ test("Step 2 (S1): resolveInside, fallback tools, and SandboxDaemon block .., ..
         networkMode: "none",
       }),
     });
-    const symlinkView = await daemon.handleRequest(
-      "POST",
-      "/files/view",
-      { "x-session-key": "key_safepath" },
-      { path: "link-outside.txt" }
-    );
-    assert.equal(symlinkView.status, 403);
-    const symlinkWrite = await daemon.handleRequest(
-      "POST",
-      "/files/create",
-      { "x-session-key": "key_safepath" },
-      { path: "link-outside.txt", content: "PWNED" }
-    );
-    assert.equal(symlinkWrite.status, 403);
+    if (symlinkAvailable) {
+      const symlinkView = await daemon.handleRequest(
+        "POST",
+        "/files/view",
+        { "x-session-key": "key_safepath" },
+        { path: "link-outside.txt" }
+      );
+      assert.equal(symlinkView.status, 403);
+      const symlinkWrite = await daemon.handleRequest(
+        "POST",
+        "/files/create",
+        { "x-session-key": "key_safepath" },
+        { path: "link-outside.txt", content: "PWNED" }
+      );
+      assert.equal(symlinkWrite.status, 403);
+    }
     assert.equal(fs.readFileSync(outsideFile, "utf8"), "DO_NOT_TOUCH");
     await daemon.close();
   } finally {

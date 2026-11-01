@@ -13,6 +13,8 @@ import { getActiveSandboxDaemon, LocalSandboxProvider } from "../sandbox/provide
 import { compileSandboxPolicy } from "../sandbox/policy.ts";
 import { enforceToolOutputLimit } from "./output-limit.ts";
 import { resolveInside, PathEscapeError } from "../util/safe-path.ts";
+import { SkillsRegistry } from "../skills/registry.ts";
+import { McpClientManager } from "../mcp/client.ts";
 
 const IGNORED_WORKSPACE_DIRS = new Set(["node_modules", ".git", "dist", ".openharness"]);
 
@@ -108,6 +110,14 @@ export const HOST_TOOLS = new Set([
   "handoff",
   "word_count",
   "webfetch",
+  "websearch",
+  "skill",
+  "load_skill",
+  "list_skills",
+  "import_skill",
+  "mcp_list_servers",
+  "mcp_call_tool",
+  "mcp_connect_server",
 ]);
 
 /**
@@ -122,6 +132,9 @@ export const SANDBOX_CONTROL_TOOLS = new Set([
 
 export interface SandboxToolRouterOptions {
   workspaceRoot: string;
+  dataDir?: string;
+  skillsRegistry?: SkillsRegistry;
+  mcpManager?: McpClientManager;
   sandboxEnabled?: boolean;
   ensureSandbox?: (state: RunState) => Promise<{ id: string; workspacePath: string }>;
   onSandboxStop?: (ctx: ToolExecutionContext) => Promise<ToolExecutionResult>;
@@ -145,6 +158,8 @@ export interface SandboxToolRouterOptions {
  * by policy (`masked: true`) instead of removing them mid-run so KV caches remain valid.
  */
 export class StandardToolRouter implements ToolRouter {
+  readonly skillsRegistry: SkillsRegistry;
+  readonly mcpManager: McpClientManager;
   private tools = new Map<string, RegisteredTool>();
   private opts: SandboxToolRouterOptions;
   private localFallbackProvider = new LocalSandboxProvider();
@@ -152,12 +167,24 @@ export class StandardToolRouter implements ToolRouter {
 
   constructor(opts: SandboxToolRouterOptions) {
     this.opts = opts;
+    this.skillsRegistry = opts.skillsRegistry ?? new SkillsRegistry({ workspaceRoot: opts.workspaceRoot, dataDir: opts.dataDir });
+    this.mcpManager = opts.mcpManager ?? new McpClientManager({ workspaceRoot: opts.workspaceRoot, dataDir: opts.dataDir });
     for (const tool of this.buildCatalog()) {
       this.tools.set(tool.name, tool);
     }
+    for (const tool of this.skillsRegistry.buildTools()) this.tools.set(tool.name, tool);
+    for (const tool of this.mcpManager.buildTools()) this.tools.set(tool.name, tool);
+  }
+
+  private refreshMcpTools(): void {
+    for (const name of this.tools.keys()) {
+      if (name.startsWith("mcp__")) this.tools.delete(name);
+    }
+    for (const tool of this.mcpManager.buildTools()) this.tools.set(tool.name, tool);
   }
 
   listTools(state: RunState): RegisteredTool[] {
+    this.refreshMcpTools();
     const isReadOnlyPhase = state.phase === "planning" || state.agent === "plan" || state.agent === "explore";
     const isAskMode = state.mode === "ask";
 
@@ -176,7 +203,9 @@ export class StandardToolRouter implements ToolRouter {
   }
 
   getTool(name: string): RegisteredTool | undefined {
-    return this.tools.get(name);
+    if (name.startsWith("mcp__")) this.refreshMcpTools();
+    const resolvedName = name === "load_skill" ? "skill" : name === "grep" ? "search" : name;
+    return this.tools.get(resolvedName);
   }
 
   async execute(
@@ -194,14 +223,18 @@ export class StandardToolRouter implements ToolRouter {
     input: Record<string, unknown>,
     ctx: ToolExecutionContext
   ): Promise<ToolExecutionResult> {
-    const tool = this.tools.get(name);
+    const tool = this.getTool(name);
     if (!tool) {
       return { output: null, error: `Unknown tool: ${name}` };
     }
-    if (!HOST_TOOLS.has(name) && !ctx.sandboxHandleId && this.opts.ensureSandbox && ctx.state) {
-      const h = await this.opts.ensureSandbox(ctx.state);
-      ctx.sandboxHandleId = h.id;
-      ctx.state.sandboxHandleId = h.id;
+    if (!HOST_TOOLS.has(name) && !name.startsWith("mcp__") && !ctx.sandboxHandleId && this.opts.ensureSandbox && ctx.state) {
+      try {
+        const h = await this.opts.ensureSandbox(ctx.state);
+        ctx.sandboxHandleId = h.id;
+        ctx.state.sandboxHandleId = h.id;
+      } catch {
+        // Workspace tools can still use the local fallback daemon when no selected runtime is available.
+      }
     }
     const rawRes = await tool.execute(input, ctx);
     if (typeof rawRes.output === "string") {

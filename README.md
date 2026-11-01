@@ -11,6 +11,9 @@ OpenHarness is a model-agnostic, long-horizon AI agent harness and developer wor
 - **Model-Agnostic Provider Layer (`packages/core/src/provider`)**:
   - Real `fetch` + `eventsource-parser` streaming SSE transport (`createHttpTransport`) for OpenAI-compatible `/chat/completions` and Anthropic `/messages` (`tool_use` content blocks), honoring `AbortSignal` cancellation and `Retry-After` headers.
   - Built-in capability profiles (`ModelProfile`), missing tool-call ID synthesis, malformed JSON argument repair, pythonic/XML text tool-call fallback parsing, and JSON schema validation.
+- **MCP Client Manager (`packages/core/src/mcp/client.ts`)**:
+  - Exports `McpClientManager` with in-process `filesystem`, `memory`, `sequential-thinking`, and `web-fetch` defaults; remote MCP servers can connect over HTTP, SSE, or stdio and discover tools through JSON-RPC `initialize` and `tools/list`.
+  - `StandardToolRouter` registers discovered `mcp__<server>__<tool>` calls plus `mcp_list_servers`, `mcp_call_tool`, and `mcp_connect_server`. Remote results are marked untrusted, remote tools require policy approval, and built-in filesystem reads stay inside the workspace.
 - **Workspace Runtimes & `oh-sandboxd` (`packages/core/src/sandbox`, `packages/sandboxd`)**:
   - `local`: Runs the in-process `oh-sandboxd` against the bound workspace with path checks for file tools and open network access. Without SRT, shell commands run as the server process user and can access paths outside the workspace; this runtime has no OS-level isolation. Use an OS-enforced runtime for untrusted work. `task` and `long_task` no longer require `allowUnsandboxedAutonomy` on `local`.
   - `srt-local` & `docker`: Use the managed daemon and retain filesystem policy, approvals, timeouts, and cancellation. Host binary preflight is disabled in the server; if OS enforcement is unavailable the workspace tools still run in process and `/v1/runtimes` reports `osEnforced: false`. Non-Modal runs default to open network access; Modal keeps its domain allowlist because the Modal adapter rejects open egress.
@@ -28,7 +31,7 @@ OpenHarness is a model-agnostic, long-horizon AI agent harness and developer wor
 npm run typecheck
 npm run typecheck:server
 
-# Run the full test suite (Steps 1-10 + Phases A-K)
+# Run the full test suite (Steps 1-10 + Phases A-L)
 npm test
 
 # Build the production Vite frontend bundle

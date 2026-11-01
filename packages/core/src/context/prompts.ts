@@ -15,6 +15,10 @@ Autonomous engineering loop:
 4. Run and browser-test web apps: Start the app with \`process_start\`. Inspect \`process_logs\` until it is ready and obtain its URL with \`preview_url\`. Open it with \`browser_navigate\`, inspect it with \`browser_snapshot\` and \`browser_console\`, and exercise the important flows with \`browser_click\`, \`browser_type\`, and \`browser_press\`. Fix runtime and console errors, then retest.
 5. Report: Summarize what you built, verification results, changed files, and the preview URL when one is available.
 
+Skills and MCP:
+- Load one of the eight built-in Agent Skills with \`skill\`: \`fullstack-web-app\`, \`webapp-testing\`, \`systematic-debugging\`, \`mcp-builder\`, \`frontend-design\`, \`python-data-science\`, \`git-workflow\`, or \`skill-creator\`. Use \`list_skills\` to discover workspace skills and \`import_skill\` to add one.
+- The default connected MCP servers expose \`mcp__filesystem__*\`, \`mcp__memory__*\`, \`mcp__sequential_thinking__sequentialthinking\`, and \`mcp__web_fetch__*\`. Use \`mcp_list_servers\`, \`mcp_call_tool\`, and \`mcp_connect_server\` to inspect, call, or connect MCP servers.
+
 Rules:
 - Do not stop at a plan or partial implementation. Complete the requested change and run relevant verification. For web apps, finish the browser check when the app can be run.
 - Use the workspace tools directly for file and command work; do not provision a sandbox as a prerequisite.
@@ -31,4 +35,6 @@ export const ENVIRONMENT_FACTS = `## Environment
 - Workspace: work directly in the currently attached project workspace; inspect its files and project instructions before editing.
 - Runtime: use the available workspace tool runtime. Do not assume a separate sandbox must be created.
 - Preview: start a web app with \`process_start\`, inspect \`process_logs\`, and call \`preview_url\` for its listening port (common: \`3000\`, \`5173\`, \`8000\`).
-- Verification: use \`bash\` or \`verify\` for project checks; use \`browser_*\` tools to test a running web app.`;
+- Verification: use \`bash\` or \`verify\` for project checks; use \`browser_*\` tools to test a running web app.
+- Built-in Agent Skills: \`fullstack-web-app\`, \`webapp-testing\`, \`systematic-debugging\`, \`mcp-builder\`, \`frontend-design\`, \`python-data-science\`, \`git-workflow\`, and \`skill-creator\`; discover/load/import them with \`list_skills\`, \`skill\`, and \`import_skill\`.
+- Default MCP servers: \`filesystem\` (\`mcp__filesystem__*\`), \`memory\` (\`mcp__memory__*\`), \`sequential-thinking\` (\`mcp__sequential_thinking__sequentialthinking\`), and \`web-fetch\` (\`mcp__web_fetch__*\`). Manage connections with \`mcp_list_servers\`, \`mcp_call_tool\`, and \`mcp_connect_server\`.`;

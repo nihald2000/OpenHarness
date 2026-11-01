@@ -2,6 +2,8 @@
 
 OpenHarness separates the stateless HTTP/SSE API layer from durable worker execution and isolated sandbox runtimes (`oh-sandboxd`), while keeping zero-setup local development as the default.
 
+`McpClientManager` (`packages/core/src/mcp/client.ts`) supports in-process defaults and external HTTP/SSE/stdio MCP servers. Its active connections, discovered tools, and default memory graph are process-local; saved connection definitions do not make live sessions durable or shared across workers. MCP connection lifecycle and memory need tenant-scoped adapter contracts plus restart/replay coverage before they can be treated as distributed services.
+
 The adapter contract includes tenant-scoped schedule record storage. Migration `003_schedules.sql` adds the PostgreSQL table, and `LocalStateStore` stores records in its snapshot. This does not yet make the `/v1/schedules` manager durable: that route still uses process-local state, and PostgreSQL/Redis integration plus multi-node replay coverage remains required before distributed readiness can be claimed.
 
 ## Architecture Overview

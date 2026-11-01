@@ -158,6 +158,10 @@ export class LocalStateStore implements StateStore {
     this.lastSnapshotWriteMs = Date.now();
   }
 
+  close(): void {
+    this.flush();
+  }
+
   private persistToDisk(immediate = false): void {
     if (!this.filePath) return;
     const now = Date.now();

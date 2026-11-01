@@ -90,8 +90,10 @@ export class SessionCheckpointManager {
         );
         if (res.status !== 200) {
           throw createStatusError(
-            409,
-            `Sandbox failed to restore files for checkpoint ${opts.checkpoint}`
+            res.status === 404 ? 404 : 409,
+            res.status === 404
+              ? `Checkpoint not found: ${opts.checkpoint}`
+              : `Sandbox failed to restore files for checkpoint ${opts.checkpoint}`
           );
         }
         restoredFiles = true;

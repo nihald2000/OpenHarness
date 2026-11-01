@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { RunMode } from "@openharness/sdk";
 import type { StepCheckpoint } from "../agent/deps.ts";
+import { atomicWriteFileSync } from "../util/atomic-write.ts";
 
 export type JobStatus =
   | "queued"
@@ -85,11 +86,7 @@ export class InProcessJobQueue implements JobQueue {
 
   private persistToDisk(): void {
     if (!this.filePath) return;
-    const dir = path.dirname(this.filePath);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(Array.from(this.jobs.values()), null, 2), "utf8");
-    fs.renameSync(tmp, this.filePath);
+    atomicWriteFileSync(this.filePath, JSON.stringify(Array.from(this.jobs.values()), null, 2));
   }
 
   async enqueue(

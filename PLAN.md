@@ -57,3 +57,7 @@
 ### Phase K: Local In-Process Workspace Runtime — In Progress
 - Run local workspace tools through an in-process `oh-sandboxd` daemon with the existing workspace policy, command approval, timeout, and cancellation flow; default non-Modal egress to open.
 - Verify filesystem containment, local task/long-task execution, and honest `osEnforced: false` reporting before marking this behavior complete.
+
+### Phase L: MCP Client Connections — In Progress
+- Added `McpClientManager` with four in-process defaults, eight MCP presets, JSON-RPC HTTP/SSE and stdio connectors, tool discovery, admin routes, and server-management tools. Registered it with `StandardToolRouter` and exported it and `SkillsRegistry` from `packages/core/src/index.ts`.
+- Add protocol-level integration coverage and verify lifecycle behavior on Linux, macOS, and Windows before marking MCP support complete. Connection state and memory remain process-local; this does not establish multi-node MCP readiness.
