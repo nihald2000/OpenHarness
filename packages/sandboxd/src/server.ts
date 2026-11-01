@@ -102,6 +102,7 @@ export class SandboxDaemon {
   };
   private ipythonVars = new Map<string, unknown>();
   private shadowGitInitialized = false;
+  private initialCheckpointSha?: string;
   private httpServer?: http.Server;
   private osEnforced = false;
   private enforcementError?: string;
@@ -120,6 +121,8 @@ export class SandboxDaemon {
     fs.mkdirSync(this.config.shadowGitDir, { recursive: true });
     this.srtSettingsPath =
       this.config.srtSettingsPath ?? path.join(this.config.tmpPath, "srt-settings.json");
+    // Snapshot the workspace as soon as the daemon starts, before tools can create files.
+    this.runShadowGit(["rev-parse", "HEAD"]);
     if (this.config.policy.network.mode !== "open") {
       try {
         writeSrtSettings(this.srtSettingsPath, this.config.policy);
@@ -1352,8 +1355,15 @@ export class SandboxDaemon {
     if (!this.shadowGitInitialized) {
       if (!fs.existsSync(path.join(this.config.shadowGitDir, "HEAD"))) {
         spawnConfinedArgv(["git", ...baseArgs, "init"], this.config.workspacePath, gitEnv);
+        spawnConfinedArgv(["git", ...baseArgs, "add", "-A"], this.config.workspacePath, gitEnv);
+        spawnConfinedArgv([
+          "git", ...baseArgs, "-c", "user.name=OpenHarness", "-c", "user.email=oh@local",
+          "commit", "--allow-empty", "--no-gpg-sign", "-m", "Initial workspace baseline",
+        ], this.config.workspacePath, gitEnv);
       }
       this.shadowGitInitialized = true;
+      const root = this.runShadowGit(["rev-list", "--max-parents=0", "HEAD"]);
+      this.initialCheckpointSha = root.stdout.split("\n")[0] || undefined;
     }
 
     const res = spawnConfinedArgv(["git", ...baseArgs, ...args], this.config.workspacePath, gitEnv);
@@ -1408,15 +1418,26 @@ export class SandboxDaemon {
   private async diffCheckpoint(
     payload: Record<string, unknown>
   ): Promise<{ status: number; body: Record<string, unknown> }> {
-    const fromSha = String(payload.from ?? "HEAD~1");
+    this.runShadowGit(["add", "-N", "."]);
+    let fromSha = this.initialCheckpointSha ?? "HEAD";
+    if (payload.from !== undefined && payload.from !== null && String(payload.from)) {
+      const requested = String(payload.from);
+      const verified = this.runShadowGit(["rev-parse", "--verify", `${requested}^{commit}`]);
+      if (verified.status !== 0 || !verified.stdout) {
+        return { status: 404, body: { error: "Checkpoint commit not found." } };
+      }
+      fromSha = verified.stdout;
+    }
     const toSha = payload.to ? String(payload.to) : undefined;
-    const args = toSha ? ["diff", fromSha, toSha] : ["diff", fromSha];
-    const res = this.runShadowGit(args);
+    const res = this.runShadowGit(toSha ? ["diff", fromSha, toSha] : ["diff", fromSha]);
+    const names = this.runShadowGit(toSha ? ["diff", "--name-only", fromSha, toSha] : ["diff", "--name-only", fromSha]);
+    const files = names.stdout ? names.stdout.split("\n").map((s) => s.trim()).filter(Boolean) : [];
     return {
       status: 200,
       body: {
         from: fromSha,
         to: toSha ?? "WORKTREE",
+        files,
         diff: res.stdout,
       },
     };

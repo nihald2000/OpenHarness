@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import json
 import subprocess
 import modal
 
@@ -21,6 +22,10 @@ ROOT = next(
     (parent for parent in MODULE_PATH.parents if (parent / "package.json").is_file()),
     pathlib.Path("/app"),
 )
+try:
+    MANIFEST_IMAGE_ID = json.loads((MODULE_PATH.parent / "image-manifest.json").read_text()).get("imageId", "")
+except (OSError, ValueError, TypeError):
+    MANIFEST_IMAGE_ID = ""
 app = modal.App("openharness-server")
 volume = modal.Volume.from_name("openharness-data", create_if_missing=True)
 
@@ -47,8 +52,12 @@ server_image = (
     image=server_image,
     volumes={"/data": volume},
     secrets=[modal.Secret.from_name("openharness-server")],
+    cpu=0.5,
+    memory=1024,
     timeout=3600,
     max_containers=1,
+    min_containers=0,
+    scaledown_window=60,
 )
 @modal.concurrent(max_inputs=100)
 @modal.web_server(4096, startup_timeout=60)
@@ -59,6 +68,13 @@ def server():
         # in this deployment. Use the public control-plane endpoint so the JS
         # SDK authenticates with MODAL_TOKEN_ID / MODAL_TOKEN_SECRET.
         "MODAL_SERVER_URL": "https://api.modal.com:443",
+        "OH_MODAL_APP": os.environ.get("OH_MODAL_APP", "openharness"),
+        "OH_MODAL_IMAGE_ID": os.environ.get("OH_MODAL_IMAGE_ID", MANIFEST_IMAGE_ID),
+        "OH_DEFAULT_RUNTIME": os.environ.get("OH_DEFAULT_RUNTIME", "modal"),
+        "OH_MODAL_SANDBOX_RUNTIME": os.environ.get("OH_MODAL_SANDBOX_RUNTIME", "gvisor"),
+        "OH_SANDBOX_IDLE_MS": os.environ.get("OH_SANDBOX_IDLE_MS", "180000"),
+        "OH_MODAL_KEEPALIVE": "1",
+        "OPENHARNESS_ISOLATE_SESSIONS": "1",
         # Give each anonymous browser a signed, isolated tenant cookie; admin
         # routes still require the separate administrator session.
         "OPENHARNESS_WEB_GUEST": "1",

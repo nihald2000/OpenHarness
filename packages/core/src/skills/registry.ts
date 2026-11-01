@@ -28,11 +28,12 @@ Load this skill whenever building, scaffolding, or extending a web application, 
 2. **Clean Architecture**:
    - Keep frontend state predictable and co-located; extract reusable UI components cleanly.
    - Always handle loading, empty, and error states explicitly in the UI.
-   - Bind dev servers to \`0.0.0.0\` or \`127.0.0.1\` on a known port (e.g. \`--host 127.0.0.1 --port 3000\`).
+   - Bind dev servers to \`0.0.0.0\` on a known port (e.g. \`--host 0.0.0.0 --port 3000\`) so cloud preview tunnels can reach them.
 3. **Compile & Typecheck**:
    - Run \`npm run build\` or \`npx tsc --noEmit\` via \`bash\` and fix all compiler or bundler errors immediately.
 4. **Live Dev Server & Browser Verification**:
    - Start the server with \`process_start\` (passing \`port\`) and fetch \`preview_url\`.
+   - If the tool returns \`previewUrl\` and \`internalUrl\`, use \`internalUrl\` for the sandbox browser and report the HTTPS \`previewUrl\` to the user.
    - Open the preview URL with \`browser_navigate\`, inspect interactive elements via \`browser_snapshot\`, test user flows (\`browser_click\`, \`browser_type\`), and check \`browser_console\` for zero runtime errors.`,
   },
   {

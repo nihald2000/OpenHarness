@@ -918,7 +918,12 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         )}
       </div>
 
-      <CapabilitiesPanel activeAgent={selectedAgent} sessionId={sessionId} previewUrl={previewUrl} />
+      <CapabilitiesPanel
+        activeAgent={selectedAgent}
+        sessionId={sessionId}
+        previewUrl={previewUrl}
+        refreshToken={`${session?.status ?? ""}:${messages.length}:${changedFiles.length}`}
+      />
     </div>
   );
 }

@@ -9,7 +9,10 @@ let elementMap = new Map();
 async function ensurePage() {
   if (page) return page;
   const pw = await import("playwright");
-  browser = await pw.chromium.launch({ headless: true });
+  browser = await pw.chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+  });
   const context = await browser.newContext();
   page = await context.newPage();
   page.on("console", (msg) => {

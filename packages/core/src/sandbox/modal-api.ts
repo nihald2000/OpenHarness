@@ -4,8 +4,11 @@ export type ModalCreateParams = {
   env: Record<string, string>;
   workdir: string;
   cpu: number;
+  cpuLimit?: number;
   memoryMiB: number;
+  memoryLimitMiB?: number;
   timeoutMs: number;
+  idleTimeoutMs?: number;
   runtime: "vm" | "gvisor";
   encryptedPorts: number[];
   tags: Record<string, string>;

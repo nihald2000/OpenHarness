@@ -409,7 +409,9 @@ export async function runStep(
             runId: state.runId,
             sessionId: state.sessionId,
             tenantId: state.tenantId,
-            workspaceRoot: deps.workspaceRoot,
+            workspaceRoot: deps.resolveSessionWorkspace
+              ? deps.resolveSessionWorkspace(state.tenantId, state.sessionId)
+              : deps.workspaceRoot,
             sandboxHandleId: state.sandboxHandleId,
             signal,
             state,
@@ -1061,7 +1063,9 @@ export async function runStep(
         runId: state.runId,
         sessionId: state.sessionId,
         tenantId: state.tenantId,
-        workspaceRoot: deps.workspaceRoot,
+        workspaceRoot: deps.resolveSessionWorkspace
+          ? deps.resolveSessionWorkspace(state.tenantId, state.sessionId)
+          : deps.workspaceRoot,
         sandboxHandleId: state.sandboxHandleId,
         signal,
         state,
@@ -1273,7 +1277,9 @@ export async function applyPermissionDecisionToState(
       runId: next.runId,
       sessionId: next.sessionId,
       tenantId: next.tenantId,
-      workspaceRoot: deps.workspaceRoot,
+      workspaceRoot: deps.resolveSessionWorkspace
+        ? deps.resolveSessionWorkspace(next.tenantId, next.sessionId)
+        : deps.workspaceRoot,
       sandboxHandleId: next.sandboxHandleId,
       state: next,
     });

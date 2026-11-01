@@ -7,7 +7,7 @@ import type { CreateRunInput, DurableRunRecord, FrozenRunSnapshot } from "./type
 
 export const ALLOWED_TRANSITIONS: Record<RunStatus, readonly RunStatus[]> = {
   idle: ["queued", "running", "cancelled"],
-  queued: ["running", "cancelled", "failed"],
+  queued: ["running", "awaiting_input", "cancelled", "failed"],
   running: ["awaiting_input", "awaiting_permission", "verifying", "completed", "failed", "cancelled"],
   awaiting_input: ["running", "cancelled", "failed"],
   awaiting_permission: ["running", "cancelled", "failed"],

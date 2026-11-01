@@ -13,12 +13,13 @@ export interface ModelProfile {
   maxTools?: number; // cap on advertised tools for weaker models
   baseUrl?: string;
   apiKeyEnv?: string;
+  supportsVision?: boolean;
 }
 
 export const CONSERVATIVE_DEFAULT_PROFILE: ModelProfile = {
   wire: "openai-chat",
-  contextWindow: 32_000,
-  maxOutputTokens: 4096,
+  contextWindow: 128_000,
+  maxOutputTokens: 8192,
   outputParam: "max_tokens",
   toolCalling: "native-unreliable",
   streamingToolCalls: true,
@@ -26,10 +27,22 @@ export const CONSERVATIVE_DEFAULT_PROFILE: ModelProfile = {
   promptCaching: "none",
   usageInStream: false,
   strictSchemas: false,
-  maxTools: 32,
+  maxTools: 64,
 };
 
 export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
+  "muse-glimmer": {
+    wire: "openai-chat", contextWindow: 131_072, maxOutputTokens: 16_384,
+    outputParam: "max_tokens", toolCalling: "native", streamingToolCalls: true,
+    parallelToolCalls: "supported", promptCaching: "none", reasoningField: "reasoning_content",
+    usageInStream: true, strictSchemas: false, apiKeyEnv: "MUSE_GLIMMER_API_KEY", supportsVision: true,
+  },
+  "muse-spark-open": {
+    wire: "openai-chat", contextWindow: 256_000, maxOutputTokens: 16_384,
+    outputParam: "max_tokens", toolCalling: "native", streamingToolCalls: true,
+    parallelToolCalls: "supported", promptCaching: "none", reasoningField: "reasoning_content",
+    usageInStream: true, strictSchemas: false, apiKeyEnv: "MUSE_SPARK_OPEN_API_KEY", supportsVision: true,
+  },
   // Meta Model API (OpenAI-compatible Chat Completions)
   "meta-muse": {
     wire: "openai-chat",
@@ -44,6 +57,7 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     strictSchemas: false,
     baseUrl: "https://api.meta.ai/v1",
     apiKeyEnv: "MODEL_API_KEY",
+    supportsVision: true,
   },
   // OpenAI GPT-4.x / GPT-5.x
   "gpt-4o": {
@@ -59,6 +73,7 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     strictSchemas: true,
     baseUrl: "https://api.openai.com/v1",
     apiKeyEnv: "OPENAI_API_KEY",
+    supportsVision: true,
   },
   "gpt-4o-mini": {
     wire: "openai-chat",
@@ -73,6 +88,7 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     strictSchemas: true,
     baseUrl: "https://api.openai.com/v1",
     apiKeyEnv: "OPENAI_API_KEY",
+    supportsVision: true,
   },
   "gpt-4.1": {
     wire: "openai-chat",
@@ -87,6 +103,7 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     strictSchemas: true,
     baseUrl: "https://api.openai.com/v1",
     apiKeyEnv: "OPENAI_API_KEY",
+    supportsVision: true,
   },
   "gpt-5": {
     wire: "openai-responses",
@@ -102,6 +119,7 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     strictSchemas: true,
     baseUrl: "https://api.openai.com/v1",
     apiKeyEnv: "OPENAI_API_KEY",
+    supportsVision: true,
   },
 
   // Anthropic Claude (native wire with explicit cache breakpoints)
@@ -119,6 +137,7 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     strictSchemas: false,
     baseUrl: "https://api.anthropic.com/v1",
     apiKeyEnv: "ANTHROPIC_API_KEY",
+    supportsVision: true,
   },
   "claude-sonnet-4": {
     wire: "anthropic",
@@ -134,6 +153,7 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     strictSchemas: false,
     baseUrl: "https://api.anthropic.com/v1",
     apiKeyEnv: "ANTHROPIC_API_KEY",
+    supportsVision: true,
   },
   "claude-opus-4": {
     wire: "anthropic",
@@ -149,6 +169,7 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     strictSchemas: false,
     baseUrl: "https://api.anthropic.com/v1",
     apiKeyEnv: "ANTHROPIC_API_KEY",
+    supportsVision: true,
   },
 
   // Meta Llama API (https://api.llama.com/compat/v1, LLAMA_API_KEY)
@@ -321,6 +342,7 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     strictSchemas: true,
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     apiKeyEnv: "GEMINI_API_KEY",
+    supportsVision: true,
   },
   "gemini-2.5-flash": {
     wire: "gemini",
@@ -335,6 +357,7 @@ export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
     strictSchemas: true,
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     apiKeyEnv: "GEMINI_API_KEY",
+    supportsVision: true,
   },
 
   // Offline mock provider
@@ -372,6 +395,13 @@ export function resolveModelProfile(
     // These IDs belong to Meta Model API; don't allow another provider's
     // measured/configured profile to redirect them to a paid aggregator.
     return { ...BUILT_IN_MODEL_PROFILES["meta-muse"]! };
+  }
+  const normalizedModelId = modelId.toLowerCase();
+  if (["muse-glimmer", "meta-models/muse-glimmer-30b", "muse-glimmer-30b", "redhatai/muse-glimmer-30b-fp8-block"].includes(normalizedModelId)) {
+    return { ...BUILT_IN_MODEL_PROFILES["muse-glimmer"]!, ...(overrides?.[modelId] ?? {}) };
+  }
+  if (["muse-spark-open", "meta-models/muse-spark-open-1026", "meta-models/muse-spark-open-816b-a42b"].includes(normalizedModelId)) {
+    return { ...BUILT_IN_MODEL_PROFILES["muse-spark-open"]!, ...(overrides?.[modelId] ?? {}) };
   }
   if (measuredProfiles.has(modelId)) {
     return {

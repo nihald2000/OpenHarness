@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import type { McpServerInfo, McpServerAdminInfo, McpPreset } from "@openharness/sdk";
 import type { RegisteredTool, ToolExecutionContext, ToolExecutionResult } from "../agent/deps.ts";
+import { getActiveSandboxDaemon } from "../sandbox/providers.ts";
 import { resolveInside } from "../util/safe-path.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -166,7 +167,7 @@ export class McpClientManager {
   }
 
   private activateBuiltin(name: typeof BUILTIN_SERVER_NAMES[number]): void {
-    if (name === "filesystem") this.registerBuiltin("filesystem", this.filesystemTools(), async (toolName, args) => this.callFilesystem(toolName, args));
+    if (name === "filesystem") this.registerBuiltin("filesystem", this.filesystemTools(), async (toolName, args, _signal, ctx) => this.callFilesystem(toolName, args, ctx));
     else if (name === "memory") this.registerBuiltin("memory", this.memoryTools(), async (toolName, args, _signal, ctx) => this.callMemory(toolName, args, ctx));
     else if (name === "sequential-thinking") this.registerBuiltin("sequential-thinking", [tool("sequentialthinking", "Record a structured step in a sequential thinking plan.", objectSchema({ thought: { type: "string" }, thoughtNumber: { type: "integer" }, totalThoughts: { type: "integer" }, nextThoughtNeeded: { type: "boolean" }, isRevision: { type: "boolean" }, revisesThought: { type: "integer" } }), false)], async (_toolName, args) => ({ thoughtNumber: args.thoughtNumber, totalThoughts: args.totalThoughts, nextThoughtNeeded: args.nextThoughtNeeded ?? false, thought: asString(args.thought), isRevision: args.isRevision ?? false, revisesThought: args.revisesThought }));
     else if (name === "web-fetch") this.registerBuiltin("web-fetch", [
@@ -196,26 +197,90 @@ export class McpClientManager {
     ];
   }
 
-  private callFilesystem(name: string, args: JsonObject): unknown {
+  private async callFilesystem(name: string, args: JsonObject, ctx?: ToolExecutionContext): Promise<unknown> {
+    const workspaceRoot = ctx?.workspaceRoot ?? this.workspaceRoot;
+    const daemon = ctx?.sandboxHandleId ? getActiveSandboxDaemon(ctx.sandboxHandleId) : undefined;
+    const daemonHeaders = daemon ? { "x-session-key": daemon.config.sessionKey } : undefined;
+
     if (name === "read_multiple_files") {
       const paths = Array.isArray(args.paths) ? args.paths.filter((p): p is string => typeof p === "string") : [];
       if (paths.length > 100) throw new Error("At most 100 files can be read in one MCP request.");
       let bytesRead = 0;
-      return paths.map((file) => {
-        const target = resolveInside(this.workspaceRoot, file);
-        const content = fs.readFileSync(target, "utf8");
+      const files: Array<{ path: string; content: string }> = [];
+      for (const file of paths) {
+        let content: string;
+        if (daemon && daemonHeaders) {
+          const res = await daemon.handleRequest("POST", "/files/view", daemonHeaders, { path: file });
+          if (res.status !== 200 || res.body.type === "directory") {
+            throw new Error(String(res.body.error ?? `Could not read file: ${file}`));
+          }
+          content = String(res.body.content ?? "");
+        } else {
+          const target = resolveInside(workspaceRoot, file);
+          content = fs.readFileSync(target, "utf8");
+        }
         bytesRead += Buffer.byteLength(content, "utf8");
         if (bytesRead > 1024 * 1024) throw new Error("MCP file read exceeded the 1 MiB response limit.");
-        return { path: file, content };
-      });
+        files.push({ path: file, content });
+      }
+      return files;
     }
     if (name === "file_info") {
-      const target = resolveInside(this.workspaceRoot, asString(args.path));
+      const file = asString(args.path);
+      if (daemon && daemonHeaders) {
+        return daemon.handleRequest("POST", "/files/view", daemonHeaders, { path: file }).then((res) => {
+          if (res.status !== 200) throw new Error(String(res.body.error ?? `Could not inspect file: ${file}`));
+          const content = String(res.body.content ?? "");
+          return { path: file, name: path.posix.basename(file), type: res.body.type ?? "file", size: Buffer.byteLength(content, "utf8") };
+        });
+      }
+      const target = resolveInside(workspaceRoot, file);
       const stat = fs.statSync(target);
-      return { path: args.path, name: path.basename(target), type: stat.isDirectory() ? "directory" : "file", size: stat.size, modifiedAt: stat.mtime.toISOString() };
+      return { path: file, name: path.basename(target), type: stat.isDirectory() ? "directory" : "file", size: stat.size, modifiedAt: stat.mtime.toISOString() };
     }
     if (name === "directory_tree") {
-      const start = resolveInside(this.workspaceRoot, asString(args.path, "."));
+      if (daemon && daemonHeaders) {
+        const rawRoot = asString(args.path, ".").replace(/\\/g, "/");
+        const relativeRoot = path.posix.normalize(rawRoot).replace(/^\.\//, "");
+        if (path.posix.isAbsolute(relativeRoot) || relativeRoot === ".." || relativeRoot.startsWith("../")) {
+          throw new Error("path escapes the workspace");
+        }
+        const maxDepth = Math.max(0, Math.min(12, Number(args.maxDepth ?? 4) || 0));
+        const pattern = !relativeRoot || relativeRoot === "." ? "**/*" : `${relativeRoot}/**/*`;
+        const res = await daemon.handleRequest("POST", "/search/glob", daemonHeaders, { pattern, limit: 500 });
+        if (res.status !== 200) throw new Error(String(res.body.error ?? "Could not list workspace files"));
+        const rootName = relativeRoot && relativeRoot !== "." ? path.posix.basename(relativeRoot) : ".";
+        const root: { name: string; type: "directory"; children: Array<Record<string, unknown>> } = {
+          name: rootName,
+          type: "directory",
+          children: [],
+        };
+        const nodes = new Map<string, { name: string; type: "directory" | "file"; children?: Array<Record<string, unknown>> }>();
+        nodes.set("", root);
+        for (const rawMatch of Array.isArray(res.body.matches) ? res.body.matches : []) {
+          const match = String(rawMatch).replace(/\\/g, "/").replace(/^\.\//, "");
+          if (relativeRoot && relativeRoot !== "." && !match.startsWith(`${relativeRoot}/`)) continue;
+          const underRoot = relativeRoot && relativeRoot !== "." ? match.slice(relativeRoot.length + 1) : match;
+          const segments = underRoot.split("/").filter(Boolean);
+          if (!segments.length || segments.length > maxDepth + 1) continue;
+          let parentKey = "";
+          for (let i = 0; i < segments.length; i++) {
+            const segment = segments[i]!;
+            const key = parentKey ? `${parentKey}/${segment}` : segment;
+            if (!nodes.has(key)) {
+              const isDirectory = i < segments.length - 1;
+              const node = isDirectory
+                ? { name: segment, type: "directory" as const, children: [] as Array<Record<string, unknown>> }
+                : { name: segment, type: "file" as const };
+              nodes.set(key, node);
+              nodes.get(parentKey)!.children!.push(node);
+            }
+            parentKey = key;
+          }
+        }
+        return { path: relativeRoot || ".", children: root.children };
+      }
+      const start = resolveInside(workspaceRoot, asString(args.path, "."));
       const maxDepth = Math.max(0, Math.min(12, Number(args.maxDepth ?? 4) || 0));
       let entriesSeen = 0;
       const walk = (dir: string, depth: number): JsonObject[] => {
@@ -226,7 +291,7 @@ export class McpClientManager {
           return { name: entry.name, type: entry.isDirectory() ? "directory" : "file", ...(entry.isDirectory() ? { children: walk(path.join(dir, entry.name), depth + 1) } : {}) };
         });
       };
-      return { path: path.relative(this.workspaceRoot, start) || ".", children: walk(start, 0) };
+      return { path: path.relative(workspaceRoot, start) || ".", children: walk(start, 0) };
     }
     throw new Error(`Unknown filesystem tool: ${name}`);
   }

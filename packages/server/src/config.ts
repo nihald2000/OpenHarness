@@ -10,6 +10,8 @@ export interface LoadedServerConfig {
   serviceTenantId: string;
   maxBodyBytes: number;
   dataDir: string;
+  workspaceRoot?: string;
+  isolateSessions?: boolean;
   defaultModel?: string;
   defaultBaseUrl?: string;
 }
@@ -57,6 +59,11 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): LoadedSe
     serviceTenantId: env.OPENHARNESS_SERVICE_TENANT_ID ?? "default",
     maxBodyBytes: Number(env.PROMPT_MAX_BYTES ?? 1_000_000),
     dataDir: env.OPENHARNESS_DATA_DIR ?? ".openharness",
+    workspaceRoot: env.OPENHARNESS_WORKSPACE_ROOT || undefined,
+    isolateSessions:
+      env.OPENHARNESS_ISOLATE_SESSIONS === "1" ||
+      env.OPENHARNESS_WEB_GUEST === "1" ||
+      Boolean(env.MODAL_ENVIRONMENT),
     defaultModel: env.OPENHARNESS_MODEL ?? (hasMetaApiKey ? "muse-spark-1.3" : undefined),
     defaultBaseUrl: env.OPENHARNESS_BASE_URL ?? (hasMetaApiKey ? "https://api.meta.ai/v1" : undefined),
   };

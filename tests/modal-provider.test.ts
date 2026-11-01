@@ -156,6 +156,11 @@ test("Step 7 (R4, S9, F6): ModalSandboxProvider lifecycle (create -> health -> e
     assert.equal(handle.sessionKey, "", "SandboxHandle must never expose plaintext sessionKey");
     assert.equal(handle.ports[8080], undefined, "Daemon port 8080 tunnel URL must never be exposed");
     assert.equal(handle.ports[3000], "https://preview-3000.modal.host");
+    assert.equal(
+      Array.from(createdSandboxes.values()).find((entry) => entry.params.encryptedPorts.includes(3000))?.params.inboundCidrAllowlist,
+      undefined,
+      "an empty inbound CIDR list must be omitted so Modal Starter tunnels can accept inbound traffic"
+    );
     assert.ok(mintedCount >= 2, "Edge 401 must trigger connect token re-mint");
 
     const rec = await records.get(handle.id);

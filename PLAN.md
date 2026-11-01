@@ -1,5 +1,12 @@
 # Backend & Long-Horizon Agent Harness Implementation Plan
 
+## Modal E2E Harness & Muse Glimmer (Phases 1–8) — Implemented and locally verified
+- Hosted sessions use tenant/session-scoped roots, masked host workspace facts, and Modal sandbox daemon routing for workspace reads.
+- Modal startup uses verified credentials/image manifests, bounded boot waits, setup egress domains, public preview tunnels, and root-safe Playwright Chromium.
+- Shadow-git records an initial workspace baseline and reports modified and untracked file names; v2 runs route permission replies and pause/resume through the durable worker.
+- Provider profiles include Muse Glimmer 30B and Muse Spark Open; vision-capable profiles receive screenshots as image input, and Modal includes a scale-to-zero Glimmer vLLM service.
+- `npm run typecheck`, `npm test` (52 passed, one credential-gated skip), `npm run build`, and Python 3 `py_compile` passed. This does not claim distributed readiness or multi-node replay coverage.
+
 ## Phase 1–5 Baseline — Complete
 - Bun server entrypoint, JSON-backed session persistence, SDK-compatible base APIs, server/admin auth, and replayable durable SSE event IDs.
 - Offline mock and streaming OpenAI-compatible provider adapters.

@@ -25,6 +25,7 @@ export interface ContextEngineeringConfig {
   precomputeThresholdRatio?: number; // default 0.85
   precomputeMinTokens?: number; // default 64_000 (or 50% of window if window < 64K)
   includeRepositoryInstructions?: boolean;
+  disableHostWorkspaceScan?: boolean;
   globalInstructionsPath?: string;
   workspaceRoot?: string;
   summarizer?: (transcriptText: string, state: RunState) => Promise<string>;
@@ -110,14 +111,16 @@ export class LayeredContextManager implements ContextManager {
       ENVIRONMENT_FACTS,
     ];
 
-    if (this.cfg.includeRepositoryInstructions && this.cfg.workspaceRoot) {
+    const skipHostWorkspaceScan = this.cfg.disableHostWorkspaceScan || state.runtime === "modal";
+
+    if (!skipHostWorkspaceScan && this.cfg.includeRepositoryInstructions && this.cfg.workspaceRoot) {
       const instr = this.loadHierarchicalInstructions(this.cfg.workspaceRoot, touchedPaths);
       if (instr) {
         sections.push("## Repository Instructions (AGENTS.md)\n" + instr);
       }
     }
 
-    if (this.cfg.workspaceRoot && fs.existsSync(this.cfg.workspaceRoot)) {
+    if (!skipHostWorkspaceScan && this.cfg.workspaceRoot && fs.existsSync(this.cfg.workspaceRoot)) {
       const outline = this.buildWorkspaceOutline(this.cfg.workspaceRoot, 80);
       if (outline.length > 0) {
         sections.push("## Workspace Outline\n" + outline.join("\n"));

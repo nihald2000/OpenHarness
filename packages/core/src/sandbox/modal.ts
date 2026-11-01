@@ -22,8 +22,12 @@ const DAY = 86_400_000;
 export type ModalProviderConfig = {
   baseImageId: string;
   cpu?: number;
+  cpuLimit?: number;
   memoryMiB?: number;
+  memoryLimitMiB?: number;
   timeoutMs?: number;
+  idleTimeoutMs?: number;
+  runtime?: "vm" | "gvisor";
   bootTimeoutMs?: number;
   setupTimeoutMs?: number;
   snapshotTtlMs?: number;
@@ -42,10 +46,11 @@ export type ModalProviderConfig = {
 };
 
 type ResolvedModalProviderConfig = Required<
-  Omit<ModalProviderConfig, "allowUnencryptedPorts" | "useTunnelTransport" | "transportFactory">
+  Omit<ModalProviderConfig, "allowUnencryptedPorts" | "useTunnelTransport" | "transportFactory" | "inboundCidrAllowlist">
 > & {
   allowUnencryptedPorts?: boolean;
   useTunnelTransport?: boolean;
+  inboundCidrAllowlist?: string[];
   transportFactory?: ModalProviderConfig["transportFactory"];
 };
 
@@ -76,15 +81,19 @@ export class ModalSandboxProvider implements SandboxProvider {
     this.api = api;
     this.cfg = {
       baseImageId: cfg.baseImageId,
-      cpu: cfg.cpu ?? 2,
-      memoryMiB: cfg.memoryMiB ?? 4096,
+      cpu: cfg.cpu ?? 0.25,
+      cpuLimit: cfg.cpuLimit ?? 4,
+      memoryMiB: cfg.memoryMiB ?? 512,
+      memoryLimitMiB: cfg.memoryLimitMiB ?? 8192,
       timeoutMs: cfg.timeoutMs ?? 1_800_000,
-      bootTimeoutMs: cfg.bootTimeoutMs ?? 30_000,
+      idleTimeoutMs: cfg.idleTimeoutMs ?? 300_000,
+      runtime: cfg.runtime ?? (process.env.OH_MODAL_SANDBOX_RUNTIME === "vm" ? "vm" : "gvisor"),
+      bootTimeoutMs: cfg.bootTimeoutMs ?? 90_000,
       setupTimeoutMs: cfg.setupTimeoutMs ?? 300_000,
       snapshotTtlMs: cfg.snapshotTtlMs ?? DAY,
       envCacheTtlMs: cfg.envCacheTtlMs ?? DAY,
       encryptedPorts: cfg.encryptedPorts ?? [DAEMON_PORT, ...PREVIEW_PORTS],
-      inboundCidrAllowlist: cfg.inboundCidrAllowlist ?? [],
+      inboundCidrAllowlist: cfg.inboundCidrAllowlist?.length ? cfg.inboundCidrAllowlist : undefined,
       allowUnencryptedPorts: cfg.allowUnencryptedPorts,
       useTunnelTransport: cfg.useTunnelTransport,
       encrypt: cfg.encrypt,
@@ -100,6 +109,19 @@ export class ModalSandboxProvider implements SandboxProvider {
 
   getLastActivity(handleId: string): number {
     return this.lastActivity.get(handleId) ?? 0;
+  }
+
+  async resolveTunnelUrl(handleId: string, port: number): Promise<string | undefined> {
+    if (port === DAEMON_PORT) return undefined;
+    const entry = this.live.get(handleId);
+    if (!entry) return undefined;
+    if (entry.handle?.ports?.[port]) return entry.handle.ports[port];
+    if (!entry.ref) return undefined;
+    const fresh = { ...(await entry.ref.tunnels().catch(() => ({}))) };
+    delete fresh[DAEMON_PORT];
+    if (entry.handle) entry.handle.ports = fresh;
+    await this.records.update(handleId, { ports: fresh }).catch(() => {});
+    return fresh[port];
   }
 
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
@@ -156,11 +178,15 @@ export class ModalSandboxProvider implements SandboxProvider {
       env: {},
       workdir: "/workspace",
       cpu: this.cfg.cpu,
+      cpuLimit: this.cfg.cpuLimit,
       memoryMiB: this.cfg.memoryMiB,
+      memoryLimitMiB: this.cfg.memoryLimitMiB,
       timeoutMs: this.cfg.setupTimeoutMs,
-      runtime: "vm",
+      idleTimeoutMs: this.cfg.idleTimeoutMs,
+      runtime: this.cfg.runtime,
       encryptedPorts: [],
       tags: { oh: "1", phase: "setup", tenant: tenantId, run: spec.runId, handle: setupHandleId },
+      ...(this.cfg.inboundCidrAllowlist ? { inboundCidrAllowlist: this.cfg.inboundCidrAllowlist } : {}),
       ...toModalNetwork(setupPolicy),
     });
 
@@ -219,11 +245,18 @@ export class ModalSandboxProvider implements SandboxProvider {
       spec.policy?.network?.mode === "open"
         ? "none"
         : (spec.policy?.network?.mode ?? "none");
+    const configuredDomains = spec.policy?.network?.allowedDomains ?? [];
+    const effectiveDomains = configuredDomains.length > 0 ? configuredDomains : SETUP_DOMAINS;
     const policy: CompiledSandboxPolicy = compileSandboxPolicy({
       runId: spec.runId,
       phase: "agent",
-      networkMode: rawNetMode,
-      additionalAllowedDomains: spec.policy?.network?.allowedDomains ?? SETUP_DOMAINS,
+      networkMode:
+        rawNetMode === "none" &&
+        configuredDomains.length === 0 &&
+        spec.policy?.network?.mode === "allowlist"
+          ? "allowlist"
+          : rawNetMode,
+      additionalAllowedDomains: effectiveDomains,
       workspacePath: "/workspace",
       memoriesPath: "/memories",
       tmpPath: "/tmp/oh",
@@ -236,8 +269,9 @@ export class ModalSandboxProvider implements SandboxProvider {
 
     const ref = await this.api.create({
       imageId,
-      runtime: "vm",
+      runtime: this.cfg.runtime,
       timeoutMs,
+      idleTimeoutMs: this.cfg.idleTimeoutMs,
       command: [
         "/usr/local/bin/oh-sandboxd",
         "--host",
@@ -249,13 +283,18 @@ export class ModalSandboxProvider implements SandboxProvider {
         OH_SESSION_KEY: sessionKey,
         OH_RUN_ID: spec.runId,
         OH_SESSION_ID: spec.sessionId,
+        OH_VM_ISOLATED: "1",
         OH_POLICY_B64: Buffer.from(JSON.stringify(policy)).toString("base64"),
+        NODE_PATH: "/opt/oh/node_modules",
+        PLAYWRIGHT_BROWSERS_PATH: "/ms-playwright",
       },
       workdir: "/workspace",
       cpu,
+      cpuLimit: this.cfg.cpuLimit,
       memoryMiB,
+      memoryLimitMiB: this.cfg.memoryLimitMiB,
       encryptedPorts: ports,
-      inboundCidrAllowlist: this.cfg.inboundCidrAllowlist,
+      ...(this.cfg.inboundCidrAllowlist ? { inboundCidrAllowlist: this.cfg.inboundCidrAllowlist } : {}),
       ...toModalNetwork(policy),
       tags: {
         oh: "1",
@@ -406,7 +445,7 @@ export class ModalSandboxProvider implements SandboxProvider {
   }
 
   /** Snapshot and terminate any live sandboxes idle for longer than `idleMs` (H8). */
-  async snapshotIdle(idleMs = 600_000): Promise<string[]> {
+  async snapshotIdle(idleMs = 180_000): Promise<string[]> {
     const now = Date.now();
     const pausedIds: string[] = [];
     for (const [handleId, entry] of Array.from(this.live.entries())) {

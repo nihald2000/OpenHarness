@@ -2,6 +2,12 @@
 
 OpenHarness is a model-agnostic, long-horizon AI agent harness and developer workspace (`packages/{core,server,sdk,sandboxd,cli}` + Vite React SPA in `src/`). Configured models (OpenAI, Anthropic, Meta Llama API, Together, Groq, Fireworks, Ollama, vLLM, LiteLLM, or the offline `mock/*` provider) run through a durable state machine (**plan → build → test → fix → review → checkpoint**) with real HTTP/SSE model transport, realpath-enforced workspace containment, and isolated sandboxes (`srt-local`, `docker`, `modal`).
 
+## Built During the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)
+
+- Agentic coding loop with Meta Muse Spark 1.3 and Muse Glimmer 30B, including browser screenshot vision input.
+- Scale-to-zero self-hosted Muse Glimmer vLLM endpoint on Modal and isolated Modal KVM microVM sandboxes with HTTPS preview tunnels.
+- Four deployment commands: `python3 deploy/modal/build_sandbox_image.py`; `modal deploy deploy/modal/muse_glimmer_server.py`; `modal deploy deploy/modal/web_server.py`; `vercel env add MUSE_GLIMMER_BASE_URL production && vercel deploy --prod`. After Glimmer deploy, add its URL to the Modal `openharness-server` secret and enter it when prompted for Vercel. Details are in [deploy/modal/README.md](deploy/modal/README.md).
+
 ## Architecture & Key Capabilities
 
 - **Durable Resumable Agent Engine (`packages/core/src/agent`, `packages/core/src/infra`)**:

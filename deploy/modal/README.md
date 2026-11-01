@@ -1,5 +1,18 @@
 # Production Modal.com Sandbox Harness (Anthropic Code-Mode MCP)
 
+## OpenHarness Modal + Vercel deployment
+
+This path builds the isolated sandbox image, starts a scale-to-zero Meta Muse Glimmer 30B endpoint, and deploys the hosted OpenHarness server. After the Glimmer deployment prints its URL, add it as `MUSE_GLIMMER_BASE_URL` to the existing Modal `openharness-server` secret before deploying the web server, and add the same URL to the Vercel project when prompted below.
+
+```bash
+python3 deploy/modal/build_sandbox_image.py
+modal deploy deploy/modal/muse_glimmer_server.py
+modal deploy deploy/modal/web_server.py
+vercel env add MUSE_GLIMMER_BASE_URL production && vercel deploy --prod  # enter the Muse Glimmer Modal URL when prompted
+```
+
+The Glimmer endpoint defaults to one H200 and scales to zero after five idle minutes. To use a lower-cost A100 80 GB option, configure `MUSE_GPU=A100-80GB:1` and `MUSE_MAX_MODEL_LEN=32768` before deploying. The default H200 profile uses a 65,536 token served context; raise it only after checking available GPU memory. Optional DFlash speculation is enabled with `MUSE_ENABLE_DFLASH=1`. The Modal backend receives its own `MUSE_GLIMMER_BASE_URL` setting/secret so the server can route model requests to the endpoint.
+
 This directory contains the production-grade remote sandbox execution harness built with the **official Modal Python SDK (`modal.Sandbox`)** and **Anthropic's "Code Execution with MCP" architecture**.
 
 ## Architecture Overview

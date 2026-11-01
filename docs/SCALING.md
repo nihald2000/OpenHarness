@@ -1,5 +1,11 @@
 # Scaling Architecture and Migration Status
 
+## Hosted sandbox and model endpoint boundaries
+
+Hosted sessions derive local workspace directories from a hash of tenant and session IDs. Their API facts report `/workspace`; host repository paths and host workspace outlines are excluded from guest prompts. When a session has a running sandbox, file listing, reads, archives, and filesystem MCP operations use that sandbox daemon transport. Modal preview links resolve from sandbox tunnels, while browser automation uses the sandbox-local `127.0.0.1` URL. The daemon port is never returned as a user preview.
+
+Modal server startup requires real Modal credentials and a configured sandbox image manifest before selecting Modal automatically. Muse Glimmer vLLM runs as a separate Modal app with one GPU maximum and a five-minute scale-down window. These settings provide per-process/session isolation, not distributed state consistency: multi-node event replay and Postgres/Redis integration still need dedicated coverage before distributed-readiness claims.
+
 OpenHarness separates the stateless HTTP/SSE API layer from durable worker execution and isolated sandbox runtimes (`oh-sandboxd`), while keeping zero-setup local development as the default.
 
 `McpClientManager` (`packages/core/src/mcp/client.ts`) supports in-process defaults and external HTTP/SSE/stdio MCP servers. Its active connections, discovered tools, and default memory graph are process-local; saved connection definitions do not make live sessions durable or shared across workers. MCP connection lifecycle and memory need tenant-scoped adapter contracts plus restart/replay coverage before they can be treated as distributed services.

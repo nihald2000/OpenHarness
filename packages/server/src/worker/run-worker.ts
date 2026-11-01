@@ -3,12 +3,14 @@ import {
   createInitialRunState,
   getActiveSandboxDaemon,
   applyQuestionAnswerToState,
+  applyPermissionDecisionToState,
   runStep,
   ToolLoopGuard,
   type EngineDeps,
   type RunState,
   type SandboxHandle,
 } from "@openharness/core";
+import type { PermissionReply } from "@openharness/sdk";
 import { HttpError } from "../server.ts";
 import { diagnoseError } from "./diagnose.ts";
 import type { RunEventEmitter } from "./emitter.ts";
@@ -35,6 +37,11 @@ export class DurableRunWorker implements RunWorker {
   private readonly heartbeatIntervalMs: number;
   private readonly activeControllers = new Map<string, AbortController>();
   private readonly loopGuards = new Map<string, ToolLoopGuard>();
+  private launchRun: (runId: string) => void = (runId) => { void this.startRun(runId); };
+
+  setRunLauncher(launch: (runId: string) => void): void {
+    this.launchRun = launch;
+  }
 
   constructor(opts: DurableRunWorkerOptions) {
     this.stateMachine = opts.stateMachine;
@@ -100,7 +107,7 @@ export class DurableRunWorker implements RunWorker {
       throw new HttpError(409, `Failed to transition run ${runId} to running`);
     }
 
-    void this.startRun(runId);
+    this.launchRun(runId);
 
     return tr.run;
   }
@@ -190,6 +197,52 @@ export class DurableRunWorker implements RunWorker {
     return this.stateMachine.getRun(runId);
   }
 
+  async replyPermission(tenantId: string, requestId: string, reply: PermissionReply): Promise<{ handled: boolean; phase?: string }> {
+    const req = await this.deps.stateStore.getPermissionRequest(tenantId, requestId);
+    if (!req) return { handled: false };
+    const session = await this.deps.stateStore.getSession(tenantId, req.sessionId);
+    const runId = session?.activeRunId ?? session?.runId;
+    if (!runId || !this.stateMachine.getRun(runId)) return { handled: false };
+    const checkpoint = await this.deps.stateStore.getStepCheckpoint(tenantId, runId);
+    if (!checkpoint) return { handled: false };
+    const { state: updatedState } = await applyPermissionDecisionToState(checkpoint.state, reply, this.deps);
+    await this.stateMachine.transition(runId, ["awaiting_permission", "running"], "running", { phase: updatedState.phase });
+    this.launchRun(runId);
+    return { handled: true, phase: updatedState.phase };
+  }
+
+  async pauseRun(runId: string): Promise<DurableRunRecord | null> {
+    const run = this.stateMachine.getRun(runId);
+    if (!run) return null;
+    if (isTerminalRunStatus(run.status)) return run;
+    const tr = await this.stateMachine.transition(runId, ["running", "awaiting_input", "awaiting_permission", "queued"], "awaiting_input", { phase: "paused" });
+    this.activeControllers.get(runId)?.abort(Object.assign(new Error("Run paused"), { code: "RUN_PAUSED" }));
+    if (tr.ok && tr.run) {
+      await this.emitter.emit(tr.run.tenantId ?? "default", tr.run.sessionId, {
+        type: "run.status", sessionId: tr.run.sessionId, runId, status: "awaiting_input",
+      });
+    }
+    return tr.run;
+  }
+
+  async resumeRun(runId: string, _opts?: { extend?: boolean }): Promise<DurableRunRecord | null> {
+    const run = this.stateMachine.getRun(runId);
+    if (!run) return null;
+    if (run.status !== "awaiting_input" || run.phase !== "paused") return run;
+    const checkpoint = await this.deps.stateStore.getStepCheckpoint(run.tenantId ?? "default", runId);
+    const resumePhase = checkpoint?.state.phase && checkpoint.state.phase !== "paused"
+      ? checkpoint.state.phase
+      : "building";
+    const tr = await this.stateMachine.transition(runId, "awaiting_input", "running", { phase: resumePhase });
+    if (tr.ok) {
+      await this.emitter.emit(tr.run?.tenantId ?? run.tenantId ?? "default", run.sessionId, {
+        type: "run.status", sessionId: run.sessionId, runId, status: "running",
+      });
+      this.launchRun(runId);
+    }
+    return tr.run;
+  }
+
   async retryRun(runId: string): Promise<DurableRunRecord> {
     const prev = this.stateMachine.getRun(runId);
     if (!prev) {
@@ -211,7 +264,7 @@ export class DurableRunWorker implements RunWorker {
       tools: prev.snapshot.tools,
       limits: prev.snapshot.limits,
     });
-    void this.startRun(run.id);
+    this.launchRun(run.id);
     return run;
   }
 
@@ -392,6 +445,13 @@ export class DurableRunWorker implements RunWorker {
           }
         }
 
+        if (state.phase === "awaiting_permission") {
+          const waiting = this.stateMachine.getRun(runId);
+          if (waiting?.status === "running") {
+            await this.stateMachine.transition(runId, "running", "awaiting_permission", { phase: "awaiting_permission" });
+          }
+        }
+
         if (state.plan) {
           await this.emitter.emit(tenantId, run.sessionId, {
             type: "plan.updated",
@@ -427,7 +487,9 @@ export class DurableRunWorker implements RunWorker {
       const latest = this.stateMachine.getRun(runId);
       if (latest && !isTerminalRunStatus(latest.status)) {
         const diag = diagnoseError(err);
-        if (diag.code === "CANCELLED") {
+        if ((err as { code?: string })?.code === "RUN_PAUSED") {
+          // The last committed step checkpoint is resumed by resumeRun.
+        } else if (diag.code === "CANCELLED") {
           await this.cancelRun(runId, diag.detail ?? diag.message);
         } else {
           await this.stateMachine.transition(runId, latest.status, "failed", {

@@ -47,10 +47,15 @@ const inputOf = (t: ToolPart) =>
 export function toWireMessages(messages: Message[], profile: ModelProfile): Wire[] {
   if (profile.wire === "anthropic") return mergeSameRole(messages.flatMap(anthropicMessages));
   if (profile.toolCalling === "text") return messages.flatMap(textModeMessages);
-  return messages.flatMap(openAIMessages);
+  return messages.flatMap((message) => openAIMessages(message, profile));
 }
 
-function openAIMessages(m: Message): Wire[] {
+export function supportsVisionModel(modelOrWire: string): boolean {
+  const value = modelOrWire.toLowerCase();
+  return value === "anthropic" || /muse-(?:glimmer|spark|wonder)|gpt-4o|gpt-4\.1|gpt-5|gpt-6|claude-|gemini-/.test(value);
+}
+
+function openAIMessages(m: Message, profile?: ModelProfile): Wire[] {
   const text = textOf(m);
   const tools = toolOf(m);
   const images = imageAttachments(m);
@@ -75,12 +80,29 @@ function openAIMessages(m: Message): Wire[] {
       arguments: JSON.stringify(inputOf(t)),
     },
   }));
+  const toolMessages = tools.map((t, idx) => {
+    const screenshot = t.tool === "browser_screenshot" && t.state === "completed" &&
+      t.output && typeof t.output === "object" && !Array.isArray(t.output)
+      ? t.output as Record<string, unknown> : undefined;
+    const attachImage = Boolean(profile?.supportsVision && screenshot?.mimeType === "image/png" &&
+      typeof screenshot.dataBase64 === "string" && screenshot.dataBase64.length > 200);
+    const content = attachImage
+      ? JSON.stringify({ url: screenshot!.url, title: screenshot!.title, mimeType: screenshot!.mimeType, screenshotAttached: true })
+      : toolResultText(t);
+    return {
+      message: { role: "tool", tool_call_id: calls[idx]!.id, content },
+      image: attachImage ? screenshot : undefined,
+    };
+  });
   return [
     { role: "assistant", content: text || null, tool_calls: calls },
-    ...tools.map((t, idx) => ({
-      role: "tool",
-      tool_call_id: calls[idx]!.id,
-      content: toolResultText(t),
+    ...toolMessages.map((item) => item.message),
+    ...toolMessages.filter((item) => item.image).map(({ image: out }) => ({
+      role: "user",
+      content: [
+        { type: "text", text: `[Visual screenshot captured from ${out!.url ?? "browser"}]` },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${out!.dataBase64}` } },
+      ],
     })),
   ];
 }

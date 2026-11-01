@@ -326,6 +326,7 @@ export interface EngineDeps {
   policyGate: PolicyGate;
   contextManager: ContextManager;
   workspaceRoot: string;
+  resolveSessionWorkspace?: (tenantId: string, sessionId: string) => string;
   onTextDelta?: (
     tenantId: string,
     sessionId: string,

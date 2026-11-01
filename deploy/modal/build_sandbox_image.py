@@ -9,6 +9,8 @@ PLAYWRIGHT = "1.48.2"
 
 WRAPPER = """#!/usr/bin/env bash
 set -euo pipefail
+export NODE_PATH=/opt/oh/node_modules
+export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 exec /opt/oh/node_modules/.bin/tsx /opt/oh/packages/sandboxd/src/bin.ts "$@"
 """
 
@@ -36,7 +38,7 @@ def build_sandbox_image() -> modal.Image:
             "npm install --global @anthropic-ai/sandbox-runtime && srt --version",
             "useradd --create-home -u 1000 --shell /bin/bash agent || true",
         )
-        .env({"PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright"})
+        .env({"PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright", "NODE_PATH": "/opt/oh/node_modules", "OH_VM_ISOLATED": "1"})
         .add_local_dir(str(ROOT / "packages"), remote_path="/opt/oh/packages", copy=True)
         .add_local_file(str(ROOT / "package.json"), remote_path="/opt/oh/package.json", copy=True)
         .run_commands(

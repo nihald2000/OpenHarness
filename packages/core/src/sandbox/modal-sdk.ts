@@ -66,7 +66,7 @@ function wrap(sb: any): ModalSandboxRef {
     writeBytes: (path, data) => sb.filesystem.writeBytes(path, data),
     readBytes: (path) => sb.filesystem.readBytes(path),
     connectToken: (port, meta) =>
-      sb.createConnectToken(port, { userMetadata: JSON.stringify(meta) }),
+      sb.createConnectToken({ port, userMetadata: JSON.stringify(meta) }),
     async tunnels() {
       const t = await sb.tunnels();
       return Object.fromEntries(

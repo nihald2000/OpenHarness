@@ -45,6 +45,7 @@ import {
   SrtLocalSandboxProvider,
   StandardToolRouter,
   validateOpenHarnessConfig,
+  resolveInside,
   type EngineDeps,
   type EventEnvelope,
   type HealthReport,
@@ -96,6 +97,7 @@ export interface OpenHarnessServerConfig {
   accessKey?: string;
   dataDir?: string;
   workspaceRoot?: string;
+  isolateSessions?: boolean;
   databaseUrl?: string;
   serverToken?: string;
   adminToken?: string;
@@ -116,6 +118,13 @@ const safeEqual = (a: string, b: string): boolean =>
     crypto.createHash("sha256").update(a).digest(),
     crypto.createHash("sha256").update(b).digest()
   );
+
+function isWorkspaceMetadataPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+  return [".openharness", ".shadow-git", ".git", "node_modules"].some(
+    (directory) => normalized === directory || normalized.startsWith(`${directory}/`)
+  );
+}
 
 const PATCHABLE: Record<string, "string"> = {
   title: "string",
@@ -144,6 +153,21 @@ class SseLimiter {
   }
 }
 
+function resolveModalImageId(serverCodeRoot: string): string {
+  try {
+    const manifestPath = path.resolve(serverCodeRoot, "deploy/modal/image-manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+      imageId?: unknown;
+      sandboxImage?: unknown;
+    };
+    const imageId = manifest.imageId ?? manifest.sandboxImage;
+    if (typeof imageId === "string" && imageId.trim()) return imageId.trim();
+  } catch {
+    // The manifest is optional when Modal is not configured.
+  }
+  return "";
+}
+
 class UnconfiguredModalProvider implements SandboxProvider {
   readonly id = "modal" as const;
   readonly capabilities: SandboxCapabilities = {
@@ -154,6 +178,7 @@ class UnconfiguredModalProvider implements SandboxProvider {
     browser: true,
     persistentShell: true,
   };
+  constructor(private readonly imageAvailable: boolean) {}
   async create(_spec: SandboxSpec): Promise<SandboxHandle> {
     throw new Error("sandbox runtime modal unavailable: MODAL_TOKEN_ID and MODAL_TOKEN_SECRET not configured");
   }
@@ -168,8 +193,7 @@ class UnconfiguredModalProvider implements SandboxProvider {
   async destroy(_h: SandboxHandle): Promise<void> {}
   async health(): Promise<HealthReport> {
     const hasTokens = Boolean(process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET);
-    const manifestPath = path.resolve("deploy/modal/image-manifest.json");
-    const hasManifest = fs.existsSync(manifestPath);
+    const hasImage = Boolean(process.env.OH_MODAL_IMAGE_ID || this.imageAvailable);
     if (!hasTokens) {
       return {
         ok: false,
@@ -180,7 +204,7 @@ class UnconfiguredModalProvider implements SandboxProvider {
         checkedAt: Date.now(),
       };
     }
-    if (!hasManifest) {
+    if (!hasImage) {
       return {
         ok: false,
         providerId: "modal",
@@ -202,6 +226,7 @@ class UnconfiguredModalProvider implements SandboxProvider {
 
 export class OpenHarnessServer {
   readonly config: OpenHarnessServerConfig;
+  readonly hostedIsolation: boolean;
   readonly stateStore: StateStore;
   readonly eventBus: InProcessEventBus;
   readonly jobQueue: JobQueue;
@@ -239,6 +264,7 @@ export class OpenHarnessServer {
   private knownRuntimes = new Set<string>(["local", "srt-local", "docker", "modal"]);
   private generatedAdminTokenPath?: string;
   private settingsPath: string;
+  private fallbackWorkspaceRoot = "";
   private readUserSettings(): Record<string, any> {
     try {
       if (fs.existsSync(this.settingsPath)) {
@@ -246,6 +272,32 @@ export class OpenHarnessServer {
       }
     } catch {}
     return {};
+  }
+  private getSessionWorkspaceRoot(tenantId: string, sessionId: string): string {
+    if (!this.hostedIsolation) return this.fallbackWorkspaceRoot;
+    const dataDir = this.config.dataDir ?? ".openharness";
+    const scope = crypto
+      .createHash("sha256")
+      .update(`${tenantId}\0${sessionId}`)
+      .digest("hex")
+      .slice(0, 24);
+    const dir = path.resolve(dataDir, "workspaces", scope);
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  private async resolveSessionDaemon(sess: Session) {
+    const handleId = sess.sandboxHandleId;
+    if (!handleId) return undefined;
+    let daemon = getActiveSandboxDaemon(handleId);
+    if (!daemon && handleId.startsWith("modal-")) {
+      const modalProvider = this.providers.get("modal") as
+        | { attach?: (id: string) => Promise<unknown> }
+        | undefined;
+      await modalProvider?.attach?.(handleId).catch(() => null);
+      daemon = getActiveSandboxDaemon(handleId);
+    }
+    return daemon;
   }
   private writeUserSettings(cfg: Record<string, any>): void {
     fs.mkdirSync(path.dirname(this.settingsPath), { recursive: true });
@@ -259,7 +311,9 @@ export class OpenHarnessServer {
   private getDefaultModel(): string {
     const saved = this.readUserSettings().model;
     const configured = (saved && saved !== "muse-wonder-1.0" ? saved : undefined) ?? this.config.defaultModel;
+    if (process.env.OPENHARNESS_MODEL === "muse-glimmer") return "muse-glimmer";
     if (configured) return configured;
+    if (process.env.MUSE_GLIMMER_BASE_URL && !this.getMetaApiKey()) return "muse-glimmer";
     return this.getMetaApiKey() ? process.env.OPENHARNESS_MODEL ?? "muse-spark-1.3" : "mock/demo";
   }
 
@@ -273,8 +327,20 @@ export class OpenHarnessServer {
       serviceTenantId: "default",
       ...(config ?? {}),
     };
+    this.hostedIsolation = Boolean(
+      config?.isolateSessions ||
+      process.env.OPENHARNESS_ISOLATE_SESSIONS === "1" ||
+      process.env.OPENHARNESS_WEB_GUEST === "1" ||
+      process.env.MODAL_ENVIRONMENT ||
+      (!this.config.loopback && !config?.workspaceRoot)
+    );
     const dataDir = this.config.dataDir ?? ".openharness";
-    const workspaceRoot = this.config.workspaceRoot ?? process.cwd();
+    const serverCodeRoot = process.cwd();
+    const workspaceRoot = this.hostedIsolation
+      ? path.resolve(dataDir, "workspaces", "_empty")
+      : this.config.workspaceRoot ?? path.resolve(".");
+    this.fallbackWorkspaceRoot = workspaceRoot;
+    if (this.hostedIsolation) fs.mkdirSync(workspaceRoot, { recursive: true });
     const dbUrl =
       this.config.databaseUrl ??
       process.env.DATABASE_URL ??
@@ -307,9 +373,23 @@ export class OpenHarnessServer {
     }
     this.settingsPath = path.join(dataDir, "settings.json");
     const rawSavedRuntime = this.readUserSettings().defaultRuntime;
-    const savedDefaultRuntime =
-      rawSavedRuntime && rawSavedRuntime !== "modal" ? rawSavedRuntime : undefined;
-    this.defaultRuntime = savedDefaultRuntime ?? this.config.defaultRuntime ?? "local";
+    const envDefaultRuntime = process.env.OH_DEFAULT_RUNTIME || undefined;
+    this.defaultRuntime =
+      rawSavedRuntime || envDefaultRuntime || this.config.defaultRuntime || "local";
+    const modalImageId = process.env.OH_MODAL_IMAGE_ID || resolveModalImageId(serverCodeRoot);
+    const hasModalCredentials = Boolean(
+      process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET
+    );
+    if (
+      hasModalCredentials &&
+      modalImageId &&
+      !rawSavedRuntime &&
+      !envDefaultRuntime &&
+      !this.config.defaultRuntime &&
+      this.hostedIsolation
+    ) {
+      this.defaultRuntime = "modal";
+    }
 
     this.providers =
       this.config.providers ??
@@ -321,19 +401,8 @@ export class OpenHarnessServer {
           "modal",
           (() => {
             // Modal uses its SDK, image manifest, and API credentials; it does not probe local SRT or Docker binaries.
-            const manifestPath = path.resolve("deploy/modal/image-manifest.json");
-            let imageId = process.env.OH_MODAL_IMAGE_ID ?? "";
-            if (!imageId && fs.existsSync(manifestPath)) {
-              try {
-                imageId = String(JSON.parse(fs.readFileSync(manifestPath, "utf8"))?.imageId ?? "");
-              } catch {}
-            }
-            const hasCreds = Boolean(
-              (process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET) ||
-                process.env.MODAL_ENVIRONMENT ||
-                process.env.MODAL_TASK_ID
-            );
-            if (imageId && hasCreds) {
+            const hasCreds = Boolean(process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET);
+            if (modalImageId && hasCreds) {
               return new ModalSandboxProvider(
                 new ModalSdkApi({
                   appName: process.env.OH_MODAL_APP ?? "openharness",
@@ -341,14 +410,14 @@ export class OpenHarnessServer {
                   tokenSecret: process.env.MODAL_TOKEN_SECRET,
                 }),
                 {
-                  baseImageId: imageId,
+                  baseImageId: modalImageId,
                   encrypt: (s) => this.secretStore.encryptValue(s),
                   decrypt: (s) => this.secretStore.decryptValue(s),
                 },
                 this.sandboxRecords
               );
             }
-            return new UnconfiguredModalProvider();
+            return new UnconfiguredModalProvider(Boolean(modalImageId));
           })(),
         ],
       ]);
@@ -362,6 +431,15 @@ export class OpenHarnessServer {
       mcpManager: this.mcpManager,
       sandboxEnabled: Boolean(this.config.osEnforcedSandbox),
       ensureSandbox: (s) => hooksRef!.ensureSandbox(s),
+      resolvePreviewUrl: async (sandboxId, port) => {
+        const handle = this.activeSandboxes.get(sandboxId);
+        if (handle?.ports?.[port]) return handle.ports[port];
+        if (handle?.providerId === "modal") {
+          return (this.providers.get("modal") as { resolveTunnelUrl?: (id: string, p: number) => Promise<string | undefined> } | undefined)
+            ?.resolveTunnelUrl?.(sandboxId, port);
+        }
+        return undefined;
+      },
       onSandboxStop: async (toolCtx) => {
         const sandboxId = toolCtx.sandboxHandleId ?? toolCtx.state.sandboxHandleId ?? null;
         if (!sandboxId) {
@@ -402,6 +480,7 @@ export class OpenHarnessServer {
     let providerRef: ModelAgnosticProviderAdapter | null = null;
     const contextManager = new LayeredContextManager({
       workspaceRoot,
+      disableHostWorkspaceScan: this.hostedIsolation,
       summarizer: async (transcriptText, state) => {
         if (!providerRef || state.model.startsWith("mock/")) return "";
         const res = await providerRef.generateTurn({
@@ -469,6 +548,18 @@ export class OpenHarnessServer {
           };
         };
         const httpTransport = createHttpTransport(async (profile, model) => {
+          if (profile.apiKeyEnv === "MUSE_GLIMMER_API_KEY" && process.env.MUSE_GLIMMER_BASE_URL) {
+            const providers = this.readUserSettings().providers as Record<string, any> | undefined;
+            const hasCustomOverride = Object.values(providers ?? {}).some((entry) =>
+              entry?.type === "openai" && entry.models && Object.hasOwn(entry.models, model)
+            );
+            if (!hasCustomOverride) {
+              return {
+                baseUrl: process.env.MUSE_GLIMMER_BASE_URL,
+                apiKey: this.secretStore.getDecrypted("MUSE_GLIMMER_API_KEY") ?? process.env.MUSE_GLIMMER_API_KEY ?? "modal-open-weights",
+              };
+            }
+          }
           if (profile.apiKeyEnv === "MODEL_API_KEY") {
             const apiKey = this.getMetaApiKey();
             if (!apiKey) {
@@ -539,22 +630,24 @@ export class OpenHarnessServer {
       eventBus: this.eventBus,
       provider,
       workspaceRoot,
+      dataDir,
       allowUnsandboxedAutonomy: this.config.allowUnsandboxedAutonomy,
       emit,
       defaultSpecFor: (state: RunState): SandboxSpec => {
         const rt = state.runtime ?? this.defaultRuntime;
         const isModal = rt === "modal";
+        const sessionWorkspaceRoot = this.getSessionWorkspaceRoot(state.tenantId, state.sessionId);
         return {
           runId: state.runId,
           sessionId: state.sessionId,
           tenantId: state.tenantId,
           workspace: isModal
             ? ({ type: "empty", kind: "empty" } as any)
-            : { type: "bind", kind: "local", hostPath: workspaceRoot, path: workspaceRoot },
+            : { type: "bind", kind: "local", hostPath: sessionWorkspaceRoot, path: sessionWorkspaceRoot },
           policy: compileSandboxPolicy({
             runId: state.runId,
             phase: "agent",
-            workspacePath: isModal ? "/workspace" : workspaceRoot,
+            workspacePath: isModal ? "/workspace" : sessionWorkspaceRoot,
             networkMode: "allowlist",
           }),
           allowUnsandboxedAutonomy: this.config.allowUnsandboxedAutonomy,
@@ -574,6 +667,8 @@ export class OpenHarnessServer {
       policyGate,
       contextManager,
       workspaceRoot,
+      resolveSessionWorkspace: (tenantId, sessionId) =>
+        this.getSessionWorkspaceRoot(tenantId, sessionId),
       onTextDelta: (tenantId, sessionId, messageId, delta) =>
         this.emitter.emitDelta(tenantId, sessionId, delta, messageId, "text"),
       onReasoningDelta: (tenantId, sessionId, messageId, delta) =>
@@ -689,6 +784,9 @@ export class OpenHarnessServer {
       activeSandboxes: this.activeSandboxes,
     });
     const keepalive = createKeepalive(() => this.config.port ?? Number(process.env.OPENHARNESS_PORT ?? 4096));
+    this.runWorker.setRunLauncher((runId) => {
+      void keepalive.hold(runId, () => this.runWorker.startRun(runId));
+    });
     this.launcher = new InProcessLauncher({ worker: this.runWorker, keepalive });
     this.scheduleManager = new ScheduleManager({
       onEnqueueRun: async (req) => {
@@ -752,7 +850,7 @@ export class OpenHarnessServer {
       void sweepStalledRuns(this.runStateMachine, this.emitter);
       const modalProv = this.providers.get("modal") as any;
       if (modalProv && typeof modalProv.snapshotIdle === "function") {
-        void modalProv.snapshotIdle(Number(process.env.OH_SANDBOX_IDLE_MS ?? 600_000));
+      void modalProv.snapshotIdle(Number(process.env.OH_SANDBOX_IDLE_MS ?? 180_000));
       }
     }, 60_000);
     this.sweepInterval.unref?.();
@@ -1155,7 +1253,7 @@ export class OpenHarnessServer {
         status: 200,
         body: {
           version: "0.2.0",
-          workspace: this.deps.workspaceRoot,
+          workspace: this.hostedIsolation ? "/workspace" : this.deps.workspaceRoot,
           defaultAgent: this.config.defaultAgent ?? "assistant",
           defaultModel: this.getDefaultModel(),
           defaultRuntime: this.defaultRuntime,
@@ -1391,6 +1489,15 @@ export class OpenHarnessServer {
           });
         }
       }
+      if (process.env.MUSE_GLIMMER_BASE_URL) {
+        modelMap.set("muse-glimmer", {
+          id: "muse-glimmer",
+          name: "Muse Glimmer 30B (Modal Open-Weights)",
+          provider: "Modal vLLM (Meta Open Weights)",
+          contextWindow: 131072,
+          isDefault: defaultModelId === "muse-glimmer",
+        });
+      }
       return { status: 200, body: Array.from(modelMap.values()) };
     }
 
@@ -1499,27 +1606,40 @@ export class OpenHarnessServer {
       const sess = await this.stateStore.getSession(tenantId, sid);
       if (!sess) return { status: 404, body: { error: "Session not found" } };
       const sbId = sess.sandboxHandleId;
+      const daemon = await this.resolveSessionDaemon(sess);
       if (sbId) {
-        const daemon = getActiveSandboxDaemon(sbId);
+        const transport = this.activeSandboxes.get(sbId)?.transport;
         if (daemon) {
           const res = await daemon.handleRequest("POST", "/search/glob", { "x-session-key": daemon.config.sessionKey }, { pattern: "**/*" });
-          const files = Array.isArray(res.body.matches) ? res.body.matches : [];
+          if (res.status !== 200) return { status: res.status, body: res.body };
+          const files = (Array.isArray(res.body.matches) ? res.body.matches : []).filter((file: unknown) =>
+            typeof file === "string" && !isWorkspaceMetadataPath(file)
+          );
+          return { status: 200, body: { files } };
+        }
+        if (transport) {
+          const res = await transport.request("POST", "/search/glob", { pattern: "**/*" });
+          if (res.status !== 200) return { status: res.status, body: res.body };
+          const files = (Array.isArray(res.body.matches) ? res.body.matches : []).filter((file: unknown) =>
+            typeof file === "string" && !isWorkspaceMetadataPath(file)
+          );
           return { status: 200, body: { files } };
         }
       }
+      const sessionWorkspaceRoot = this.getSessionWorkspaceRoot(tenantId, sid);
       const listFiles = (dir: string, rel = ""): string[] => {
         const out: string[] = [];
         try {
           for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-            if (e.name === "node_modules" || e.name === ".git" || e.name.startsWith(".openharness")) continue;
             const p = rel ? `${rel}/${e.name}` : e.name;
+            if (isWorkspaceMetadataPath(p)) continue;
             if (e.isDirectory()) out.push(...listFiles(path.join(dir, e.name), p));
             else out.push(p);
           }
         } catch {}
         return out;
       };
-      return { status: 200, body: { files: listFiles(this.deps.workspaceRoot).slice(0, 500) } };
+      return { status: 200, body: { files: listFiles(sessionWorkspaceRoot).slice(0, 500) } };
     }
 
     const sessionFileMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/file$/);
@@ -1531,16 +1651,28 @@ export class OpenHarnessServer {
       if (!filePath || filePath.includes("..")) {
         return { status: 400, body: { error: "Invalid file path" } };
       }
+      const daemon = await this.resolveSessionDaemon(sess);
       if (sess.sandboxHandleId) {
-        const daemon = getActiveSandboxDaemon(sess.sandboxHandleId);
+        const transport = this.activeSandboxes.get(sess.sandboxHandleId)?.transport;
         if (daemon) {
           const res = await daemon.handleRequest("POST", "/files/view", { "x-session-key": daemon.config.sessionKey }, { path: filePath });
           if (res.status !== 200) return { status: res.status, body: res.body };
           return { status: 200, body: { path: filePath, content: String(res.body.content ?? "") } };
         }
+        if (transport) {
+          const res = await transport.request("POST", "/files/view", { path: filePath });
+          if (res.status !== 200) return { status: res.status, body: res.body };
+          return { status: 200, body: { path: filePath, content: String(res.body.content ?? "") } };
+        }
       }
-      const resolved = path.resolve(this.deps.workspaceRoot, filePath);
-      if (!resolved.startsWith(path.resolve(this.deps.workspaceRoot)) || !fs.existsSync(resolved)) {
+      const sessionWorkspaceRoot = this.getSessionWorkspaceRoot(tenantId, sid);
+      let resolved: string;
+      try {
+        resolved = resolveInside(sessionWorkspaceRoot, filePath);
+      } catch {
+        return { status: 404, body: { error: "File not found" } };
+      }
+      if (!fs.existsSync(resolved)) {
         return { status: 404, body: { error: "File not found" } };
       }
       return { status: 200, body: { path: filePath, content: fs.readFileSync(resolved, "utf8") } };
@@ -1551,18 +1683,17 @@ export class OpenHarnessServer {
       const sid = sessionDiffMatch[1]!;
       const sess = await this.stateStore.getSession(tenantId, sid);
       if (!sess) return { status: 404, body: { error: "Session not found" } };
+      const daemon = await this.resolveSessionDaemon(sess);
       if (sess.sandboxHandleId) {
-        const daemon = getActiveSandboxDaemon(sess.sandboxHandleId);
         if (daemon) {
           const res = await daemon.handleRequest("POST", "/checkpoints/diff", { "x-session-key": daemon.config.sessionKey }, {});
           if (res.status === 200) {
-            return {
-              status: 200,
-              body: {
-                changed: Array.isArray(res.body.files) ? res.body.files : [],
-                diff: String(res.body.diff ?? ""),
-              },
-            };
+            const runs = this.runStateMachine.listRuns(sid);
+            const changed = Array.from(new Set([
+              ...(Array.isArray(res.body.files) ? res.body.files.map(String) : []),
+              ...runs.flatMap((r) => r.changedFiles ?? []),
+            ]));
+            return { status: 200, body: { changed, diff: String(res.body.diff ?? "") } };
           }
         }
       }
@@ -1576,8 +1707,9 @@ export class OpenHarnessServer {
       const sid = sessionArchiveMatch[1]!;
       const sess = await this.stateStore.getSession(tenantId, sid);
       if (!sess) return { status: 404, body: { error: "Session not found" } };
+      const daemon = await this.resolveSessionDaemon(sess);
       if (sess.sandboxHandleId) {
-        const daemon = getActiveSandboxDaemon(sess.sandboxHandleId);
+        const transport = this.activeSandboxes.get(sess.sandboxHandleId)?.transport;
         if (daemon) {
           const res = await daemon.handleRequest("GET", "/workspace/archive", { "x-session-key": daemon.config.sessionKey });
           if (res.status === 200 && res.body.archiveBase64) {
@@ -1586,12 +1718,24 @@ export class OpenHarnessServer {
               body: { archiveBase64: res.body.archiveBase64, filename: `${sid}.tar.gz` },
             };
           }
+          return { status: res.status, body: res.body };
+        }
+        if (transport) {
+          const res = await transport.request("GET", "/workspace/archive");
+          if (res.status === 200 && res.body.archiveBase64) {
+            return {
+              status: 200,
+              body: { archiveBase64: res.body.archiveBase64, filename: `${sid}.tar.gz` },
+            };
+          }
+          return { status: res.status, body: res.body };
         }
       }
+      const sessionWorkspaceRoot = this.getSessionWorkspaceRoot(tenantId, sid);
       const tarRes = spawnSync(
         "tar",
         ["-czf", "-", "--exclude=node_modules", "--exclude=.git", "--exclude=.openharness", "."],
-        { cwd: this.deps.workspaceRoot, maxBuffer: 50 * 1024 * 1024 }
+        { cwd: sessionWorkspaceRoot, maxBuffer: 50 * 1024 * 1024 }
       );
       return {
         status: 200,
@@ -1805,6 +1949,9 @@ export class OpenHarnessServer {
           },
         };
       }
+      if (this.hostedIsolation) {
+        return { status: 404, body: { error: "Sandbox is no longer running" } };
+      }
       return {
         status: 200,
         body: {
@@ -1908,12 +2055,22 @@ export class OpenHarnessServer {
       const runId = runActionMatch[1]!;
       const action = runActionMatch[2]!;
       if (action === "pause") {
+        if (await this.runWorker.getRun(runId)) {
+          const pausedV2 = await this.runWorker.pauseRun(runId);
+          if (!pausedV2) return { status: 404, body: { error: "Run not found" } };
+          return { status: 200, body: pausedV2 };
+        }
         const paused = await this.worker.pauseRun(tenantId, runId);
         if (!paused) return { status: 404, body: { error: "Run not found" } };
         return { status: 200, body: paused };
       }
       if (action === "resume") {
         const extend = Boolean(body?.extend);
+        if (await this.runWorker.getRun(runId)) {
+          const resumedV2 = await this.runWorker.resumeRun(runId, { extend });
+          if (!resumedV2) return { status: 404, body: { error: "Run not found" } };
+          return { status: 200, body: resumedV2 };
+        }
         const resumed = await this.worker.resumeRun(tenantId, runId, { extend });
         if (!resumed.run) return { status: 404, body: { error: "Run not found" } };
         return { status: 200, body: resumed.run };
@@ -1937,6 +2094,8 @@ export class OpenHarnessServer {
     const permReplyMatch = pathname.match(/^\/v1\/permissions\/([^/]+)\/reply$/);
     if (method === "POST" && permReplyMatch) {
       const reply = (body?.reply as PermissionReply) ?? "reject";
+      const v2Res = await this.runWorker.replyPermission(tenantId, permReplyMatch[1]!, reply);
+      if (v2Res.handled) return { status: 200, body: { replied: true, phase: v2Res.phase } };
       const res = await this.worker.replyPermissionAndResume(
         tenantId,
         permReplyMatch[1]!,

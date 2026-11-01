@@ -137,6 +137,7 @@ export interface SandboxToolRouterOptions {
   mcpManager?: McpClientManager;
   sandboxEnabled?: boolean;
   ensureSandbox?: (state: RunState) => Promise<{ id: string; workspacePath: string }>;
+  resolvePreviewUrl?: (sandboxId: string, port: number) => Promise<string | undefined> | string | undefined;
   onSandboxStop?: (ctx: ToolExecutionContext) => Promise<ToolExecutionResult>;
   onDelegate?: (
     input: Record<string, unknown>,
@@ -322,8 +323,24 @@ export class StandardToolRouter implements ToolRouter {
           let text = typeof input.text === "string" ? input.text : "";
           if (!text && typeof input.path === "string") {
             try {
-              const p = resolveInside(ctx.workspaceRoot, input.path);
-              text = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
+              const daemon = ctx.sandboxHandleId
+                ? getActiveSandboxDaemon(ctx.sandboxHandleId)
+                : undefined;
+              if (daemon) {
+                const res = await daemon.handleRequest(
+                  "POST",
+                  "/files/view",
+                  { "x-session-key": daemon.config.sessionKey },
+                  { path: input.path }
+                );
+                if (res.status !== 200) {
+                  return { output: null, error: String(res.body.error ?? "Failed to read file") };
+                }
+                text = String(res.body.content ?? "");
+              } else {
+                const p = resolveInside(ctx.workspaceRoot, input.path);
+                text = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
+              }
             } catch (err) {
               return { output: null, error: (err as Error).message };
             }
@@ -773,7 +790,17 @@ export class StandardToolRouter implements ToolRouter {
           const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "process_start requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/processes", d.headers, input);
-          return { output: res.body, error: res.status !== 200 ? String(res.body.error) : undefined };
+          const body = res.body as Record<string, unknown>;
+          const port = typeof body.port === "number" ? body.port : Number(input.port);
+          const externalUrl = Number.isFinite(port) && ctx.sandboxHandleId
+            ? await this.opts.resolvePreviewUrl?.(ctx.sandboxHandleId, port)
+            : undefined;
+          return {
+            output: externalUrl && port > 0
+              ? { ...body, previewUrl: externalUrl, internalUrl: `http://127.0.0.1:${port}` }
+              : body,
+            error: res.status !== 200 ? String(res.body.error) : undefined,
+          };
         },
       },
 
@@ -849,13 +876,20 @@ export class StandardToolRouter implements ToolRouter {
           if (!d) return { output: null, error: "preview_url requires an active sandbox" };
           const res = await d.daemon.handleRequest("GET", "/ports", d.headers);
           const ports = (res.body.ports as Array<{ port: number; previewUrl: string }>) ?? [];
+          const resolvePort = async (entry: { port: number; previewUrl: string }) => {
+            const externalUrl = ctx.sandboxHandleId
+              ? await this.opts.resolvePreviewUrl?.(ctx.sandboxHandleId, entry.port)
+              : undefined;
+            return externalUrl
+              ? { ...entry, previewUrl: externalUrl, internalUrl: `http://127.0.0.1:${entry.port}` }
+              : entry;
+          };
           if (typeof input.port === "number") {
             const match = ports.find((p) => p.port === input.port);
-            return {
-              output: match ?? { port: input.port, previewUrl: `http://127.0.0.1:${input.port}` },
-            };
+            const entry = match ?? { port: input.port, previewUrl: `http://127.0.0.1:${input.port}` };
+            return { output: await resolvePort(entry) };
           }
-          return { output: { ports } };
+          return { output: { ports: await Promise.all(ports.map(resolvePort)) } };
         },
       },
 

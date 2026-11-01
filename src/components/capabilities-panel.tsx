@@ -39,10 +39,12 @@ export function CapabilitiesPanel({
   activeAgent,
   sessionId,
   previewUrl,
+  refreshToken,
 }: {
   activeAgent: string;
   sessionId?: string;
   previewUrl?: string | null;
+  refreshToken?: string | number;
 }) {
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<{ path: string; content: string } | null>(null);
@@ -63,19 +65,27 @@ export function CapabilitiesPanel({
   );
 
   useEffect(() => {
-    if (!sessionId) return;
+    setWorkspaceFiles([]);
+    setSelectedFile(null);
+    setDiffState({ changed: [], diff: "" });
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || !capabilitiesOpen) return;
+    let active = true;
     if (activeTab === "Files") {
       void client.session
         .files(sessionId)
-        .then((r) => setWorkspaceFiles(r.files ?? []))
+        .then((r) => { if (active) setWorkspaceFiles(r.files ?? []); })
         .catch(() => {});
     } else if (activeTab === "Changes") {
       void client.session
         .diff(sessionId)
-        .then((r) => setDiffState(r))
+        .then((r) => { if (active) setDiffState(r); })
         .catch(() => {});
     }
-  }, [sessionId, activeTab]);
+    return () => { active = false; };
+  }, [sessionId, activeTab, capabilitiesOpen, refreshToken]);
 
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const baseId = useId();
@@ -154,7 +164,15 @@ export function CapabilitiesPanel({
           <div className="flex items-center gap-1">
             <IconButton
               label="Reload catalog"
-              onClick={() => void refresh()}
+              onClick={() => {
+                void refresh();
+                if (!sessionId) return;
+                if (activeTab === "Files") {
+                  void client.session.files(sessionId).then((r) => setWorkspaceFiles(r.files ?? [])).catch(() => {});
+                } else if (activeTab === "Changes") {
+                  void client.session.diff(sessionId).then(setDiffState).catch(() => {});
+                }
+              }}
               disabled={catalogLoading}
             >
               {catalogLoading ? (

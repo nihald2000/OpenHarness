@@ -1,5 +1,10 @@
 # OpenHarness Remediation & Long-Horizon Harness Checklist
 
+## Modal E2E Harness & Muse Glimmer local verification
+- [x] Implement hosted workspace isolation, preview tunnel resolution, shadow-git baseline diffs, v2 permission/pause/resume routing, model profiles, vision screenshots, and Modal deployment assets.
+- [x] Run the full typecheck, test, build, and Modal Python syntax gates; all passed locally (52 tests passed, 1 credential-gated Modal integration test skipped).
+- [ ] Validate Modal and Vercel deployment commands with live credentials when explicitly requested.
+
 ## Remediation & Modal Sandbox Integration (`fixprompt.md` Steps 1–10)
 
 - [x] **Step 1 — Build, workspace, CI, restored files (R7, F1, F4, F7)**:

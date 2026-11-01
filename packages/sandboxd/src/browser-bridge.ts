@@ -23,13 +23,13 @@ export class BrowserBridge {
     if (workerPath) {
       this.workerPath = workerPath;
     } else {
-      const candidate = "/opt/oh/packages/sandboxd/browser-worker.mjs";
-      if (fs.existsSync(candidate)) {
-        this.workerPath = candidate;
-      } else {
-        const here = path.dirname(fileURLToPath(import.meta.url));
-        this.workerPath = path.resolve(here, "../browser-worker.mjs");
-      }
+      const here = path.dirname(fileURLToPath(import.meta.url));
+      const candidates = [
+        "/opt/oh/packages/sandboxd/browser-worker.mjs",
+        "/opt/oh/browser-worker.mjs",
+        path.resolve(here, "../browser-worker.mjs"),
+      ];
+      this.workerPath = candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]!;
     }
   }
 
@@ -39,6 +39,11 @@ export class BrowserBridge {
     try {
       const child = spawn(process.execPath, [this.workerPath], {
         stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH ?? "/ms-playwright",
+          NODE_PATH: process.env.NODE_PATH ?? "/opt/oh/node_modules",
+        },
       });
       const rl = readline.createInterface({ input: child.stdout, terminal: false });
       rl.on("line", (line) => {

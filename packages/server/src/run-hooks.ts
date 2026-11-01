@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 import type { CheckpointInfo, OpenHarnessEvent } from "@openharness/sdk";
 import {
   condenseVerificationFailure,
@@ -23,6 +24,7 @@ export interface RunHooksContext {
   eventBus: EventBus;
   provider: ProviderAdapter;
   workspaceRoot: string;
+  dataDir?: string;
   allowUnsandboxedAutonomy?: boolean;
   emit: (tenantId: string, sessionId: string, ev: OpenHarnessEvent) => Promise<void>;
   defaultSpecFor: (state: RunState) => SandboxSpec;
@@ -97,44 +99,8 @@ export function createRunHooks(ctx: RunHooksContext) {
     if (ctx.allowUnsandboxedAutonomy) {
       spec.allowUnsandboxedAutonomy = true;
     }
-    let handle: SandboxHandle;
-    let createdSpec = spec;
-    try {
-      handle = await provider.create(spec);
-    } catch (error) {
-      if (runtime === "local") throw error;
-      const localProvider = ctx.providers.get("local");
-      if (!localProvider) throw error;
-
-      const rebaseWorkspacePath = (candidate: string): string => {
-        if (candidate === "/workspace") return ctx.workspaceRoot;
-        if (candidate.startsWith("/workspace/")) {
-          return path.resolve(ctx.workspaceRoot, candidate.slice("/workspace/".length));
-        }
-        return candidate;
-      };
-      createdSpec = {
-        ...spec,
-        providerId: "local",
-        workspace: {
-          type: "bind",
-          kind: "local",
-          hostPath: ctx.workspaceRoot,
-          path: ctx.workspaceRoot,
-        },
-        policy: {
-          ...spec.policy,
-          filesystem: {
-            ...spec.policy.filesystem,
-            allowRead: spec.policy.filesystem.allowRead.map(rebaseWorkspacePath),
-            allowWrite: spec.policy.filesystem.allowWrite.map(rebaseWorkspacePath),
-          },
-          network: { ...spec.policy.network, mode: "open" },
-        },
-      };
-      handle = await localProvider.create(createdSpec);
-      state.runtime = "local";
-    }
+    const handle = await provider.create(spec);
+    const createdSpec = spec;
     ctx.activeSandboxes.set(handle.id, handle);
     state.sandboxHandleId = handle.id;
 
@@ -339,6 +305,14 @@ export function createRunHooks(ctx: RunHooksContext) {
         const navRes = await reqFn("POST", "/browser/navigate", {
           url: `http://127.0.0.1:${targetPort}`,
         }).catch(() => null);
+        const screenshot = await reqFn("POST", "/browser/screenshot", {}).catch(() => null);
+        const screenshotBase64 = screenshot?.body?.dataBase64;
+        if (screenshot?.status === 200 && screenshot?.body?.mimeType === "image/png" &&
+            typeof screenshotBase64 === "string" && screenshotBase64.length > 200 && ctx.dataDir) {
+          const artifactDir = path.join(ctx.dataDir, "artifacts");
+          fs.mkdirSync(artifactDir, { recursive: true });
+          fs.writeFileSync(path.join(artifactDir, `verify_${state.runId}_${state.iteration}.png`), Buffer.from(screenshotBase64, "base64"));
+        }
         if (navRes && navRes.status === 200) {
           const logsRes = await reqFn("GET", "/browser/console_logs").catch(() => null);
           const logs = Array.isArray(logsRes?.body?.logs) ? (logsRes!.body.logs as string[]) : [];
