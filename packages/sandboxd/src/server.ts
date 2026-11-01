@@ -81,6 +81,7 @@ export interface SandboxDaemonConfig {
   runAs?: { uid: number; gid: number };
   requireSrt?: boolean;
   requirePlaywright?: boolean;
+  srtProbe?: (settingsPath: string) => boolean;
   policy: CompiledSandboxPolicy;
   secretValuesToRedact?: string[];
   onTelemetry?: (ev: SandboxTelemetryEvent) => void;
@@ -546,6 +547,7 @@ export class SandboxDaemon {
           srtSettingsPath: this.srtSettingsPath,
           runAs: this.config.runAs,
           useSrt: this.osEnforced,
+          srtProbe: this.config.srtProbe,
         },
         wrappedScript,
         session!.cwd,
@@ -726,6 +728,7 @@ export class SandboxDaemon {
         srtSettingsPath: this.srtSettingsPath,
         runAs: this.config.runAs,
         useSrt: this.osEnforced,
+        srtProbe: this.config.srtProbe,
       },
       command,
       cwd,

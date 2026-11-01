@@ -10,7 +10,12 @@ import type {
 import type { ModalApi, ModalSandboxRef } from "./modal-api.ts";
 import { compileSandboxPolicy, type CompiledSandboxPolicy } from "./policy.ts";
 import { SETUP_DOMAINS, toModalNetwork } from "./modal-policy.ts";
-import { HttpDaemonTransport, type SandboxTransport } from "./transport.ts";
+import {
+  FallbackSandboxTransport,
+  HttpDaemonTransport,
+  ModalExecDaemonTransport,
+  type SandboxTransport,
+} from "./transport.ts";
 import type { SandboxRecord, SandboxRecordStore } from "./records.ts";
 import { materializeWorkspace, packLocal, sha256 } from "./workspace-io.ts";
 import { registerSandboxTransport, unregisterSandboxTransport } from "./providers.ts";
@@ -294,6 +299,7 @@ export class ModalSandboxProvider implements SandboxProvider {
       memoryMiB,
       memoryLimitMiB: this.cfg.memoryLimitMiB,
       encryptedPorts: ports,
+      readinessPort: DAEMON_PORT,
       ...(this.cfg.inboundCidrAllowlist ? { inboundCidrAllowlist: this.cfg.inboundCidrAllowlist } : {}),
       ...toModalNetwork(policy),
       tags: {
@@ -328,10 +334,11 @@ export class ModalSandboxProvider implements SandboxProvider {
 
     const transport = this.transportFor(ref, sessionKey, record);
     try {
-      await waitForHealth(transport, this.cfg.bootTimeoutMs);
+      await waitForReadyOrExit(ref, Math.min(this.cfg.bootTimeoutMs, 45_000));
+      await waitForHealth(transport, ref, this.cfg.bootTimeoutMs);
     } catch (err) {
       await ref.terminate().catch(() => {});
-      await this.records.update(handleId, { status: "terminated" });
+      await this.records.update(handleId, { status: "terminated" }).catch(() => {});
       throw new Error(
         `Modal sandbox failed to become healthy: ${(err as Error).message}`
       );
@@ -371,27 +378,37 @@ export class ModalSandboxProvider implements SandboxProvider {
     if (this.cfg.transportFactory) {
       return this.cfg.transportFactory(ref, sessionKey, r);
     }
-    return new HttpDaemonTransport(
-      sessionKey,
-      async () => {
-        if (!this.cfg.useTunnelTransport && typeof ref.connectToken === "function") {
-          try {
-            return await ref.connectToken(DAEMON_PORT, {
-              tenant: r.tenantId,
-              run: r.runId,
-              handle: r.handleId,
-            });
-          } catch {
-            // Fall through to tunnels()[DAEMON_PORT] on Modal Starter plan
-          }
-        }
-        const t = await ref.tunnels();
-        const url = t[DAEMON_PORT];
+    const channels: Array<{ name: string; transport: SandboxTransport }> = [];
+    if (!this.cfg.useTunnelTransport && typeof ref.connectToken === "function") {
+      channels.push({
+        name: "connect-token",
+        transport: new HttpDaemonTransport(
+          sessionKey,
+          () => ref.connectToken(DAEMON_PORT, {
+            tenant: r.tenantId,
+            run: r.runId,
+            handle: r.handleId,
+          }),
+          () => this.touch(r.handleId)
+        ),
+      });
+    }
+    channels.push({
+      name: "encrypted-tunnel",
+      transport: new HttpDaemonTransport(sessionKey, async () => {
+        const tunnels = await ref.tunnels();
+        const url = tunnels[DAEMON_PORT];
         if (!url) throw new Error(`Modal tunnel for port ${DAEMON_PORT} not available`);
         return { url, token: "" };
-      },
-      () => this.touch(r.handleId)
-    );
+      }, () => this.touch(r.handleId)),
+    });
+    if (typeof ref.exec === "function") {
+      channels.push({
+        name: "exec-loopback",
+        transport: new ModalExecDaemonTransport(ref, sessionKey, DAEMON_PORT, () => this.touch(r.handleId)),
+      });
+    }
+    return new FallbackSandboxTransport(channels);
   }
 
   /** Re-attach after a worker restart; throws SandboxGoneError if the Modal sandbox has exited. */
@@ -555,17 +572,54 @@ export class ModalSandboxProvider implements SandboxProvider {
   }
 }
 
-async function waitForHealth(t: SandboxTransport, timeoutMs: number): Promise<void> {
+async function startupExitError(ref: ModalSandboxRef, exitCode: number): Promise<Error> {
+  const logs = await ref.readStartupLogs?.().catch(() => undefined);
+  return new Error(`Modal sandbox daemon exited early (code ${exitCode}): ${(logs?.stderr || logs?.stdout || "no logs").trim()}`);
+}
+
+async function waitForReadyOrExit(ref: ModalSandboxRef, timeoutMs: number): Promise<void> {
+  if (typeof ref.waitUntilReady !== "function") return;
+  let finished = false;
+  const pollForExit = async () => {
+    const deadline = Date.now() + timeoutMs;
+    while (!finished && Date.now() < deadline) {
+      const exitCode = await ref.poll().catch(() => null);
+      if (exitCode !== null) throw await startupExitError(ref, exitCode);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  };
+  try {
+    await Promise.race([
+      ref.waitUntilReady(timeoutMs).catch(() => undefined),
+      pollForExit(),
+    ]);
+  } catch (err) {
+    const exitCode = await ref.poll().catch(() => null);
+    if (exitCode !== null) throw await startupExitError(ref, exitCode);
+    // Modal's native probe can fail before the service is reachable through
+    // all channels. The explicit health loop below remains authoritative.
+    if ((err as Error).message.includes("exited early")) throw err;
+  } finally {
+    finished = true;
+  }
+}
+
+async function waitForHealth(t: SandboxTransport, ref: ModalSandboxRef, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
   for (let delay = 50; Date.now() < deadline; delay = Math.min(delay * 2, 1_000)) {
+    const exitCode = await ref.poll().catch(() => null);
+    if (exitCode !== null) throw await startupExitError(ref, exitCode);
     const res = await t
-      .request("GET", "/health", undefined, { timeoutMs: 5_000 })
-      .catch(() => null);
+      // A stale Modal connect token can return an edge 401 once. Let that
+      // channel remint/retry before the fallback router switches transports.
+      .request("GET", "/health", undefined, { timeoutMs: 3_000, maxRetries: 1 })
+      .catch((err) => { lastError = err; return null; });
     if (res?.status === 200 && res.body?.osEnforced !== false) return;
-    if (res?.status === 200 || res?.status === 503) {
+    if (res?.daemon && (res.status === 200 || res.status === 503)) {
       throw new Error("daemon reports enforcement unavailable");
     }
     await new Promise((r) => setTimeout(r, delay));
   }
-  throw new Error("timed out waiting for /health");
+  throw new Error(`timed out waiting for /health${lastError instanceof Error ? `: ${lastError.message}` : ""}`);
 }

@@ -13,6 +13,8 @@ export type ModalCreateParams = {
   encryptedPorts: number[];
   tags: Record<string, string>;
   inboundCidrAllowlist?: string[];
+  readinessPort?: number;
+  h2Ports?: number[];
   blockNetwork?: boolean;
   outboundDomainAllowlist?: string[];
   outboundCidrAllowlist?: string[];
@@ -30,6 +32,8 @@ export interface ModalSandboxRef {
   tunnels(): Promise<Record<number, string>>;
   snapshotFilesystem(ttlMs: number | null): Promise<string>;
   terminate(): Promise<void>;
+  waitUntilReady?(timeoutMs?: number): Promise<void>;
+  readStartupLogs?(): Promise<{ stdout: string; stderr: string }>;
 }
 
 export interface ModalApi {

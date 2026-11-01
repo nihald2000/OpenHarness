@@ -44,25 +44,116 @@ export function createRunHooks(ctx: RunHooksContext) {
     return null;
   };
 
+  const emitSandboxRunning = async (state: RunState, handle: SandboxHandle) => {
+    await ctx.emit(state.tenantId, state.sessionId, {
+      type: "sandbox.status",
+      sessionId: state.sessionId,
+      runId: state.runId,
+      sandboxId: handle.id,
+      provider: handle.providerId,
+      status: "running",
+    });
+  };
+
+  const rehydrateModalHandle = (handleId: string, rec: NonNullable<Awaited<ReturnType<typeof ctx.sandboxRecords.get>>>): SandboxHandle => ({
+    id: handleId,
+    providerId: "modal",
+    runId: rec.runId,
+    sessionId: rec.sessionId,
+    agentServerUrl: "modal:connect-token",
+    sessionKey: "",
+    workspacePath: "/workspace",
+    memoriesPath: "/memories",
+    tmpPath: "/tmp/oh",
+    shadowGitDir: "/oh/.shadow-git",
+    status: rec.status === "snapshotted" || rec.status === "paused" ? "paused" : "running",
+    ports: rec.ports ?? {},
+    policy: rec.policy,
+    snapshotId: rec.lastSnapshotImageId,
+  });
+
+  const reattachModalSandbox = async (
+    state: RunState,
+    handleId: string
+  ): Promise<SandboxHandle | undefined> => {
+    const rec = await ctx.sandboxRecords.get(handleId).catch(() => null);
+    if (!rec || rec.providerId !== "modal") return undefined;
+    const modalProvider = ctx.providers.get("modal") as any;
+    if (!modalProvider) return undefined;
+    let handle = rehydrateModalHandle(handleId, rec);
+    try {
+      const attached = await modalProvider.attach(handleId);
+      if (attached?.transport) {
+        handle.status = "running";
+        handle.transport = attached.transport;
+        ctx.activeSandboxes.set(handleId, handle);
+        state.sandboxHandleId = handleId;
+        await emitSandboxRunning(state, handle);
+        return handle;
+      }
+    } catch {
+      // The sandbox may have exited while the Modal server was scaled down.
+    }
+    if (rec.lastSnapshotImageId) {
+      handle.status = "paused";
+      handle.snapshotId = rec.lastSnapshotImageId;
+      try {
+        await modalProvider.resume(handle);
+        handle.status = "running";
+        ctx.activeSandboxes.set(handleId, handle);
+        state.sandboxHandleId = handleId;
+        await emitSandboxRunning(state, handle);
+        return handle;
+      } catch {
+        // Fall through and create a new sandbox if the snapshot is unavailable.
+      }
+    }
+    return undefined;
+  };
+
   const ensureSandbox = async (state: RunState): Promise<SandboxHandle> => {
     const session = await ctx.stateStore.getSession(state.tenantId, state.sessionId);
     const existingHandleId = state.sandboxHandleId ?? session?.sandboxHandleId;
     if (existingHandleId && ctx.activeSandboxes.has(existingHandleId)) {
       const existing = ctx.activeSandboxes.get(existingHandleId)!;
+      const p = ctx.providers.get(existing.providerId);
       if (existing.status === "paused") {
-        const p = ctx.providers.get(existing.providerId);
-        await p?.resume(existing);
-        await ctx.emit(state.tenantId, state.sessionId, {
-          type: "sandbox.status",
-          sessionId: state.sessionId,
-          runId: state.runId,
-          sandboxId: existing.id,
-          provider: existing.providerId,
-          status: "running",
-        });
+        try {
+          await p?.resume(existing);
+          existing.status = "running";
+          state.sandboxHandleId = existing.id;
+          await emitSandboxRunning(state, existing);
+          return existing;
+        } catch {
+          ctx.activeSandboxes.delete(existingHandleId);
+        }
+      } else if (existing.status === "running" && existing.providerId === "modal" && p) {
+        const health = await p.health(existing).catch(() => ({ ok: false } as any));
+        if (health.ok) {
+          state.sandboxHandleId = existing.id;
+          return existing;
+        }
+        const rec = await ctx.sandboxRecords.get(existing.id).catch(() => null);
+        if (rec?.lastSnapshotImageId) {
+          try {
+            await p.resume(existing);
+            existing.status = "running";
+            state.sandboxHandleId = existing.id;
+            await emitSandboxRunning(state, existing);
+            return existing;
+          } catch {
+            // Remove the dead handle and recover from a new sandbox below.
+          }
+        }
+        ctx.activeSandboxes.delete(existing.id);
+      } else if (existing.status === "running") {
+        state.sandboxHandleId = existing.id;
+        return existing;
       }
-      state.sandboxHandleId = existing.id;
-      return existing;
+    }
+    if (existingHandleId && !ctx.activeSandboxes.has(existingHandleId)) {
+      const attached = await reattachModalSandbox(state, existingHandleId);
+      if (attached) return attached;
     }
     const runtime = state.runtime || session?.runtime || "local";
 

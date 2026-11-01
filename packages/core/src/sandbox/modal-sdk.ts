@@ -1,4 +1,4 @@
-import { ModalClient } from "modal";
+import { ModalClient, Probe } from "modal";
 import type { ModalApi, ModalCreateParams, ModalSandboxRef } from "./modal-api.ts";
 
 export class ModalSdkApi implements ModalApi {
@@ -31,8 +31,14 @@ export class ModalSdkApi implements ModalApi {
       this.getApp(),
       this.client.images.fromId(p.imageId),
     ]);
-    const { imageId: _ignored, ...params } = p;
-    return wrap(await (this.client.sandboxes as any).create(app, image, params));
+    const { imageId: _ignored, readinessPort, ...params } = p;
+    const readinessProbe = typeof readinessPort === "number" && typeof (Probe as any)?.withTcp === "function"
+      ? Probe.withTcp(readinessPort, { intervalMs: 100 })
+      : undefined;
+    return wrap(await (this.client.sandboxes as any).create(app, image, {
+      ...params,
+      ...(readinessProbe ? { readinessProbe } : {}),
+    }));
   }
 
   async fromId(id: string): Promise<ModalSandboxRef> {
@@ -78,6 +84,27 @@ function wrap(sb: any): ModalSandboxRef {
     },
     async snapshotFilesystem(ttlMs) {
       return (await sb.snapshotFilesystem({ ttlMs })).imageId;
+    },
+    async waitUntilReady(timeoutMs = 60_000) {
+      if (typeof sb.waitUntilReady === "function") await sb.waitUntilReady(timeoutMs);
+    },
+    async readStartupLogs() {
+      const readWithTimeout = async (stream: any): Promise<string> => {
+        if (!stream || typeof stream.readText !== "function") return "";
+        try {
+          return await Promise.race([
+            stream.readText(),
+            new Promise<string>((resolve) => setTimeout(() => resolve(""), 1_500)),
+          ]);
+        } catch {
+          return "";
+        }
+      };
+      const [stdout, stderr] = await Promise.all([
+        readWithTimeout(sb.stdout),
+        readWithTimeout(sb.stderr),
+      ]);
+      return { stdout: stdout.slice(-4_000), stderr: stderr.slice(-4_000) };
     },
     terminate: () => sb.terminate(),
   };

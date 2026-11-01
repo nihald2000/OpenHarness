@@ -42,16 +42,43 @@ export type ConfineConfig = {
   srtSettingsPath: string;
   runAs?: { uid: number; gid: number };
   useSrt?: boolean;
+  srtProbe?: (settingsPath: string) => boolean;
 };
+
+const srtCapabilityCache = new Map<string, boolean>();
+
+export function isVmIsolated(): boolean {
+  return process.env.OH_VM_ISOLATED === "1";
+}
 
 export function isSrtInstalled(): boolean {
   return spawnSync("srt", ["--version"], { encoding: "utf8" }).status === 0;
 }
 
-export function assertEnforcementAvailable(checkFn: () => boolean = isSrtInstalled): void {
+export function assertEnforcementAvailable(
+  checkFn: () => boolean = () => isVmIsolated() || isSrtInstalled()
+): void {
   if (!checkFn()) {
     throw new Error("srt is not installed; refusing to execute (fail closed)");
   }
+}
+
+export function canExecuteUnderSrt(
+  srtSettingsPath: string,
+  probeOverride?: (settingsPath: string) => boolean
+): boolean {
+  if (!probeOverride && !isSrtInstalled()) return false;
+  const cached = srtCapabilityCache.get(srtSettingsPath);
+  if (cached !== undefined && !probeOverride) return cached;
+  const probe = probeOverride
+    ? probeOverride(srtSettingsPath)
+    : spawnSync(
+        "srt",
+        ["--settings", srtSettingsPath, "--", gitBashExecutable(), "--noprofile", "--norc", "-c", "true"],
+        { encoding: "utf8", timeout: 4_000, env: buildCleanEnv() }
+      ).status === 0;
+  srtCapabilityCache.set(srtSettingsPath, probe);
+  return probe;
 }
 
 export function buildCleanEnv(userEnv: Record<string, string> = {}): Record<string, string> {
@@ -108,7 +135,8 @@ export function spawnConfined(
   userEnv: Record<string, string> = {}
 ): ChildProcess {
   const env = buildCleanEnv(userEnv);
-  const useSrt = cfg.useSrt ?? isSrtInstalled();
+  const requestedSrt = cfg.useSrt ?? isSrtInstalled();
+  const useSrt = requestedSrt && !(isVmIsolated() && !canExecuteUnderSrt(cfg.srtSettingsPath, cfg.srtProbe));
   let argv: string[];
   if (useSrt) {
     const drop = cfg.runAs

@@ -26,6 +26,11 @@ try:
     MANIFEST_IMAGE_ID = json.loads((MODULE_PATH.parent / "image-manifest.json").read_text()).get("imageId", "")
 except (OSError, ValueError, TypeError):
     MANIFEST_IMAGE_ID = ""
+RESOLVED_IMAGE_ID = (
+    os.environ.get("OH_MODAL_IMAGE_ID_OVERRIDE", "").strip()
+    or MANIFEST_IMAGE_ID.strip()
+    or os.environ.get("OH_MODAL_IMAGE_ID", "").strip()
+)
 app = modal.App("openharness-server")
 volume = modal.Volume.from_name("openharness-data", create_if_missing=True)
 
@@ -69,7 +74,7 @@ def server():
         # SDK authenticates with MODAL_TOKEN_ID / MODAL_TOKEN_SECRET.
         "MODAL_SERVER_URL": "https://api.modal.com:443",
         "OH_MODAL_APP": os.environ.get("OH_MODAL_APP", "openharness"),
-        "OH_MODAL_IMAGE_ID": os.environ.get("OH_MODAL_IMAGE_ID", MANIFEST_IMAGE_ID),
+        "OH_MODAL_IMAGE_ID": RESOLVED_IMAGE_ID,
         "OH_DEFAULT_RUNTIME": os.environ.get("OH_DEFAULT_RUNTIME", "modal"),
         "OH_MODAL_SANDBOX_RUNTIME": os.environ.get("OH_MODAL_SANDBOX_RUNTIME", "gvisor"),
         "OH_SANDBOX_IDLE_MS": os.environ.get("OH_SANDBOX_IDLE_MS", "180000"),
@@ -82,6 +87,7 @@ def server():
         "OPENHARNESS_PORT": "4096",
         "OPENHARNESS_DATA_DIR": "/data",
     }
+    print(f"[openharness-server] active OH_MODAL_IMAGE_ID={RESOLVED_IMAGE_ID}", flush=True)
     subprocess.Popen(
         ["node", "--import", "tsx", "packages/server/src/main.ts"],
         cwd="/app",
