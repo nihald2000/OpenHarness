@@ -22,10 +22,25 @@ ROOT = next(
     (parent for parent in MODULE_PATH.parents if (parent / "package.json").is_file()),
     pathlib.Path("/app"),
 )
-try:
-    MANIFEST_IMAGE_ID = json.loads((MODULE_PATH.parent / "image-manifest.json").read_text()).get("imageId", "")
-except (OSError, ValueError, TypeError):
-    MANIFEST_IMAGE_ID = ""
+def read_manifest_image_id() -> str:
+    # Modal loads this module from its uploaded source bundle, which may not
+    # share the source file's original directory. The runtime image always
+    # contains the repository under /app, so check that copy as well.
+    candidates = (
+        MODULE_PATH.parent / "image-manifest.json",
+        ROOT / "deploy" / "modal" / "image-manifest.json",
+    )
+    for manifest_path in candidates:
+        try:
+            image_id = json.loads(manifest_path.read_text()).get("imageId", "")
+        except (OSError, ValueError, TypeError):
+            continue
+        if isinstance(image_id, str) and image_id.strip():
+            return image_id.strip()
+    return ""
+
+
+MANIFEST_IMAGE_ID = read_manifest_image_id()
 RESOLVED_IMAGE_ID = (
     os.environ.get("OH_MODAL_IMAGE_ID_OVERRIDE", "").strip()
     or MANIFEST_IMAGE_ID.strip()
