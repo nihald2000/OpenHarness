@@ -45,9 +45,25 @@ const inputOf = (t: ToolPart) =>
 
 /* History -> provider messages. Every tool call is followed by its result, as the APIs require. */
 export function toWireMessages(messages: Message[], profile: ModelProfile): Wire[] {
-  if (profile.wire === "anthropic") return mergeSameRole(messages.flatMap(anthropicMessages));
+  if (profile.wire === "anthropic") return mergeSameRole(messages.flatMap((message) => anthropicMessages(message, profile)));
   if (profile.toolCalling === "text") return messages.flatMap(textModeMessages);
   return messages.flatMap((message) => openAIMessages(message, profile));
+}
+
+function extractVisionToolImages(t: ToolPart, supportsVision = false): { sanitizedText: string; images: Array<{ label: string; mimeType: string; dataBase64: string }> } {
+  const out = t.output && typeof t.output === "object" && !Array.isArray(t.output) ? t.output as Record<string, unknown> : undefined;
+  if (!out || t.state !== "completed") return { sanitizedText: toolResultText(t), images: [] };
+  if (t.tool === "browser_screenshot" && typeof out.dataBase64 === "string") {
+    const sanitizedText = JSON.stringify({ url: out.url, title: out.title, mimeType: out.mimeType, screenshotAttached: Boolean(supportsVision) });
+    return { sanitizedText, images: supportsVision && out.mimeType === "image/png" ? [{ label: `Visual screenshot captured from ${String(out.url ?? "browser")}`, mimeType: "image/png", dataBase64: out.dataBase64 }] : [] };
+  }
+  if (t.tool === "render_document_preview" && Array.isArray(out.pages)) {
+    const pages = out.pages.filter((page): page is Record<string, unknown> => Boolean(page && typeof page === "object" && !Array.isArray(page)));
+    const images = supportsVision ? pages.slice(0, 4).filter((page) => typeof page.dataBase64 === "string" && typeof page.mimeType === "string").map((page) => ({ label: `Document preview page ${page.page ?? ""}`, mimeType: String(page.mimeType), dataBase64: String(page.dataBase64) })) : [];
+    const sanitized = { ...out, pages: pages.map(({ page, mimeType }) => ({ page, mimeType, ...(supportsVision ? { attachedToVision: true } : {}) })) };
+    return { sanitizedText: JSON.stringify(sanitized), images };
+  }
+  return { sanitizedText: toolResultText(t), images: [] };
 }
 
 export function supportsVisionModel(modelOrWire: string): boolean {
@@ -81,33 +97,27 @@ function openAIMessages(m: Message, profile?: ModelProfile): Wire[] {
     },
   }));
   const toolMessages = tools.map((t, idx) => {
-    const screenshot = t.tool === "browser_screenshot" && t.state === "completed" &&
-      t.output && typeof t.output === "object" && !Array.isArray(t.output)
-      ? t.output as Record<string, unknown> : undefined;
-    const attachImage = Boolean(profile?.supportsVision && screenshot?.mimeType === "image/png" &&
-      typeof screenshot.dataBase64 === "string" && screenshot.dataBase64.length > 200);
-    const content = attachImage
-      ? JSON.stringify({ url: screenshot!.url, title: screenshot!.title, mimeType: screenshot!.mimeType, screenshotAttached: true })
-      : toolResultText(t);
+    const extracted = extractVisionToolImages(t, Boolean(profile?.supportsVision));
+    const validImages = extracted.images.filter((image) => image.dataBase64.length > 200);
     return {
-      message: { role: "tool", tool_call_id: calls[idx]!.id, content },
-      image: attachImage ? screenshot : undefined,
+      message: { role: "tool", tool_call_id: calls[idx]!.id, content: extracted.sanitizedText },
+      images: validImages,
     };
   });
   return [
     { role: "assistant", content: text || null, tool_calls: calls },
     ...toolMessages.map((item) => item.message),
-    ...toolMessages.filter((item) => item.image).map(({ image: out }) => ({
+    ...toolMessages.flatMap((item) => item.images).map((out) => ({
       role: "user",
       content: [
-        { type: "text", text: `[Visual screenshot captured from ${out!.url ?? "browser"}]` },
-        { type: "image_url", image_url: { url: `data:image/png;base64,${out!.dataBase64}` } },
+        { type: "text", text: `[${out.label}]` },
+        { type: "image_url", image_url: { url: `data:${out.mimeType};base64,${out.dataBase64}` } },
       ],
     })),
   ];
 }
 
-function anthropicMessages(m: Message): Wire[] {
+function anthropicMessages(m: Message, profile?: ModelProfile): Wire[] {
   const text = textOf(m);
   const tools = toolOf(m);
   const images = imageAttachments(m);
@@ -148,12 +158,18 @@ function anthropicMessages(m: Message): Wire[] {
       input: inputOf(t),
     });
   });
-  const resultBlocks: Wire[] = tools.map((t, idx) => ({
-    type: "tool_result",
-    tool_use_id: ids[idx]!,
-    content: toolResultText(t),
-    ...(t.state !== "completed" ? { is_error: true } : {}),
-  }));
+  const resultBlocks: Wire[] = tools.map((t, idx) => {
+    const extracted = extractVisionToolImages(t, Boolean(profile?.supportsVision));
+    return {
+      type: "tool_result",
+      tool_use_id: ids[idx]!,
+      content: [
+        { type: "text", text: extracted.sanitizedText },
+        ...extracted.images.slice(0, 4).map((image) => ({ type: "image", source: { type: "base64", media_type: image.mimeType, data: image.dataBase64 } })),
+      ],
+      ...(t.state !== "completed" ? { is_error: true } : {}),
+    };
+  });
   return [
     { role: "assistant", content: assistantBlocks },
     { role: "user", content: resultBlocks },
@@ -181,7 +197,7 @@ function textModeMessages(m: Message): Wire[] {
     .map((t) => `<tool_call>${JSON.stringify({ name: t.tool, arguments: inputOf(t) })}</tool_call>`)
     .join("\n");
   const resultLines = tools
-    .map((t) => `<tool_result name="${t.tool}">${toolResultText(t)}</tool_result>`)
+    .map((t) => `<tool_result name="${t.tool}">${extractVisionToolImages(t, false).sanitizedText}</tool_result>`)
     .join("\n");
   return [
     { role: "assistant", content: [text, callLines].filter(Boolean).join("\n") },

@@ -37,15 +37,22 @@ sandbox_image = (
     .apt_install(
         "ca-certificates", "curl", "git", "jq", "ripgrep", "tar", "gzip", "unzip",
         "build-essential", "procps", "util-linux", "findutils", "sqlite3", "postgresql", "redis-server", "chromium",
+        "fonts-liberation", "fonts-dejavu-core", "fonts-noto-core", "fonts-noto-color-emoji", "fontconfig",
+        "libreoffice-writer", "libreoffice-calc", "libreoffice-impress", "poppler-utils", "pandoc", "qpdf",
+        "libpango-1.0-0", "libpangoft2-1.0-0", "libcairo2", "libgdk-pixbuf-2.0-0", "libffi-dev", "shared-mime-info",
     )
     .env({"PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright", "NODE_PATH": "/opt/oh/node_modules"})
     .add_local_dir(str(ROOT / "packages"), remote_path="/opt/oh/packages", copy=True)
     .add_local_file(str(ROOT / "package.json"), remote_path="/opt/oh/package.json", copy=True)
     .run_commands(
-        f"cd /opt/oh && npm install --no-audit --no-fund --no-save esbuild tsx playwright@{PLAYWRIGHT} @playwright/test@{PLAYWRIGHT}",
+        f"cd /opt/oh && npm install --no-audit --no-fund --no-save esbuild tsx playwright@{PLAYWRIGHT} @playwright/test@{PLAYWRIGHT} docx pptxgenjs @mermaid-js/mermaid-cli",
+        "python3 -m pip install --no-cache-dir --break-system-packages python-docx openpyxl XlsxWriter python-pptx weasyprint reportlab pypdf pdfplumber pdf2image pypdfium2 matplotlib seaborn pillow pandas numpy tabulate markdown beautifulsoup4 lxml markitdown",
+        "printf '%s\\n' '{\"executablePath\":\"/usr/bin/chromium\",\"args\":[\"--no-sandbox\",\"--disable-setuid-sandbox\",\"--disable-dev-shm-usage\"]}' > /opt/oh/mermaid-puppeteer.json",
+        "fc-cache -f",
         "chmod -R a+rX /opt/oh",
         "find /opt/oh/packages -type f \\( -name '*.ts' -o -name '*.mjs' -o -name '*.js' -o -name '*.json' \\) -exec sed -i 's/\\r$//' {} +",
         "chromium --version && chmod -R a+rX /opt/oh",
+        "python3 -c 'import docx, openpyxl, xlsxwriter, pptx, weasyprint, reportlab, pypdf, pdfplumber, matplotlib, seaborn, PIL, pandas; print(\"doc_stack_ok\")' && soffice --version && pdftoppm -v 2>&1 | head -n 1 && pandoc --version | head -n 1",
         "cd /opt/oh && npx esbuild packages/sandboxd/src/hub.ts --bundle --platform=node --target=node22 --format=esm --external:ws --external:playwright --external:playwright-core --outfile=/opt/oh/oh-sandboxd-hub.mjs",
         f"{smoke_test}",
         "node -e 'const fs=require(\"fs\"),path=require(\"path\"); for (const p of [\"playwright\",\"@playwright/test\"]) { const entry=require.resolve(p); const v=JSON.parse(fs.readFileSync(path.join(path.dirname(entry),\"package.json\"),\"utf8\")).version; if(v!==\"1.48.2\") throw new Error(p+\" version mismatch: \"+v) }' && sqlite3 --version && redis-server --version && pg_lsclusters",

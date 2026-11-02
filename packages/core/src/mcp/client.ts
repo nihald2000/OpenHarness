@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { McpServerInfo, McpServerAdminInfo, McpPreset } from "@openharness/sdk";
 import type { RegisteredTool, ToolExecutionContext, ToolExecutionResult } from "../agent/deps.ts";
 import { getActiveSandboxDaemon } from "../sandbox/providers.ts";
@@ -52,7 +54,7 @@ type JsonRpcMessage = {
 const PROTOCOL_VERSION = "2024-11-05";
 const RPC_TIMEOUT_MS = 30_000;
 const MAX_RPC_BYTES = 8 * 1024 * 1024;
-const BUILTIN_SERVER_NAMES = ["filesystem", "memory", "sequential-thinking", "web-fetch"] as const;
+const BUILTIN_SERVER_NAMES = ["filesystem", "memory", "sequential-thinking", "web-fetch", "document-studio"] as const;
 
 export const BUILTIN_MCP_PRESETS: McpPreset[] = [
   { id: "filesystem", title: "Filesystem", category: "local", description: "Read files and inspect directories inside the active workspace." },
@@ -63,6 +65,12 @@ export const BUILTIN_MCP_PRESETS: McpPreset[] = [
   { id: "playwright", title: "Playwright", category: "browser", description: "Connect the Playwright MCP server for browser automation.", homepage: "https://github.com/microsoft/playwright-mcp" },
   { id: "postgres", title: "PostgreSQL", category: "database", description: "Connect a PostgreSQL MCP server. Configure its connection string before installing.", homepage: "https://github.com/modelcontextprotocol/servers" },
   { id: "brave-search", title: "Brave Search", category: "web", description: "Connect Brave Search MCP. Requires BRAVE_API_KEY.", homepage: "https://github.com/modelcontextprotocol/servers", requiredSecrets: [{ name: "BRAVE_API_KEY" }] },
+  { id: "document-studio", title: "Document Studio", category: "document", description: "Extract Markdown and tables from office files, convert documents, and render diagrams." },
+  { id: "mcp-pandoc", title: "Pandoc Converter", category: "document", description: "Convert across Markdown, HTML, DOCX, PDF, RST, and EPUB.", homepage: "https://github.com/vivekVells/mcp-pandoc" },
+  { id: "office-word", title: "Office Word (.docx)", category: "document", description: "Create, style, and edit Word documents via MCP.", homepage: "https://github.com/gongrzhe/office-word-mcp-server" },
+  { id: "excel", title: "Excel Workbook (.xlsx)", category: "document", description: "Read and write worksheets, tables, and formulas in workbooks.", homepage: "https://github.com/negokaz/excel-mcp-server" },
+  { id: "word-to-pdf", title: "Word to PDF (unoserver)", category: "document", description: "Convert Word documents to PDF via LibreOffice.", homepage: "https://github.com/chfle/word-to-pdf-mcp" },
+  { id: "sery-files", title: "Sery Data & Office SQL", category: "database", description: "Inspect tabular and office files with SQL workflows.", homepage: "https://github.com/seryai/sery-mcp" },
 ];
 
 function tool(name: string, description: string, inputSchema: JsonObject, readOnly = true): McpToolDefinition {
@@ -131,6 +139,35 @@ function responseTextToRpc(text: string, contentType: string): unknown {
   return text.trim() ? JSON.parse(text) : undefined;
 }
 
+function mermaidFallbackSvg(source: string, theme = "default"): string {
+  const edges: Array<[string, string]> = [];
+  const labels = new Map<string, string>();
+  for (const raw of source.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || /^(?:flowchart|graph)\b/i.test(line)) continue;
+    const match = line.match(/^([\w-]+)(?:\[([^\]]+)\]|\(([^)]+)\))?\s*(?:-->|---|==>|-.->)\s*([\w-]+)(?:\[([^\]]+)\]|\(([^)]+)\))?/);
+    if (match) {
+      const [, from, fromLabel, fromRound, to, toLabel, toRound] = match;
+      if (from) labels.set(from, fromLabel ?? fromRound ?? from);
+      if (to) labels.set(to, toLabel ?? toRound ?? to);
+      if (from && to) edges.push([from, to]);
+      continue;
+    }
+    const node = line.match(/^([\w-]+)(?:\[([^\]]+)\]|\(([^)]+)\))$/);
+    if (node?.[1]) labels.set(node[1], node[2] ?? node[3] ?? node[1]);
+  }
+  if (!labels.size) labels.set("source", source.trim().slice(0, 80) || "Diagram");
+  const ids = [...labels.keys()].slice(0, 16);
+  const dark = theme === "dark";
+  const fill = dark ? "#1e293b" : "#ffffff", ink = dark ? "#e2e8f0" : "#0f172a", stroke = dark ? "#475569" : "#cbd5e1";
+  const width = 1200, nodeW = 240, nodeH = 84, gapX = 100, gapY = 80, cols = 3;
+  const positions = new Map(ids.map((id, index) => [id, { x: 80 + (index % cols) * (nodeW + gapX), y: 90 + Math.floor(index / cols) * (nodeH + gapY) }]));
+  const height = Math.max(280, 190 + Math.ceil(ids.length / cols) * (nodeH + gapY));
+  const connectors = edges.flatMap(([from, to]) => { const a = positions.get(from), b = positions.get(to); return a && b ? [`<path d="M ${a.x + nodeW / 2} ${a.y + nodeH} C ${a.x + nodeW / 2} ${a.y + nodeH + 35}, ${b.x + nodeW / 2} ${b.y - 35}, ${b.x + nodeW / 2} ${b.y}" fill="none" stroke="#5b8e88" stroke-width="3" marker-end="url(#arrow)"/>`] : []; }).join("");
+  const nodes = ids.map((id) => { const p = positions.get(id)!; const label = (labels.get(id) ?? id).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); return `<g><rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="16" fill="${fill}" stroke="${stroke}" stroke-width="2"/><text x="${p.x + nodeW / 2}" y="${p.y + 48}" text-anchor="middle" font-family="sans-serif" font-size="20" fill="${ink}">${label.slice(0, 32)}</text></g>`; }).join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs><marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#5b8e88"/></marker></defs><rect width="100%" height="100%" fill="${dark ? "#0f172a" : "#f8fafc"}"/>${connectors}${nodes}</svg>`;
+}
+
 function assertRemoteUrl(value: string): URL {
   let url: URL;
   try { url = new URL(value); } catch { throw new Error("MCP server URL is invalid."); }
@@ -174,6 +211,11 @@ export class McpClientManager {
       tool("web_search", "Search public web pages using DuckDuckGo.", objectSchema({ query: { type: "string" }, count: { type: "integer", minimum: 1, maximum: 10 } })),
       tool("fetch_markdown", "Fetch a public web page and return readable Markdown.", objectSchema({ url: { type: "string" } })),
     ], (toolName, args, signal) => this.callWebFetch(toolName, args, signal));
+    else if (name === "document-studio") this.registerBuiltin("document-studio", [
+      tool("extract_markdown", "Extract readable Markdown and tables from PDF and Office files.", objectSchema({ path: { type: "string" }, maxChars: { type: "integer" } }, ["path"])),
+      tool("convert_document", "Convert a document inside the workspace using local conversion tools.", objectSchema({ inputPath: { type: "string" }, outputPath: { type: "string" } }, ["inputPath", "outputPath"]), false),
+      tool("render_mermaid", "Render a Mermaid diagram as an SVG inside the workspace.", objectSchema({ code: { type: "string" }, outputPath: { type: "string" }, theme: { type: "string", enum: ["default", "neutral", "dark", "forest"] } }, ["code", "outputPath"]), false),
+    ], (toolName, args, _signal, ctx) => this.callDocumentStudio(toolName, args, ctx));
   }
 
   private registerBuiltin(name: string, tools: McpToolDefinition[], callTool: ManagedServer["callTool"]): void {
@@ -361,6 +403,82 @@ export class McpClientManager {
     throw new Error(`Unknown web-fetch tool: ${name}`);
   }
 
+  private async callDocumentStudio(name: string, args: JsonObject, ctx?: ToolExecutionContext): Promise<unknown> {
+    const workspace = ctx?.workspaceRoot ?? this.workspaceRoot;
+    const daemon = ctx?.sandboxHandleId ? getActiveSandboxDaemon(ctx.sandboxHandleId) : undefined;
+    const runPython = async (source: string, values: JsonObject): Promise<JsonObject> => {
+      const code = `import base64;exec(base64.b64decode('${Buffer.from(source).toString("base64")}'))`;
+      const argument = Buffer.from(JSON.stringify(values)).toString("base64");
+      if (daemon) {
+        const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+        const result = await daemon.handleRequest("POST", "/exec", { "x-session-key": daemon.config.sessionKey }, { command: `python3 -c ${quote(code)} ${quote(argument)}`, timeoutSec: 55 });
+        if (result.status !== 200 || Number(result.body.exitCode ?? 0) !== 0) throw new Error(String(result.body.stderr ?? result.body.error ?? "Document operation failed"));
+        const text = String(result.body.stdout ?? "").trim().split(/\r?\n/).at(-1) ?? "{}";
+        return JSON.parse(text) as JsonObject;
+      }
+      const proc = spawnSync(process.platform === "win32" ? "python" : "python3", ["-c", `import base64;exec(base64.b64decode('${Buffer.from(source).toString("base64")}'))`, argument], { cwd: workspace, encoding: "utf8", timeout: 55_000, maxBuffer: 8 * 1024 * 1024 });
+      if (proc.status !== 0) throw new Error((proc.stderr || proc.error?.message || "Document operation failed").slice(-2000));
+      return JSON.parse(proc.stdout.trim().split(/\r?\n/).at(-1) ?? "{}") as JsonObject;
+    };
+    if (name === "extract_markdown") {
+      const file = asString(args.path);
+      resolveInside(workspace, file);
+      const source = `import json,sys,base64\na=json.loads(base64.b64decode(sys.argv[1])); p=a['path']; text=''\ntry:\n from markitdown import MarkItDown; text=MarkItDown().convert(p).text_content\nexcept Exception:\n ext=p.lower().rsplit('.',1)[-1]\n if ext=='pdf':\n  try:\n   import pdfplumber\n   with pdfplumber.open(p) as pdf: text='\\n\\n'.join((page.extract_text() or '') for page in pdf.pages)\n  except Exception:\n   from pypdf import PdfReader; text='\\n\\n'.join(page.extract_text() or '' for page in PdfReader(p).pages)\n elif ext=='docx':\n  from docx import Document; d=Document(p); text='\\n'.join(x.text for x in d.paragraphs)+'\\n'+'\\n'.join(' | '.join(c.text for c in r.cells) for t in d.tables for r in t.rows)\n elif ext in ('xlsx','xlsm'):\n  import openpyxl; w=openpyxl.load_workbook(p,data_only=False,read_only=True); text='\\n\\n'.join('# '+s.title+'\\n'+'\\n'.join('| '+' | '.join('' if c.value is None else str(c.value) for c in row)+' |' for row in s.iter_rows()) for s in w.worksheets)\n elif ext=='pptx':\n  from pptx import Presentation; d=Presentation(p); text='\\n\\n'.join('# Slide '+str(i+1)+'\\n'+'\\n'.join(sh.text for sh in slide.shapes if getattr(sh,'has_text_frame',False)) for i,slide in enumerate(d.slides))\n else: text=open(p,encoding='utf-8',errors='replace').read()\nprint(json.dumps({'path':p,'markdown':text[:max(1,min(100000,int(a.get('maxChars',40000))))]}))`;
+      return runPython(source, { path: file, maxChars: args.maxChars ?? 40_000 });
+    }
+    if (name === "convert_document") {
+      const inputPath = asString(args.inputPath); const outputPath = asString(args.outputPath);
+      resolveInside(workspace, inputPath); resolveInside(workspace, outputPath);
+      const source = `import json,sys,base64,subprocess,os,tempfile,pathlib,shutil\na=json.loads(base64.b64decode(sys.argv[1])); root=pathlib.Path.cwd().resolve(); src=(root/a['inputPath']).resolve(); dst=(root/a['outputPath']).resolve(); src.relative_to(root); dst.relative_to(root)\nif not src.is_file(): raise SystemExit('Input file not found')\ndst.parent.mkdir(parents=True,exist_ok=True); ext=dst.suffix.lower(); tmp=pathlib.Path(tempfile.mkdtemp(prefix='oh_convert_')); profile=pathlib.Path(tempfile.mkdtemp(prefix='lo_prof_'))\ntry:\n if ext=='.pdf' and src.suffix.lower() in ('.docx','.xlsx','.pptx','.odt','.ods','.odp','.rtf'):\n  env=os.environ.copy(); env.update({'HOME':'/tmp','TMPDIR':'/tmp'}); r=subprocess.run(['soffice','-env:UserInstallation=file://'+str(profile),'--headless','--convert-to','pdf','--outdir',str(tmp),str(src)],capture_output=True,text=True,timeout=45,env=env); created=tmp/(src.stem+'.pdf')\n  if r.returncode or not created.exists(): raise RuntimeError((r.stderr or r.stdout or 'LibreOffice conversion failed')[-1200:])\n  shutil.copyfile(created,dst)\n else:\n  r=subprocess.run(['pandoc',str(src),'-o',str(dst)],capture_output=True,text=True,timeout=45)\n  if r.returncode: raise RuntimeError((r.stderr or 'Pandoc conversion failed')[-1200:])\n print(json.dumps({'inputPath':a['inputPath'],'outputPath':a['outputPath'],'size':dst.stat().st_size}))\nfinally: shutil.rmtree(tmp,ignore_errors=True); shutil.rmtree(profile,ignore_errors=True)`;
+      return runPython(source, { inputPath, outputPath });
+    }
+    if (name === "render_mermaid") {
+      const outputPath = asString(args.outputPath);
+      if (!outputPath || path.isAbsolute(outputPath) || outputPath.includes("..")) throw new Error("outputPath must stay inside the workspace");
+      const code = asString(args.code).slice(0, 100_000);
+      const requestedTheme = asString(args.theme, "default");
+      const theme = ["default", "neutral", "dark", "forest"].includes(requestedTheme) ? requestedTheme : "default";
+      let buffer: Buffer | undefined;
+      const id = randomUUID().replace(/-/g, "");
+      if (daemon) {
+        const headers = { "x-session-key": daemon.config.sessionKey };
+        const sourcePath = `/tmp/oh_mermaid_${id}.mmd`, resultPath = `/tmp/oh_mermaid_${id}.svg`;
+        const sourceWrite = await daemon.handleRequest("POST", "/files/write_bytes", headers, { path: sourcePath, dataBase64: Buffer.from(code).toString("base64"), overwrite: true });
+        if (sourceWrite.status === 200) {
+          const command = `/opt/oh/node_modules/.bin/mmdc -p /opt/oh/mermaid-puppeteer.json -i ${sourcePath} -o ${resultPath} -t ${theme}`;
+          const rendered = await daemon.handleRequest("POST", "/exec", headers, { command, timeoutSec: 45 });
+          if (rendered.status === 200 && Number(rendered.body.exitCode ?? 0) === 0) {
+            const read = await daemon.handleRequest("POST", "/files/read_bytes", headers, { path: resultPath });
+            if (read.status === 200 && typeof read.body.dataBase64 === "string") buffer = Buffer.from(read.body.dataBase64, "base64");
+          }
+        }
+      } else {
+        const temp = fs.mkdtempSync(path.join(os.tmpdir(), "oh-mermaid-"));
+        const sourcePath = path.join(temp, "diagram.mmd"), resultPath = path.join(temp, "diagram.svg");
+        try {
+          fs.writeFileSync(sourcePath, code, "utf8");
+          const executable = process.platform === "win32" ? "npx.cmd" : "npx";
+          const args = ["--no-install", "mmdc", "-i", sourcePath, "-o", resultPath, "-t", theme];
+          const puppeteerConfig = path.join(process.env.OPENHARNESS_MERMAID_CONFIG ?? "/opt/oh/mermaid-puppeteer.json");
+          if (fs.existsSync(puppeteerConfig)) args.push("-p", puppeteerConfig);
+          const rendered = spawnSync(executable, args, { cwd: workspace, encoding: "utf8", timeout: 45_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true });
+          if (rendered.status === 0 && fs.existsSync(resultPath)) buffer = fs.readFileSync(resultPath);
+        } catch { /* Use the built-in SVG flowchart renderer below. */ }
+        finally { fs.rmSync(temp, { recursive: true, force: true }); }
+      }
+      const renderer = buffer ? "mermaid-cli" : "svg-flowchart-fallback";
+      buffer ??= Buffer.from(mermaidFallbackSvg(code, theme));
+      if (daemon) {
+        const write = await daemon.handleRequest("POST", "/files/write_bytes", { "x-session-key": daemon.config.sessionKey }, { path: outputPath, dataBase64: buffer.toString("base64"), overwrite: true });
+        if (write.status !== 200) throw new Error(String(write.body.error ?? "Could not write SVG"));
+      } else {
+        const target = resolveInside(workspace, outputPath); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, buffer);
+      }
+      return { outputPath, bytes: buffer.byteLength, mimeType: "image/svg+xml", renderer };
+    }
+    throw new Error(`Unknown document-studio tool: ${name}`);
+  }
+
   listServers(): McpServerInfo[] {
     return [...this.servers.values()].map((server) => ({ name: server.name, status: server.status, readOnly: server.tools.every((entry) => entry.annotations?.readOnlyHint === true), toolsCount: server.tools.length, ...(server.error ? { error: server.error } : {}) }));
   }
@@ -519,7 +637,13 @@ export class McpClientManager {
   private presetConfig(id: string, options: Partial<McpServerConfig>): McpServerConfig | undefined {
     if (options.transport) return { ...options, name: id, transport: options.transport } as McpServerConfig;
     const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+    const uvx = process.platform === "win32" ? "uvx.exe" : "uvx";
     if (id === "playwright") return { name: id, transport: "stdio", command: npx, args: ["-y", "@playwright/mcp@latest"], ...options } as McpServerConfig;
+    if (id === "mcp-pandoc") return { name: id, transport: "stdio", command: uvx, args: ["mcp-pandoc"], ...options } as McpServerConfig;
+    if (id === "office-word") return { name: id, transport: "stdio", command: uvx, args: ["--from", "office-word-mcp-server", "word_mcp_server"], ...options } as McpServerConfig;
+    if (id === "excel") return { name: id, transport: "stdio", command: npx, args: ["-y", "@negokaz/excel-mcp-server"], ...options } as McpServerConfig;
+    if (id === "word-to-pdf") return { name: id, transport: "stdio", command: uvx, args: ["word-to-pdf-mcp"], ...options } as McpServerConfig;
+    if (id === "sery-files") return { name: id, transport: "stdio", command: uvx, args: ["sery-mcp"], ...options } as McpServerConfig;
     if (id === "github" && (this.resolveSecret?.("GITHUB_PERSONAL_ACCESS_TOKEN") ?? process.env.GITHUB_PERSONAL_ACCESS_TOKEN)) return { name: id, transport: "stdio", command: npx, args: ["-y", "@modelcontextprotocol/server-github"], env: { GITHUB_PERSONAL_ACCESS_TOKEN: "{secret:GITHUB_PERSONAL_ACCESS_TOKEN}" }, ...options } as McpServerConfig;
     if (id === "brave-search" && (this.resolveSecret?.("BRAVE_API_KEY") ?? process.env.BRAVE_API_KEY)) return { name: id, transport: "stdio", command: npx, args: ["-y", "@modelcontextprotocol/server-brave-search"], env: { BRAVE_API_KEY: "{secret:BRAVE_API_KEY}" }, ...options } as McpServerConfig;
     if (id === "postgres" && options.args?.length) return { name: id, transport: "stdio", command: npx, args: ["-y", "@modelcontextprotocol/server-postgres", ...options.args], ...options } as McpServerConfig;

@@ -8,7 +8,7 @@ import {
   type ToolRouter,
 } from "@openharness/core";
 
-export type SubagentRole = "explore" | "tester" | "reviewer" | "general";
+export type SubagentRole = "explore" | "tester" | "reviewer" | "general" | "document";
 
 const ROLE_PROMPTS: Record<string, string> = {
   explore:
@@ -19,6 +19,8 @@ const ROLE_PROMPTS: Record<string, string> = {
     "You are a Reviewer subagent. Inspect changed files and tests for bugs, regressions, or test tampering, and return a concise review report.",
   general:
     "You are a General subagent. Complete the requested coding task in the shared workspace using read and build tools. Do not delegate or ask the user questions.",
+  document:
+    "You are a Document & Visual Studio subagent. Follow a three-phase craft workflow: (1) Load the matching studio skill and plan a cohesive palette, typography hierarchy, and section, sheet, or slide structure; (2) create bespoke visual assets or diagrams and build the requested editable document; (3) run render_document_preview and inspect the pages, resolving clipped text, table collisions, and spreadsheet formula errors before returning.",
 };
 
 const EXPLORE_TOOLS = new Set(["read_file", "list", "glob", "search", "word_count"]);
@@ -40,17 +42,19 @@ const TESTER_TOOLS = new Set([
 ]);
 const REVIEWER_TOOLS = new Set([...EXPLORE_TOOLS, "bash"]);
 const GENERAL_TOOLS = new Set([...EXPLORE_TOOLS, "write_file", "edit", "apply_patch", "bash", "verify", "todo_write", "update_plan"]);
-const VALID_ROLES = "explore, tester, reviewer, general";
+const DOCUMENT_TOOLS = new Set([...GENERAL_TOOLS, "generate_image", "render_document_preview", "skill", "list_skills", "mcp__document_studio__extract_markdown", "mcp__document_studio__convert_document", "mcp__document_studio__render_mermaid"]);
+const VALID_ROLES = "explore, tester, reviewer, general, document";
 
-export function normalizeSubagentRole(role: string): "explore" | "tester" | "reviewer" | "general" {
-  const aliases: Record<string, "explore" | "tester" | "reviewer" | "general"> = {
+export function normalizeSubagentRole(role: string): SubagentRole {
+  const aliases: Record<string, SubagentRole> = {
     explorer: "explore", verifier: "tester", coder: "general", worker: "general",
+    doc: "document", publisher: "document", designer: "document",
   };
   const normalized = aliases[role] ?? role;
-  if (normalized !== "explore" && normalized !== "tester" && normalized !== "reviewer" && normalized !== "general") {
+  if (!["explore", "tester", "reviewer", "general", "document"].includes(normalized)) {
     throw new Error(`Unknown subagent role "${role}". Valid roles: ${VALID_ROLES}.`);
   }
-  return normalized;
+  return normalized as SubagentRole;
 }
 
 export function getAllowedToolsForSubagent(
@@ -59,8 +63,7 @@ export function getAllowedToolsForSubagent(
   requestedTools?: string[]
 ): RegisteredTool[] {
   const norm = normalizeSubagentRole(role);
-  const allowSet =
-    norm === "tester" ? TESTER_TOOLS : norm === "reviewer" ? REVIEWER_TOOLS : norm === "general" ? GENERAL_TOOLS : EXPLORE_TOOLS;
+  const allowSet = norm === "document" ? DOCUMENT_TOOLS : norm === "tester" ? TESTER_TOOLS : norm === "reviewer" ? REVIEWER_TOOLS : norm === "general" ? GENERAL_TOOLS : EXPLORE_TOOLS;
   const reqSet =
     requestedTools && requestedTools.length > 0 ? new Set(requestedTools) : null;
 
@@ -131,6 +134,7 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
     ...ctx.state,
     phase: "building",
     mode: "task",
+    agent: role === "document" ? "document" : ctx.state.agent,
     webTools: role === "tester" || ctx.state.webTools,
   });
   const allowedTools = getAllowedToolsForSubagent(role, allTools, requestedTools);

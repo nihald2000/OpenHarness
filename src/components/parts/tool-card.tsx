@@ -14,6 +14,7 @@ import {
   Wrench,
 } from "lucide-react";
 import type { ToolPart } from "@openharness/sdk";
+import { client } from "@/lib/client";
 import { formatDuration, stringify } from "@/lib/format";
 import { CopyButton } from "../copy-button";
 import { Badge, Spinner } from "../ui";
@@ -128,6 +129,13 @@ export function ToolCard({
       : typeof input.url === "string" && /^https?:\/\//i.test(input.url)
         ? input.url
         : undefined;
+  const output = part.output && typeof part.output === "object" && !Array.isArray(part.output) ? part.output as Record<string, unknown> : {};
+  const candidatePath = [input.path, input.output_path, input.outputPath, output.path, output.outputPath].find((value): value is string => typeof value === "string" && /\.(pdf|docx|xlsx|pptx|epub|csv|png|jpe?g|svg)$/i.test(value));
+  const sessionId = typeof window !== "undefined" ? decodeURIComponent(window.location.pathname.match(/^\/c\/([^/]+)/)?.[1] ?? "") : "";
+  const previewPages = part.tool === "render_document_preview" && Array.isArray(output.pages) ? output.pages.filter((page): page is Record<string, unknown> => Boolean(page && typeof page === "object" && !Array.isArray(page))).slice(0, 4) : [];
+  const displayOutput = part.tool === "render_document_preview" && Array.isArray(output.pages)
+    ? { ...output, pages: previewPages.map(({ page, mimeType }) => ({ page, mimeType, screenshotAttached: true })) }
+    : part.output;
 
   return (
     <div
@@ -180,6 +188,14 @@ export function ToolCard({
           <Badge tone="warning">Denied</Badge>
         ) : null}
       </button>
+
+      {part.state === "completed" && candidatePath && sessionId && (
+        <div className="border-t border-border bg-bg/50 px-3 py-2"><a href={client.session.fileRawUrl(sessionId, candidatePath, { download: true })} download className="inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-code px-3 py-1.5 font-mono text-[11px] text-accent hover:bg-hover">Download {candidatePath.split(/[\\/]/).at(-1)}</a></div>
+      )}
+
+      {previewPages.length > 0 && (
+        <div className="flex gap-2 overflow-x-auto border-t border-border bg-bg/50 p-3">{previewPages.map((page, index) => typeof page.dataBase64 === "string" && typeof page.mimeType === "string" ? <img key={String(page.page ?? index)} src={`data:${page.mimeType};base64,${page.dataBase64}`} alt={`Document page ${page.page ?? index + 1}`} className="h-28 rounded border border-border object-contain" /> : null)}</div>
+      )}
 
       {!open && isRunning && preview && (
         <div className="border-t border-border bg-bg/50 px-3 py-2 font-mono text-xs text-muted truncate">
@@ -312,14 +328,14 @@ export function ToolCard({
             )
           )}
 
-          {part.output !== undefined && part.output !== "" && (
+          {displayOutput !== undefined && displayOutput !== "" && (
             <div className="p-3">
               <div className="mb-2 flex items-center justify-between text-xs text-muted">
                 <span className="font-medium">Output</span>
-                <CopyButton text={stringify(part.output)} label="Copy" />
+                  {part.tool !== "render_document_preview" && <CopyButton text={stringify(displayOutput)} label="Copy" />}
               </div>
               <pre className="max-h-80 overflow-auto rounded-lg bg-code p-3 font-mono text-xs text-fg whitespace-pre-wrap">
-                {stringify(part.output)}
+                {stringify(displayOutput)}
               </pre>
             </div>
           )}

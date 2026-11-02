@@ -6,6 +6,35 @@ import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+
+const MIME_BY_EXT: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".odt": "application/vnd.oasis.opendocument.text",
+  ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+  ".odp": "application/vnd.oasis.opendocument.presentation",
+  ".epub": "application/epub+zip",
+  ".rtf": "application/rtf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".csv": "text/csv; charset=utf-8",
+  ".tsv": "text/tab-separated-values; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".zip": "application/zip",
+};
+
+export function inferWorkspaceMimeType(filePath: string): string {
+  return MIME_BY_EXT[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
+}
 import {
   assertEnforcementAvailable,
   isSrtInstalled,
@@ -357,6 +386,9 @@ export class SandboxDaemon {
     }
     if (method === "POST" && pathname === "/files/write_bytes") {
       return this.writeFileBytes(payload);
+    }
+    if (method === "POST" && pathname === "/files/read_bytes") {
+      return this.readFileBytes(payload);
     }
     if (method === "POST" && pathname === "/files/str_replace") {
       return this.strReplaceFile(payload);
@@ -1234,6 +1266,21 @@ export class SandboxDaemon {
       status: 200,
       body: { path: rawPath, bytesWritten: data.byteLength },
     };
+  }
+
+  private async readFileBytes(
+    payload: Record<string, unknown>
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const rawPath = String(payload.path ?? "");
+    if (!rawPath) return { status: 400, body: { error: "Missing file path" } };
+    const access = this.resolveSafePath(rawPath, "read");
+    if (!access.allowed) return { status: 403, body: { error: access.error } };
+    if (!fs.existsSync(access.resolvedPath)) return { status: 404, body: { error: `Path not found: ${rawPath}` } };
+    const stat = fs.statSync(access.resolvedPath);
+    if (stat.isDirectory()) return { status: 400, body: { error: "Cannot read bytes of a directory" } };
+    if (stat.size > 35 * 1024 * 1024) return { status: 413, body: { error: "File exceeds 35 MiB binary transfer limit" } };
+    const data = fs.readFileSync(access.resolvedPath);
+    return { status: 200, body: { path: rawPath, mimeType: inferWorkspaceMimeType(rawPath), size: data.byteLength, dataBase64: data.toString("base64") } };
   }
 
   private async strReplaceFile(

@@ -1,5 +1,9 @@
 # Scaling Architecture and Migration Status
 
+## Document Studio runtime and artifacts
+
+The Modal sandbox image carries local Office/PDF conversion, a common font stack, diagram/browser runtime support, and Python libraries for document parsing, charting, and workbook inspection. The daemon transfers binary files through a bounded base64 JSON route; the authenticated API streams session-scoped raw downloads with tenant checks, workspace containment, safe content disposition, and `nosniff`. The web client uses those raw URLs for PDF/image previews and Office download cards. Generated document previews are limited to four JPEG pages, removed from text serialization, and counted with a bounded vision allowance. Studio skill files persist under `dataDir/skills` and may be mirrored into the session workspace; this remains process-local configuration and does not imply a distributed skills catalog.
+
 ## Hosted sandbox and model endpoint boundaries
 
 Hosted sessions derive local workspace directories from a hash of tenant and session IDs. Their API facts report `/workspace`; host repository paths and host workspace outlines are excluded from guest prompts. When a session has a running sandbox, file listing, reads, archives, and filesystem MCP operations use that sandbox daemon transport. Modal preview links resolve from sandbox tunnels, while browser automation uses the sandbox-local `127.0.0.1` URL. The daemon port is never returned as a user preview.

@@ -16,8 +16,13 @@ Autonomous engineering loop:
 5. Report: Summarize what you built, verification results, changed files, and the preview URL when one is available.
 
 Skills and MCP:
-- Load one of the eight built-in Agent Skills with \`skill\`: \`fullstack-web-app\`, \`webapp-testing\`, \`systematic-debugging\`, \`mcp-builder\`, \`frontend-design\`, \`python-data-science\`, \`git-workflow\`, or \`skill-creator\`. Use \`list_skills\` to discover workspace skills and \`import_skill\` to add one.
+- Load a relevant built-in Agent Skill with \`skill\`, use \`list_skills\` to discover skills, and \`import_skill\` to add a trusted SKILL.md.
 - The default connected MCP servers expose \`mcp__filesystem__*\`, \`mcp__memory__*\`, \`mcp__sequential_thinking__sequentialthinking\`, and \`mcp__web_fetch__*\`. Use \`mcp_list_servers\`, \`mcp_call_tool\`, and \`mcp_connect_server\` to inspect, call, or connect MCP servers.
+
+Document Studio:
+- For document, spreadsheet, presentation, PDF, chart, or diagram requests, load a matching studio skill and use \`generate_image\` for visual assets and \`render_document_preview\` to inspect page layouts and formula errors before delivery.
+- The \`document-studio\` MCP server exposes \`mcp__document_studio__extract_markdown\`, \`mcp__document_studio__convert_document\`, and \`mcp__document_studio__render_mermaid\`.
+- The studio skills are \`word-document-studio\`, \`excel-financial-modeler\`, \`pdf-executive-publisher\`, \`presentation-deck-designer\`, \`visual-diagram-and-charting\`, \`universal-doc-converter\`, and \`collaborative-doc-spec\`.
 
 Rules:
 - Do not stop at a plan or partial implementation. Complete the requested change and run relevant verification. For web apps, finish the browser check when the app can be run.
@@ -39,6 +44,7 @@ export const ENVIRONMENT_FACTS = `## Environment
 - Bind cloud sandbox web servers to \`0.0.0.0\`; use the returned \`internalUrl\` for in-sandbox browser navigation and share the external HTTPS \`previewUrl\` with the user.
 - Use \`process_start.waitFor\` to wait for the app's HTTP endpoint before testing. Use \`service_start\` for session-local PostgreSQL, Redis, or SQLite; use the returned environment variables and keep data inside the workspace.
 - Verification: use \`bash\` or \`verify\` for project checks; use \`browser_*\` tools to test a running web app.
+- Document Studio: the seven built-in studio skills cover Word, Excel, PDF, presentations, diagrams, conversion, and collaborative specifications. Use \`generate_image\`, \`render_document_preview\`, and the \`mcp__document_studio__*\` tools; inspect generated document pages and formula audits before delivery.
 - Browser acceptance: define exact user-visible flows with \`browser_check_def\` before declaring completion; rerun them with \`browser_check_run\`. A takeover page must be observed after return without navigating away from the current user session.
 - Built-in Agent Skills: \`fullstack-web-app\`, \`webapp-testing\`, \`systematic-debugging\`, \`mcp-builder\`, \`frontend-design\`, \`python-data-science\`, \`git-workflow\`, and \`skill-creator\`; discover/load/import them with \`list_skills\`, \`skill\`, and \`import_skill\`.
 - Default MCP servers: \`filesystem\` (\`mcp__filesystem__*\`), \`memory\` (\`mcp__memory__*\`), \`sequential-thinking\` (\`mcp__sequential_thinking__sequentialthinking\`), and \`web-fetch\` (\`mcp__web_fetch__*\`). Manage connections with \`mcp_list_servers\`, \`mcp_call_tool\`, and \`mcp_connect_server\`.`;

@@ -2,6 +2,10 @@ FROM openharness/sandbox:node22-py312
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
     golang-go rustc cargo default-jdk-headless build-essential \
+    fonts-liberation fonts-dejavu-core fonts-noto-core fonts-noto-color-emoji fontconfig \
+    libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils pandoc qpdf \
+    python3-pip python3-docx python3-openpyxl python3-pptx python3-reportlab python3-pypdf \
+    python3-pandas python3-numpy python3-matplotlib python3-seaborn python3-pil \
     && rm -rf /var/lib/apt/lists/*
 USER 1000:1000
 WORKDIR /workspace

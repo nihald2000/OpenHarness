@@ -121,6 +121,11 @@ export class LayeredContextManager implements ContextManager {
               visionImages++;
             }
           }
+          if (part.tool === "render_document_preview" && Array.isArray(safeOutput.pages)) {
+            const pages = safeOutput.pages.filter((page): page is Record<string, unknown> => Boolean(page && typeof page === "object" && !Array.isArray(page)));
+            visionImages += Math.min(4, pages.filter((page) => typeof page.dataBase64 === "string").length);
+            safeOutput.pages = pages.map(({ page, mimeType }) => ({ page, mimeType, attachedToVision: true }));
+          }
           outputChars = JSON.stringify(safeOutput).length + visionImages * visionImageChars;
         } else {
           outputChars = typeof part.output === "string"
@@ -159,6 +164,7 @@ export class LayeredContextManager implements ContextManager {
       `# OpenHarness Agent (${state.agent})`,
       `Mode: ${state.mode}`,
       state.mode === "ask" ? ASK_MODE_PROMPT : CODING_AGENT_PROMPT,
+      ...(state.agent === "document" ? ["Document Studio role: Follow a three-phase process. First load the matching studio skill and plan the audience, palette, hierarchy, and structure. Then create the requested editable artifact and any visual assets. Finally run render_document_preview, inspect representative pages, resolve visual defects and spreadsheet formula errors, and report the delivered files."] : []),
       ENVIRONMENT_FACTS,
     ];
 
@@ -279,6 +285,7 @@ export class LayeredContextManager implements ContextManager {
     const protectedToolCallIds = new Set<string>();
     let bashSeen = 0;
     let snapshotSeen = 0;
+    let documentPreviewSeen = 0;
     for (let mi = messages.length - 1; mi >= 0; mi--) {
       for (let pi = messages[mi]!.parts.length - 1; pi >= 0; pi--) {
         const part = messages[mi]!.parts[pi]!;
@@ -288,6 +295,12 @@ export class LayeredContextManager implements ContextManager {
           if (snapshotSeen <= 2) protectedToolCallIds.add(part.callId);
         } else if (["browser_screenshot", "process_logs"].includes(part.tool)) {
           if (!keepLatest.has(part.tool)) {
+            keepLatest.set(part.tool, mi * 100000 + pi);
+            protectedToolCallIds.add(part.callId);
+          }
+        } else if (part.tool === "render_document_preview") {
+          documentPreviewSeen++;
+          if (documentPreviewSeen === 1) {
             keepLatest.set(part.tool, mi * 100000 + pi);
             protectedToolCallIds.add(part.callId);
           }
@@ -304,7 +317,7 @@ export class LayeredContextManager implements ContextManager {
       const cloned = structuredClone(msg);
       cloned.parts = cloned.parts.map((part, pi) => {
         if (part.type !== "tool" || part.state !== "completed") return part;
-        const critical = ["browser_snapshot", "browser_screenshot", "process_logs"].includes(part.tool) || part.tool === "bash";
+        const critical = ["browser_snapshot", "browser_screenshot", "process_logs", "render_document_preview"].includes(part.tool) || part.tool === "bash";
         if (!critical) return part;
         if (part.tool === "browser_snapshot" && protectedToolCallIds.has(part.callId)) return part;
         const key = part.tool === "bash" ? `${part.tool}:${part.callId}` : part.tool;

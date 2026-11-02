@@ -10,6 +10,13 @@
 - [x] Pass typecheck, the full test suite, production build, Python syntax, and worker syntax checks.
 - [ ] Build the Modal image and verify live PostgreSQL/Redis readiness and browser WebSocket/takeover against the deployed hub before claiming deployment verification.
 
+## Document Studio, multimodal deliverables, skills, and MCP — implemented and locally verified
+- [x] Add binary-safe workspace read and authenticated raw-download routes with tenant and path containment.
+- [x] Add offline-safe image generation, bounded document preview vision input, formula auditing, and document-intent tool loading.
+- [x] Add persistent studio skills and safe recommended URL import, document-studio MCP tools/presets, and the document agent/subagent.
+- [x] Add binary file previews/downloads and one-click skills catalog UI; document-studio regression tests and the full local suite pass.
+- [x] `npm run typecheck`, `npm test` (94 passed, 2 skipped), `npm run build:web`, and Modal sandbox image Python syntax check pass on this Windows host.
+
 ## Modal E2E Harness & Muse Glimmer (Phases 1–8) — Implemented and locally verified
 - Hosted sessions use tenant/session-scoped roots, masked host workspace facts, and Modal sandbox daemon routing for workspace reads.
 - Modal startup uses verified credentials/image manifests, bounded boot waits, setup egress domains, public preview tunnels, and root-safe Playwright Chromium.

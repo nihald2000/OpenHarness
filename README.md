@@ -13,6 +13,8 @@ OpenHarness is a model-agnostic, long-horizon AI agent harness and developer wor
 
 ## Architecture & Key Capabilities
 
+- **Document Studio**: the sandbox image includes local Office/PDF conversion, common fonts, diagram tooling, and Python document libraries. Agents can generate offline-safe image assets, convert/extract documents, inspect PDF page previews and spreadsheet formula errors, import persistent skills, and download binary deliverables without UTF-8 corruption.
+
 - **Durable Resumable Agent Engine (`packages/core/src/agent`, `packages/core/src/infra`)**:
   - State machine (`planning | building | testing | fixing | reviewing | awaiting_permission | paused | completed | failed | cancelled | stuck`) executed by `DurableWorker` over `InProcessJobQueue` or SQL-backed `PostgresJobQueue`.
   - Local persistence (`LocalStateStore`) appends events to `events.jsonl` and writes snapshots via `atomicWriteFileSync` (with Windows `EPERM`/`EBUSY` retry). PostgreSQL persistence (`PostgresStateStore`, `PostgresJobQueue`) executes real parameterized SQL and fails closed unless `OPENHARNESS_POSTGRES=1` is enabled.

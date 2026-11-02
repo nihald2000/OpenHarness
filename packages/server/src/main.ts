@@ -177,6 +177,23 @@ export function createHttpServer(
       if (!identity) {
         return send(res, 401, { error: "unauthorized" });
       }
+      const rawFileMatch = url.pathname.match(/^\/v1\/sessions\/([^/]+)\/file\/raw$/);
+      if (req.method === "GET" && rawFileMatch) {
+        const sessionId = decodeURIComponent(rawFileMatch[1]!);
+        const filePath = url.searchParams.get("path") ?? "";
+        const file = await app.readSessionRawFile(identity, sessionId, filePath);
+        if (file.status !== 200 || !file.buffer) return send(res, file.status, { error: file.error ?? "Could not read file" });
+        const forceAttachment = url.searchParams.get("download") === "1" || file.mimeType?.startsWith("text/html");
+        const safeName = (file.filename ?? "download").replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
+        res.writeHead(200, {
+          "content-type": file.mimeType ?? "application/octet-stream",
+          "content-length": String(file.buffer.byteLength),
+          "content-disposition": `${forceAttachment ? "attachment" : "inline"}; filename="${safeName}"`,
+          "x-content-type-options": "nosniff",
+          "cache-control": "private, no-store",
+        });
+        return res.end(file.buffer);
+      }
       const attachmentRoute = url.pathname.match(/^\/v1\/sessions\/([^/]+)\/attachments$/);
       if (req.method === "POST" && attachmentRoute) {
         const rawBody = await readRawBody(req, MAX_ATTACHMENT_BYTES);

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { deflateSync } from "node:zlib";
 import type { FeatureItem, PlanData, TodoItem } from "@openharness/sdk";
 import type {
   BrowserCheck,
@@ -25,6 +26,8 @@ const READ_TOOL_NAMES = ["read_file", "list", "glob", "search", "ask_user"] as c
 const BUILD_TOOL_NAMES = ["write_file", "edit", "apply_patch", "bash", "verify", "delegate", "todo_write", "update_plan", "request_takeover", "service_start"] as const;
 const WEB_TOOL_NAMES = ["process_start", "process_logs", "process_stop", "preview_url", "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_screenshot", "browser_console", "browser_check_def", "browser_check_run"] as const;
 const WEB_INTENT = /\b(web|ui|page|browser|frontend|react|vue|svelte|vite|next|html|css|preview|dev server|express|api server)\b/i;
+const DOC_TOOL_NAMES = ["generate_image", "render_document_preview"] as const;
+const DOC_INTENT = /\b(doc|docx|word|pdf|excel|xlsx|spreadsheet|workbook|csv|ppt|pptx|powerpoint|slide|deck|presentation|report|whitepaper|invoice|resume|cv|brochure|poster|flyer|certificate|chart|diagram|infographic|epub|generate image|cover image)\b/i;
 
 export function selectTools(state: RunState, all: RegisteredTool[]): RegisteredTool[] {
   if (state.mode === "ask" || state.mode === "chat") {
@@ -32,15 +35,56 @@ export function selectTools(state: RunState, all: RegisteredTool[]): RegisteredT
     return all.filter((tool) => allowed.has(tool.name));
   }
   const web = state.webTools === true || WEB_INTENT.test(state.initialPrompt ?? "");
+  const docs = state.agent === "document" || state.loadedGroups?.includes("documents") || DOC_INTENT.test(state.initialPrompt ?? "");
+  const skillsEnabled = state.agent === "document" || state.loadedGroups?.includes("skills") || docs;
   const allowed = new Set<string>([
     ...READ_TOOL_NAMES,
     ...BUILD_TOOL_NAMES,
     ...(web ? WEB_TOOL_NAMES : []),
+    ...(docs ? DOC_TOOL_NAMES : []),
     "load_tools",
   ]);
   return all.filter((tool) => allowed.has(tool.name)
     || (state.loadedGroups?.includes("mcp") && tool.source === "mcp")
-    || (state.loadedGroups?.includes("skills") && tool.source === "skill"));
+    || (skillsEnabled && tool.source === "skill")
+    || (docs && tool.name.startsWith("mcp__document_studio__")));
+}
+
+function crc32(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const name = Buffer.from(type);
+  const length = Buffer.alloc(4); length.writeUInt32BE(data.length);
+  const checksum = Buffer.alloc(4); checksum.writeUInt32BE(crc32(Buffer.concat([name, data])));
+  return Buffer.concat([length, name, data, checksum]);
+}
+
+function editorialPng(width: number, height: number): Buffer {
+  const raw = Buffer.alloc((width * 4 + 1) * height);
+  for (let y = 0; y < height; y++) {
+    const row = y * (width * 4 + 1); raw[row] = 0;
+    for (let x = 0; x < width; x++) {
+      const t = (x / Math.max(1, width - 1) + y / Math.max(1, height - 1)) / 2;
+      const i = row + 1 + x * 4;
+      raw[i] = Math.round(19 + 32 * t); raw[i + 1] = Math.round(32 + 29 * t); raw[i + 2] = Math.round(55 + 42 * t); raw[i + 3] = 255;
+      const dx = x - width * 0.74, dy = y - height * 0.35;
+      if (dx * dx / (width * width * 0.045) + dy * dy / (height * height * 0.11) < 1) {
+        raw[i] = 108; raw[i + 1] = 190; raw[i + 2] = 181;
+      }
+      if (x > width * 0.08 && x < width * 0.48 && y > height * 0.66 && y < height * 0.68) {
+        raw[i] = 240; raw[i + 1] = 190; raw[i + 2] = 115;
+      }
+    }
+  }
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 6;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), pngChunk("IHDR", ihdr), pngChunk("IDAT", deflateSync(raw)), pngChunk("IEND", Buffer.alloc(0))]);
 }
 
 function walkWorkspaceFiles(root: string): string[] {
@@ -347,23 +391,96 @@ export class StandardToolRouter implements ToolRouter {
     return [
       {
         name: "load_tools",
-        description: "Load an optional tool group: web, mcp, or skills.",
+        description: "Load an optional tool group: web, mcp, skills, or documents.",
         readOnly: true,
         idempotent: true,
         source: "builtin",
         parameters: {
           type: "object",
           required: ["group"],
-          properties: { group: { type: "string", enum: ["web", "mcp", "skills"] } },
+          properties: { group: { type: "string", enum: ["web", "mcp", "skills", "documents"] } },
         },
         execute: async (input, ctx) => {
           const group = String(input.group ?? "");
-          if (!["web", "mcp", "skills"].includes(group)) {
+          if (!["web", "mcp", "skills", "documents"].includes(group)) {
             return { output: null, error: `Unknown tool group: ${group}` };
           }
           if (group === "web") ctx.state.webTools = true;
           else ctx.state.loadedGroups = Array.from(new Set([...(ctx.state.loadedGroups ?? []), group]));
           return { output: { loaded: group } };
+        },
+      },
+      {
+        name: "generate_image",
+        description: "Generate a high-craft visual asset and save it as a PNG in the workspace. Works offline with a deterministic editorial fallback.",
+        readOnly: false,
+        idempotent: false,
+        parameters: { type: "object", required: ["prompt", "output_path"], properties: { prompt: { type: "string" }, output_path: { type: "string" }, aspect_ratio: { type: "string", enum: ["1:1", "16:9", "4:3", "3:4", "9:16"] } } },
+        execute: async (input, ctx) => {
+          const outputPath = String(input.output_path ?? "");
+          if (!outputPath || outputPath.includes("..") || path.isAbsolute(outputPath)) return { output: null, error: "output_path must stay inside the workspace" };
+          const ratios: Record<string, [number, number]> = { "16:9": [1280, 720], "4:3": [1200, 900], "3:4": [900, 1200], "9:16": [720, 1280], "1:1": [1024, 1024] };
+          const [width, height] = ratios[String(input.aspect_ratio ?? "1:1")] ?? ratios["1:1"]!;
+          const enhancedPrompt = `${String(input.prompt ?? "").slice(0, 4000)}; clean visual composition, high craft, no watermarks, no garbled text`;
+          let png: Buffer | undefined;
+          let generatedBy = "offline-editorial-fallback";
+          const apiKey = process.env.MODEL_API_KEY ?? process.env.META_API_KEY ?? process.env.OPENAI_API_KEY;
+          if (apiKey && !ctx.state.model.startsWith("mock/")) {
+            const base = process.env.MODEL_API_BASE_URL ?? (process.env.OPENAI_API_KEY && !process.env.MODEL_API_KEY && !process.env.META_API_KEY ? "https://api.openai.com/v1" : "https://api.meta.ai/v1");
+            try {
+              const response = await fetch(`${base.replace(/\/$/, "")}/images/generations`, { method: "POST", headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" }, body: JSON.stringify({ model: process.env.OH_IMAGE_MODEL ?? (process.env.OPENAI_API_KEY ? "gpt-image-1" : "muse-image-1.0"), prompt: enhancedPrompt, size: `${width}x${height}`, response_format: "b64_json" }), signal: AbortSignal.timeout(45_000) });
+              if (response.ok) {
+                const payload = await response.json() as { data?: Array<{ b64_json?: string; url?: string }> };
+                const first = payload.data?.[0];
+                if (first?.b64_json) png = Buffer.from(first.b64_json, "base64");
+                else if (first?.url) { const image = await fetch(first.url, { signal: AbortSignal.timeout(20_000) }); if (image.ok) png = Buffer.from(await image.arrayBuffer()); }
+                if (png) generatedBy = "configured-image-api";
+              }
+            } catch { /* Offline/mock fallback is a supported path. */ }
+          }
+          png ??= editorialPng(width, height);
+          const daemon = ctx.sandboxHandleId ? getActiveSandboxDaemon(ctx.sandboxHandleId) : undefined;
+          if (daemon) {
+            const written = await daemon.handleRequest("POST", "/files/write_bytes", { "x-session-key": daemon.config.sessionKey }, { path: outputPath, dataBase64: png.toString("base64"), overwrite: true });
+            if (written.status !== 200) return { output: null, error: String(written.body.error ?? "Failed to write generated image") };
+          } else {
+            const target = resolveInside(ctx.workspaceRoot, outputPath);
+            fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, png);
+          }
+          ctx.state.changedFiles = Array.from(new Set([...(ctx.state.changedFiles ?? []), outputPath]));
+          return { output: { path: outputPath, mimeType: "image/png", width, height, bytes: png.byteLength, generatedBy } };
+        },
+      },
+      {
+        name: "render_document_preview",
+        description: "Render a PDF or Office document into up to four JPEG page previews and audit spreadsheet formula errors. Inspect the visual pages before finishing.",
+        readOnly: true,
+        idempotent: true,
+        parameters: { type: "object", required: ["path"], properties: { path: { type: "string" }, max_pages: { type: "integer", minimum: 1, maximum: 4, default: 3 } } },
+        execute: async (input, ctx) => {
+          const filePath = String(input.path ?? "");
+          if (!filePath || filePath.includes("..") || path.isAbsolute(filePath)) return { output: null, error: "path must stay inside the workspace" };
+          const script = `import sys,json,os,tempfile,subprocess,base64,shutil,pathlib,re\nfrom pathlib import Path\na=json.loads(base64.b64decode(sys.argv[1])); root=Path.cwd().resolve(); src=(root/a['path']).resolve(); src.relative_to(root)\nif not src.is_file(): raise SystemExit('Document not found')\nlimit=max(1,min(4,int(a.get('max_pages',3)))); errors=[]; sheets=[]\nif src.suffix.lower() in ('.xlsx','.xlsm'):\n import openpyxl\n wb=openpyxl.load_workbook(src,data_only=False,read_only=True); cached=openpyxl.load_workbook(src,data_only=True,read_only=True)\n for ws in wb.worksheets:\n  cws=cached[ws.title]; sheets.append({'name':ws.title,'rows':ws.max_row,'columns':ws.max_column})\n  for row in ws.iter_rows():\n   for cell in row:\n    val=cws[cell.coordinate].value\n    if isinstance(cell.value,str) and cell.value.startswith('=') and isinstance(val,str) and val in ('#REF!','#DIV/0!','#VALUE!','#NAME?','#N/A','#NUM!'): errors.append(ws.title+'!'+cell.coordinate+' '+val)\n wb.close(); cached.close()\ntmp=Path(tempfile.mkdtemp(prefix='oh_preview_')); profile=Path(tempfile.mkdtemp(prefix='lo_prof_')); pdf=src if src.suffix.lower()=='.pdf' else tmp/(src.stem+'.pdf')\ntry:\n if src.suffix.lower()!='.pdf':\n  env=os.environ.copy(); env.update({'HOME':'/tmp','TMPDIR':'/tmp'}); p=subprocess.run(['soffice','-env:UserInstallation=file://'+str(profile),'--headless','--convert-to','pdf','--outdir',str(tmp),str(src)],capture_output=True,text=True,timeout=45,env=env)\n  if p.returncode or not pdf.exists(): raise RuntimeError((p.stderr or p.stdout or 'LibreOffice conversion failed')[-1200:])\n pages=[]; total=1\n try:\n  from pypdf import PdfReader; total=len(PdfReader(str(pdf)).pages)\n except Exception: pass\n indexes=sorted(set([0,(total-1)//2,total-1]))[:limit]\n for idx in indexes:\n  out=tmp/('p'+str(idx+1)); proc=subprocess.run(['pdftoppm','-f',str(idx+1),'-l',str(idx+1),'-jpeg','-jpegopt','quality=78','-r','144','-scale-to','1280',str(pdf),str(out)],capture_output=True,timeout=45)\n  jpg=Path(str(out)+'-'+str(idx+1)+'.jpg')\n  if proc.returncode or not jpg.exists(): raise RuntimeError('pdftoppm failed: '+proc.stderr.decode(errors='replace')[-500:])\n  pages.append({'page':idx+1,'mimeType':'image/jpeg','dataBase64':base64.b64encode(jpg.read_bytes()).decode()})\n print(json.dumps({'pageCount':total,'sheets':sheets,'formulaErrors':errors,'pages':pages}))\nfinally: shutil.rmtree(tmp,ignore_errors=True); shutil.rmtree(profile,ignore_errors=True)`;
+          const arg = Buffer.from(JSON.stringify({ path: filePath, max_pages: input.max_pages ?? 3 })).toString("base64");
+          const daemon = ctx.sandboxHandleId ? getActiveSandboxDaemon(ctx.sandboxHandleId) : undefined;
+          const command = `python3 -c ${JSON.stringify(`import base64;exec(base64.b64decode('${Buffer.from(script).toString("base64")}'))`)} ${arg}`;
+          let stdout: string;
+          if (daemon) {
+            const res = await daemon.handleRequest("POST", "/exec", { "x-session-key": daemon.config.sessionKey }, { command, timeoutSec: 55 });
+            if (res.status !== 200 || Number(res.body.exitCode ?? 0) !== 0) return { output: null, error: String(res.body.stderr ?? res.body.error ?? "Document preview failed") };
+            stdout = String(res.body.stdout ?? "");
+          } else {
+            const target = resolveInside(ctx.workspaceRoot, filePath);
+            if (!fs.existsSync(target)) return { output: null, error: "Document not found" };
+            const proc = spawnSync(process.platform === "win32" ? "python" : "python3", ["-c", script, arg], { cwd: ctx.workspaceRoot, encoding: "utf8", timeout: 55_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, HOME: "/tmp", TMPDIR: "/tmp" } });
+            if (proc.status !== 0) return { output: null, error: (proc.stderr || proc.error?.message || "Document preview failed").slice(-2000) };
+            stdout = proc.stdout;
+          }
+          try {
+            const output = JSON.parse(stdout.trim().split(/\r?\n/).at(-1) ?? "{}") as Record<string, unknown>;
+            const formulaErrors = Array.isArray(output.formulaErrors) ? output.formulaErrors : [];
+            return { output, error: formulaErrors.length ? `Spreadsheet contains formula errors: ${formulaErrors.join(", ")}` : undefined };
+          } catch { return { output: null, error: `Could not parse document preview output: ${stdout.slice(-1000)}` }; }
         },
       },
       // 1. Legacy & baseline tools (preserved 100% compatible)

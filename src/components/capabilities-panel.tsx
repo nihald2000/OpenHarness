@@ -19,6 +19,14 @@ export const CAPABILITY_TABS = [
 
 export type CapabilityTabName = (typeof CAPABILITY_TABS)[number];
 
+function getFilePreviewKind(filePath: string): "pdf" | "image" | "office" | "text" {
+  const lower = filePath.toLowerCase();
+  if (lower.endsWith(".pdf")) return "pdf";
+  if (/\.(png|jpe?g|webp|gif|svg)$/.test(lower)) return "image";
+  if (/\.(docx|xlsx|pptx|odt|ods|odp|epub|rtf|zip|tar\.gz)$/.test(lower)) return "office";
+  return "text";
+}
+
 export const CAPABILITY_TAB_EVENT = "oh:select-capability-tab";
 let requestedCapabilityTab: CapabilityTabName = "Plugins";
 
@@ -51,6 +59,9 @@ export function CapabilitiesPanel({
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<{ path: string; content: string } | null>(null);
   const [diffState, setDiffState] = useState<{ changed: string[]; diff: string }>({ changed: [], diff: "" });
+  const [skillUrl, setSkillUrl] = useState("");
+  const [skillCatalog, setSkillCatalog] = useState<Array<{ id: string; name: string; category: string; description: string; url: string; installed: boolean }>>([]);
+  const [skillBusy, setSkillBusy] = useState(false);
 
   const { capabilitiesOpen, setCapabilitiesOpen } = useApp();
   const {
@@ -88,6 +99,11 @@ export function CapabilitiesPanel({
     }
     return () => { active = false; };
   }, [sessionId, activeTab, capabilitiesOpen, refreshToken]);
+
+  useEffect(() => {
+    if (!capabilitiesOpen || activeTab !== "Skills") return;
+    void client.skillsCatalog().then(setSkillCatalog).catch(() => setSkillCatalog([]));
+  }, [capabilitiesOpen, activeTab, skills.length]);
 
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const baseId = useId();
@@ -260,21 +276,19 @@ export function CapabilitiesPanel({
               ) : (
                 <div className="max-h-60 overflow-y-auto rounded-xl border border-border bg-bg divide-y divide-border">
                   {workspaceFiles.map((f) => (
-                    <button
-                      key={f}
-                      type="button"
-                      onClick={() => {
+                    <div key={f} className="flex items-center gap-2 px-3 py-1.5 hover:bg-hover">
+                      <button type="button" onClick={() => {
                         if (!sessionId) return;
-                        void client.session.file(sessionId, f).then(setSelectedFile);
-                      }}
-                      className="block w-full px-3 py-1.5 text-left font-mono text-xs text-fg hover:bg-hover"
-                    >
-                      {f}
-                    </button>
+                        const kind = getFilePreviewKind(f);
+                        if (kind === "text") void client.session.file(sessionId, f).then(setSelectedFile);
+                        else setSelectedFile({ path: f, content: "" });
+                      }} className="min-w-0 flex-1 truncate text-left font-mono text-xs text-fg">{f}</button>
+                      {sessionId && <a href={client.session.fileRawUrl(sessionId, f, { download: true })} download className="shrink-0 text-[11px] font-medium text-accent hover:underline">Download</a>}
+                    </div>
                   ))}
                 </div>
               )}
-              {selectedFile && (
+              {selectedFile && sessionId && getFilePreviewKind(selectedFile.path) !== "office" && getFilePreviewKind(selectedFile.path) !== "pdf" && getFilePreviewKind(selectedFile.path) !== "image" && (
                 <div className="rounded-xl border border-border bg-code p-3">
                   <div className="mb-1 font-mono text-xs font-semibold text-fg">
                     {selectedFile.path}
@@ -283,6 +297,18 @@ export function CapabilitiesPanel({
                     {selectedFile.content}
                   </pre>
                 </div>
+              )}
+              {selectedFile && sessionId && getFilePreviewKind(selectedFile.path) === "pdf" && (
+                <div className="space-y-2 rounded-xl border border-border bg-bg p-3">
+                  <div className="flex gap-3"><a href={client.session.fileRawUrl(sessionId, selectedFile.path, { download: true })} className="text-accent hover:underline">Download PDF</a><a href={client.session.fileRawUrl(sessionId, selectedFile.path)} target="_blank" rel="noreferrer" className="text-accent hover:underline">Open ↗</a></div>
+                  <iframe title={selectedFile.path} src={client.session.fileRawUrl(sessionId, selectedFile.path)} className="h-96 w-full rounded-xl border border-border bg-bg" />
+                </div>
+              )}
+              {selectedFile && sessionId && getFilePreviewKind(selectedFile.path) === "image" && (
+                <div className="space-y-2 rounded-xl border border-border bg-bg p-3 text-center"><img src={client.session.fileRawUrl(sessionId, selectedFile.path)} alt={selectedFile.path} className="mx-auto max-h-80 w-auto rounded-lg object-contain" /><a href={client.session.fileRawUrl(sessionId, selectedFile.path, { download: true })} className="inline-block text-accent hover:underline">Download Image</a></div>
+              )}
+              {selectedFile && sessionId && getFilePreviewKind(selectedFile.path) === "office" && (
+                <div className="rounded-xl border border-border bg-bg p-4"><span className="rounded bg-code px-2 py-1 text-[10px] font-semibold uppercase">{selectedFile.path.split(".").at(-1)} deliverable</span><div className="my-2 break-all font-mono text-xs">{selectedFile.path}</div><a href={client.session.fileRawUrl(sessionId, selectedFile.path, { download: true })} className="inline-flex rounded-lg bg-accent px-3 py-2 font-semibold text-white">Download file</a></div>
               )}
             </div>
           )}
@@ -347,6 +373,11 @@ export function CapabilitiesPanel({
 
           {activeTab === "Skills" && (
             <div>
+              <form className="mb-4 flex gap-2" onSubmit={(event) => { event.preventDefault(); if (!skillUrl.trim()) return; setSkillBusy(true); void client.importSkill({ url: skillUrl.trim() }).then(() => { setSkillUrl(""); refresh(); return client.skillsCatalog(); }).then(setSkillCatalog).catch(() => {}).finally(() => setSkillBusy(false)); }}>
+                <input aria-label="SKILL.md URL" value={skillUrl} onChange={(event) => setSkillUrl(event.target.value)} placeholder="Import a SKILL.md URL" className="min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 py-2 text-xs text-fg" />
+                <button disabled={skillBusy || !skillUrl.trim()} className="rounded-lg border border-border px-3 py-2 text-xs font-medium disabled:opacity-50">{skillBusy ? "Importing…" : "Import"}</button>
+              </form>
+              <section className="mb-4 space-y-2"><div className="font-semibold text-fg">Recommended Skill Pack</div><div className="grid gap-2 sm:grid-cols-2">{skillCatalog.map((item) => <div key={item.id} className="rounded-xl border border-border bg-bg p-3"><div className="flex items-start justify-between gap-2"><div><div className="font-medium text-fg">{item.name}</div><div className="mt-1 text-[11px] text-muted">{item.description}</div></div>{item.installed ? <Badge tone="neutral">Installed</Badge> : <button type="button" disabled={skillBusy} onClick={() => { setSkillBusy(true); void client.importSkill({ id: item.id, url: item.url }).then(() => { refresh(); return client.skillsCatalog(); }).then(setSkillCatalog).catch(() => {}).finally(() => setSkillBusy(false)); }} className="rounded border border-border px-2 py-1 text-[11px] text-accent disabled:opacity-50">Install</button>}</div></div>)}</div></section>
               {skills.length === 0 ? (
                 <p className="py-6 text-center text-muted">No skills found.</p>
               ) : (

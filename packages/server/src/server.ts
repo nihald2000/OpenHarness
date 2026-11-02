@@ -44,6 +44,7 @@ import {
   ScheduleManager,
   SessionCheckpointManager,
   SkillsRegistry,
+  RECOMMENDED_REMOTE_SKILLS,
   SrtLocalSandboxProvider,
   StandardToolRouter,
   validateOpenHarnessConfig,
@@ -375,6 +376,47 @@ export class OpenHarnessServer {
       daemon = getActiveSandboxDaemon(handleId);
     }
     return daemon;
+  }
+
+  async readSessionRawFile(identity: Identity, sessionId: string, filePath: string): Promise<{
+    status: number; buffer?: Buffer; mimeType?: string; filename?: string; error?: string;
+  }> {
+    const session = await this.stateStore.getSession(identity.tenantId, sessionId);
+    if (!session) return { status: 404, error: "Session not found" };
+    if (!filePath || filePath.includes("..") || filePath.startsWith("/") || path.posix.isAbsolute(filePath.replace(/\\/g, "/"))) {
+      return { status: 400, error: "Invalid file path" };
+    }
+    let bytes = Buffer.alloc(0);
+    let mimeType = "application/octet-stream";
+    let useWorkspaceFallback = !session.sandboxHandleId;
+    if (session.sandboxHandleId) {
+      const daemon = await this.resolveSessionDaemon(session);
+      const transport = this.activeSandboxes.get(session.sandboxHandleId)?.transport;
+      const result = daemon
+        ? await daemon.handleRequest("POST", "/files/read_bytes", { "x-session-key": daemon.config.sessionKey }, { path: filePath })
+        : transport
+          ? await transport.request("POST", "/files/read_bytes", { path: filePath })
+          : undefined;
+      if (result) {
+        if (result.status !== 200) return { status: result.status, error: String(result.body.error ?? "Could not read file") };
+        bytes = Buffer.from(String(result.body.dataBase64 ?? ""), "base64");
+        mimeType = String(result.body.mimeType ?? "application/octet-stream");
+      } else {
+        useWorkspaceFallback = true;
+      }
+    }
+    if (useWorkspaceFallback) {
+      let fullPath: string;
+      try { fullPath = resolveInside(this.getSessionWorkspaceRoot(identity.tenantId, sessionId), filePath); }
+      catch { return { status: 400, error: "Invalid file path" }; }
+      if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) return { status: 404, error: "File not found" };
+      const stat = fs.statSync(fullPath);
+      if (stat.size > 35 * 1024 * 1024) return { status: 413, error: "File exceeds 35 MiB binary transfer limit" };
+      bytes = fs.readFileSync(fullPath);
+      const extension = path.extname(filePath).toLowerCase();
+      mimeType = ({ ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation" } as Record<string, string>)[extension] ?? "application/octet-stream";
+    }
+    return { status: 200, buffer: bytes, mimeType, filename: path.posix.basename(filePath.replace(/\\/g, "/")) };
   }
   private async setSessionBrowserOwner(sess: Session, owner: "agent" | "human"): Promise<void> {
     const daemon = await this.resolveSessionDaemon(sess);
@@ -1391,6 +1433,15 @@ export class OpenHarnessServer {
     const pathname = parsedUrl.pathname;
     const tenantId = identity.tenantId;
 
+    const rawFileMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/file\/raw$/);
+    if (method === "GET" && rawFileMatch) {
+      const file = await this.readSessionRawFile(identity, decodeURIComponent(rawFileMatch[1]!), parsedUrl.searchParams.get("path") ?? "");
+      if (file.status !== 200 || !file.buffer) return { status: file.status, body: { error: file.error ?? "Could not read file" } };
+      const forceAttachment = parsedUrl.searchParams.get("download") === "1" || file.mimeType?.startsWith("text/html");
+      const safeName = (file.filename ?? "download").replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
+      return { status: 200, body: file.buffer, headers: { "content-type": file.mimeType ?? "application/octet-stream", "content-length": String(file.buffer.byteLength), "content-disposition": `${forceAttachment ? "attachment" : "inline"}; filename="${safeName}"`, "x-content-type-options": "nosniff", "cache-control": "private, no-store" } };
+    }
+
     const attachmentUploadMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/attachments$/);
     if (method === "POST" && attachmentUploadMatch) {
       const sessionId = decodeURIComponent(attachmentUploadMatch[1]!);
@@ -1536,6 +1587,7 @@ export class OpenHarnessServer {
           { name: "plan", description: "Read-only planning architect.", mode: "primary", builtIn: true },
           { name: "code", description: "Implementation and refactoring specialist.", mode: "primary", builtIn: true },
           { name: "reviewer", description: "Independent code and diff auditor.", mode: "primary", builtIn: true },
+          { name: "document", description: "Executive documents (.docx), financial spreadsheets (.xlsx), slide decks (.pptx), PDFs, and visual diagrams.", mode: "primary", builtIn: true },
         ],
       };
     }
@@ -1554,6 +1606,9 @@ export class OpenHarnessServer {
 
     if (method === "GET" && pathname === "/v1/skills") {
       return { status: 200, body: this.skillsRegistry.listSkills() };
+    }
+    if (method === "GET" && pathname === "/v1/skills/catalog") {
+      return { status: 200, body: RECOMMENDED_REMOTE_SKILLS.map((item) => ({ ...item, installed: Boolean(this.skillsRegistry.getSkill(item.id)) })) };
     }
 
     if (method === "POST" && pathname === "/v1/skills") {

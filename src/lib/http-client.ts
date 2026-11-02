@@ -121,6 +121,14 @@ export class HttpOpenHarnessClient {
     return this.request<SkillInfo[]>("GET", "/v1/skills");
   }
 
+  async skillsCatalog(): Promise<Array<{ id: string; name: string; category: string; description: string; url: string; repoUrl: string; installed: boolean }>> {
+    return this.request("GET", "/v1/skills/catalog");
+  }
+
+  async importSkill(input: { id?: string; name?: string; url?: string; content?: string }): Promise<unknown> {
+    return this.request("POST", "/v1/skills", input);
+  }
+
   async mcp(): Promise<McpServerInfo[]> {
     return this.request<McpServerInfo[]>("GET", "/v1/mcp");
   }
@@ -271,6 +279,13 @@ export class HttpOpenHarnessClient {
         "GET",
         `/v1/sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`
       );
+    },
+
+    fileRawUrl: (id: string, filePath: string, opts?: { download?: boolean }): string => {
+      const q = new URLSearchParams({ path: filePath });
+      if (opts?.download) q.set("download", "1");
+      if (this.accessKey) q.set("key", this.accessKey);
+      return `${this.base}/v1/sessions/${encodeURIComponent(id)}/file/raw?${q.toString()}`;
     },
 
     diff: async (id: string): Promise<{ changed: string[]; diff: string }> => {

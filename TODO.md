@@ -9,6 +9,9 @@
 - [ ] Build the Modal image and exercise PostgreSQL/Redis initialization plus live browser WebSocket/control in the deployed hub.
 - [ ] Verify live Modal HTTPS WebSocket ingress and takeover/resume after deployment; this requires a live deployment and is not covered by local checks.
 
+## Document Studio
+- [x] Verify binary-safe file transport, image generation and document rendering, multimodal page inspection, persistent skills import, document MCP, document agent tools, and the UI with `npm run typecheck`, `npm test` (94 passed, 2 skipped), `npm run build:web`, and Modal sandbox image Python syntax check.
+
 ## Modal E2E Harness & Muse Glimmer local verification
 - [x] Implement hosted workspace isolation, preview tunnel resolution, shadow-git baseline diffs, v2 permission/pause/resume routing, model profiles, vision screenshots, and Modal deployment assets.
 - [x] Run the full typecheck, test, build, and Modal Python syntax gates; all passed locally (63 tests passed, 1 credential-gated Modal integration test skipped).

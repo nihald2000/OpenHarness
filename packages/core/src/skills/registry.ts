@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { isIP } from "node:net";
 import type { SkillInfo } from "@openharness/sdk";
 import type { RegisteredTool } from "../agent/deps.ts";
 
@@ -10,7 +11,51 @@ export interface LoadedSkill extends SkillInfo {
   files?: string[];
 }
 
+export interface RecommendedSkillCatalogItem {
+  id: string; name: string; category: "document" | "design" | "engineering"; description: string; url: string; repoUrl: string;
+}
+
+export const RECOMMENDED_REMOTE_SKILLS: RecommendedSkillCatalogItem[] = [
+  { id: "anthropic-docx", name: "Word Document Craft (docx)", category: "document", description: "Word document creation, formatting, tables, and revision workflows.", url: "https://raw.githubusercontent.com/anthropics/skills/main/skills/docx/SKILL.md", repoUrl: "https://github.com/anthropics/skills/blob/main/skills/docx/SKILL.md" },
+  { id: "anthropic-xlsx", name: "Spreadsheet Modeling (xlsx)", category: "document", description: "Formula-driven spreadsheet modeling, formatting, and error auditing.", url: "https://raw.githubusercontent.com/anthropics/skills/main/skills/xlsx/SKILL.md", repoUrl: "https://github.com/anthropics/skills/blob/main/skills/xlsx/SKILL.md" },
+  { id: "anthropic-pdf", name: "PDF Processing & Forms", category: "document", description: "PDF generation, table extraction, merging, and form workflows.", url: "https://raw.githubusercontent.com/anthropics/skills/main/skills/pdf/SKILL.md", repoUrl: "https://github.com/anthropics/skills/blob/main/skills/pdf/SKILL.md" },
+  { id: "anthropic-pptx", name: "Slide Deck Studio", category: "document", description: "Presentation layouts, charts, notes, and visual quality checks.", url: "https://raw.githubusercontent.com/anthropics/skills/main/skills/pptx/SKILL.md", repoUrl: "https://github.com/anthropics/skills/blob/main/skills/pptx/SKILL.md" },
+  { id: "anthropic-canvas-design", name: "Canvas Poster & Visual Design", category: "design", description: "Posters, covers, and visual compositions in PNG and PDF.", url: "https://raw.githubusercontent.com/anthropics/skills/main/skills/canvas-design/SKILL.md", repoUrl: "https://github.com/anthropics/skills/blob/main/skills/canvas-design/SKILL.md" },
+  { id: "anthropic-doc-coauthoring", name: "Collaborative Document Authoring", category: "document", description: "Context gathering, structural refinement, and reader testing.", url: "https://raw.githubusercontent.com/anthropics/skills/main/skills/doc-coauthoring/SKILL.md", repoUrl: "https://github.com/anthropics/skills/blob/main/skills/doc-coauthoring/SKILL.md" },
+  { id: "superpowers-brainstorming", name: "Architecture Brainstorming", category: "engineering", description: "Design exploration and tradeoff framing before implementation.", url: "https://raw.githubusercontent.com/obra/superpowers/main/skills/brainstorming/SKILL.md", repoUrl: "https://github.com/obra/superpowers/blob/main/skills/brainstorming/SKILL.md" },
+  { id: "superpowers-writing-plans", name: "Implementation Plan Authoring", category: "engineering", description: "File-specific plans with verification steps.", url: "https://raw.githubusercontent.com/obra/superpowers/main/skills/writing-plans/SKILL.md", repoUrl: "https://github.com/obra/superpowers/blob/main/skills/writing-plans/SKILL.md" },
+  { id: "superpowers-tdd", name: "Test-Driven Development", category: "engineering", description: "A red-green-refactor workflow for regression-resistant changes.", url: "https://raw.githubusercontent.com/obra/superpowers/main/skills/test-driven-development/SKILL.md", repoUrl: "https://github.com/obra/superpowers/blob/main/skills/test-driven-development/SKILL.md" },
+];
+
+export function normalizeSkillImportUrl(rawUrl: string): string {
+  const trimmed = rawUrl.trim();
+  const match = trimmed.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/i);
+  return match ? `https://raw.githubusercontent.com/${match[1]}/${match[2]}/${match[3]}/${match[4]}` : trimmed;
+}
+
+function assertPublicHttps(url: URL): void {
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)?.slice(1).map(Number);
+  const privateIpv4 = ipv4 && (ipv4[0] === 10 || ipv4[0] === 127 || ipv4[0] === 0 || ipv4[0] === 169 && ipv4[1] === 254 || ipv4[0] === 192 && ipv4[1] === 168 || ipv4[0] === 172 && ipv4[1]! >= 16 && ipv4[1]! <= 31);
+  const privateIpv6 = isIP(host) === 6 && (/^(?:fc|fd|fe[89ab])|^::(?:ffff:)?(?:0?:)?(?:127\.|10\.|192\.168\.|169\.254\.)/i.test(host) || host === "::" || host === "::1");
+  if (url.protocol !== "https:" || url.username || url.password || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal") || privateIpv4 || privateIpv6 || host === "169.254.169.254") {
+    throw new Error("Skill import URL must use public HTTPS without credentials.");
+  }
+}
+
+const studioSkillRows: Array<[string, string, string, string]> = [
+  ["word-document-studio", "Word Document Studio", "docx, Word, executive document", "Create polished long-form documents with a clear hierarchy, styles, accessible tables, headers/footers, and visual page review."],
+  ["excel-financial-modeler", "Excel Financial Modeler", "excel, xlsx, workbook, financial model", "Build auditable workbooks with live formulas, documented assumptions, consistent number formats, readable sheets, and a formula-error audit."],
+  ["pdf-executive-publisher", "PDF Executive Publisher", "pdf, publish, executive report", "Prepare publication-ready PDFs with careful typography, page numbers, stable margins, and rendered-page inspection."],
+  ["presentation-deck-designer", "Presentation Deck Designer", "pptx, slides, deck, presentation", "Design concise presentations with assertion-evidence titles, consistent visual rhythm, legible charts, speaker notes, and slide preview review."],
+  ["visual-diagram-and-charting", "Visual Diagram and Charting", "chart, diagram, mermaid, infographic", "Create accurate, labeled charts and diagrams with a cohesive palette, direct annotations, and image assets sized for their final medium."],
+  ["universal-doc-converter", "Universal Document Converter", "convert document, pandoc, epub, extract pdf", "Extract content from common office and PDF files, preserve tables where possible, convert through suitable local tools, and verify output."],
+  ["collaborative-doc-spec", "Collaborative Document Specification", "prd, rfc, technical spec, design doc", "Author specifications with scope and constraints, architecture and contracts, decisions, and a verification matrix."],
+];
+const studioSkills: LoadedSkill[] = studioSkillRows.map(([id, name, triggers, body]) => ({ id, name, source: "builtin", description: body, triggers: triggers.split(", "), content: `# ${name}\n\n${body}\n\n## Workflow\n1. Inspect the workspace and identify the target audience, purpose, and constraints.\n2. Plan structure, typography, palette, and any needed visual assets before generating the artifact.\n3. Build with the available document tools and preserve editable source files where useful.\n4. Run render_document_preview, inspect every returned page and resolve layout or formula issues before delivery.` }));
+
 export const BUILTIN_SKILLS: LoadedSkill[] = [
+  ...studioSkills,
   {
     id: "fullstack-web-app",
     name: "fullstack-web-app",
@@ -292,8 +337,9 @@ export class SkillsRegistry {
     const triggers = input.triggers?.length ? input.triggers : parsed.triggers;
     const body = parsed.body;
 
-    const targetDir = path.join(this.workspaceRoot, ".openharness", "skills", rawId);
-    fs.mkdirSync(targetDir, { recursive: true });
+    const targetDir = this.dataDir
+      ? path.join(this.dataDir, "skills", rawId)
+      : path.join(this.workspaceRoot, ".openharness", "skills", rawId);
     const md = [
       "---",
       `name: ${JSON.stringify(name)}`,
@@ -304,7 +350,15 @@ export class SkillsRegistry {
       body,
       "",
     ].join("\n");
+    fs.mkdirSync(targetDir, { recursive: true });
     fs.writeFileSync(path.join(targetDir, "SKILL.md"), md, "utf8");
+    const workspaceMirror = path.join(this.workspaceRoot, ".openharness", "skills", rawId);
+    if (path.resolve(workspaceMirror) !== path.resolve(targetDir)) {
+      try {
+        fs.mkdirSync(workspaceMirror, { recursive: true });
+        fs.writeFileSync(path.join(workspaceMirror, "SKILL.md"), md, "utf8");
+      } catch { /* Persistent dataDir copy remains authoritative. */ }
+    }
 
     const skill: LoadedSkill = {
       id: rawId,
@@ -322,19 +376,19 @@ export class SkillsRegistry {
 
   async importSkillFromUrl(url: string, customId?: string): Promise<LoadedSkill> {
     let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(url);
-    } catch {
-      throw new Error("Skill import URL is invalid.");
+    try { parsedUrl = new URL(normalizeSkillImportUrl(url)); assertPublicHttps(parsedUrl); }
+    catch (err) { throw new Error((err as Error).message || "Skill import URL is invalid."); }
+    let resp: Response | undefined;
+    for (let redirects = 0; redirects <= 3; redirects++) {
+      resp = await fetch(parsedUrl, { redirect: "manual", headers: { "User-Agent": "OpenHarness-SkillImporter/1.0" }, signal: AbortSignal.timeout(15_000) });
+      if (![301, 302, 303, 307, 308].includes(resp.status)) break;
+      if (redirects === 3) throw new Error("Skill import exceeded the redirect limit.");
+      const location = resp.headers.get("location");
+      if (!location) throw new Error("Skill import redirect did not include a destination.");
+      parsedUrl = new URL(location, parsedUrl);
+      assertPublicHttps(parsedUrl);
     }
-    if (parsedUrl.protocol !== "https:" || parsedUrl.username || parsedUrl.password) {
-      throw new Error("Skill import URLs must use HTTPS and must not contain credentials.");
-    }
-    const resp = await fetch(parsedUrl, {
-      redirect: "error",
-      headers: { "User-Agent": "OpenHarness-SkillImporter/1.0" },
-      signal: AbortSignal.timeout(15_000),
-    });
+    if (!resp) throw new Error("Skill fetch failed.");
     if (!resp.ok) {
       throw new Error(`Failed to fetch skill: HTTP ${resp.status}`);
     }
