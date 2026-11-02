@@ -29,6 +29,23 @@ const APPROVE_TEXT =
 const BUILD_AGENT = "assistant";
 const NOTHING_TO_COMPACT = "Nothing to compact yet.";
 
+function maskModalPreviewUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (
+      url.hostname.endsWith(".modal.run") &&
+      url.hostname.includes("openharness-sandboxd-sandboxd") &&
+      url.pathname.startsWith("/preview/")
+    ) {
+      return `${window.location.origin}${url.pathname}${url.search}${url.hash}`;
+    }
+  } catch {
+    // Keep non-URL values out of the preview link state.
+  }
+  return value;
+}
+
 export function ChatView({ sessionId }: { sessionId?: string }) {
   const router = useRouter();
   const {
@@ -114,11 +131,11 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         setQuestionAnswer("");
       } else if (ev.type === "preview.ready") {
         pendingStateRevision.current += 1;
-        setPreviewUrl(ev.url);
+        setPreviewUrl(maskModalPreviewUrl(ev.url));
       } else if (ev.type === "run.completed") {
         pendingStateRevision.current += 1;
         if (ev.changedFiles) setChangedFiles(ev.changedFiles);
-        if (ev.previewUrl) setPreviewUrl(ev.previewUrl);
+        if (ev.previewUrl) setPreviewUrl(maskModalPreviewUrl(ev.previewUrl));
       } else if (ev.type === "run.error") {
         setRunError({
           runId: ev.runId,
@@ -204,7 +221,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
           ? { ...pending.pendingQuestion, runId: pending.runId }
           : null
       );
-      setPreviewUrl(pending.previewUrl);
+      setPreviewUrl(maskModalPreviewUrl(pending.previewUrl));
       setChangedFiles(pending.changedFiles ?? []);
     }).catch((err) => {
       if (!cancelled) notify("error", `Could not restore run state: ${errorMessage(err)}`);
@@ -228,7 +245,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
               ? { ...pending.pendingQuestion, runId: pending.runId }
               : null
           );
-          setPreviewUrl(pending.previewUrl);
+          setPreviewUrl(maskModalPreviewUrl(pending.previewUrl));
           setChangedFiles(pending.changedFiles ?? []);
         }
       } catch {

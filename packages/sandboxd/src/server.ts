@@ -75,6 +75,7 @@ export interface SandboxDaemonConfig {
   workspacePath: string;
   memoriesPath: string;
   tmpPath: string;
+  homePath?: string;
   shadowGitDir: string;
   policyFilePath?: string;
   srtSettingsPath?: string;
@@ -393,7 +394,10 @@ export class SandboxDaemon {
     // --- Browser Routes ---
     if (pathname.startsWith("/browser/")) {
       const action = pathname.slice("/browser/".length);
-      const bridgeRes = await this.browserBridge.send(action, payload);
+      const browserPayload = action === "navigate"
+        ? { ...payload, url: rewritePreviewToLocalUrl(String(payload.url ?? "")) }
+        : payload;
+      const bridgeRes = await this.browserBridge.send(action, browserPayload);
       if (bridgeRes.status !== 503) {
         return bridgeRes;
       }
@@ -408,7 +412,7 @@ export class SandboxDaemon {
       }
     }
     if (method === "POST" && pathname === "/browser/navigate") {
-      return this.browserNavigate(payload);
+      return this.browserNavigate({ ...payload, url: rewritePreviewToLocalUrl(String(payload.url ?? "")) });
     }
     if (method === "POST" && pathname === "/browser/snapshot") {
       return this.browserSnapshot();
@@ -540,6 +544,31 @@ export class SandboxDaemon {
       };
     }
 
+    if (isForegroundDevServerCommand(command)) {
+      const background = await this.startBackgroundProcess({ command, cwd: session.cwd });
+      if (background.status !== 200) return background;
+      const processId = String(background.body.id ?? "");
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      let logs = "";
+      if (processId) {
+        const logResult = await this.getProcessLogs(processId, 0);
+        logs = String(logResult.body.logs ?? "");
+      }
+      const port = typeof background.body.port === "number" ? background.body.port : undefined;
+      const previewUrl = typeof background.body.previewUrl === "string" ? background.body.previewUrl : undefined;
+      return {
+        status: 200,
+        body: {
+          exitCode: 0,
+          output: `Started background server process ${processId} on port ${port ?? "auto"}. Logs:\n${logs}`,
+          backgroundProcessId: processId,
+          port,
+          previewUrl,
+          cwd: session.cwd,
+        },
+      };
+    }
+
     // Handle `export KEY=VALUE` and `cd <dir>` persistence across calls in the same shell session
     const marker = `__OH_CWD_${crypto.randomBytes(4).toString("hex")}__`;
     const wrappedScript = `${command}\n__OH_EC=$?\necho "${marker}:$(pwd):$__OH_EC"`;
@@ -553,6 +582,8 @@ export class SandboxDaemon {
         {
           srtSettingsPath: this.srtSettingsPath,
           runAs: this.config.runAs,
+          homePath: this.config.homePath,
+          tmpPath: this.config.tmpPath,
           useSrt: this.osEnforced,
           srtProbe: this.config.srtProbe,
         },
@@ -734,6 +765,8 @@ export class SandboxDaemon {
       {
         srtSettingsPath: this.srtSettingsPath,
         runAs: this.config.runAs,
+        homePath: this.config.homePath,
+        tmpPath: this.config.tmpPath,
         useSrt: this.osEnforced,
         srtProbe: this.config.srtProbe,
       },
@@ -770,11 +803,12 @@ export class SandboxDaemon {
       });
     };
 
-    if (portHint) {
-      registerPort(portHint);
-    } else {
-      const m = command.match(/\b(?:--port|-p|PORT=)\s*(\d{4,5})\b/);
-      if (m) registerPort(Number.parseInt(m[1]!, 10));
+    const portMatch = command.match(/\b(?:--port|-p|-l|PORT=)\s*(\d{4,5})\b/) ??
+      command.match(/\bhttp\.server\s+(\d{4,5})\b/) ??
+      command.match(/:(\d{4,5})\b/);
+    const detectedPort = portHint ?? (portMatch ? Number.parseInt(portMatch[1]!, 10) : undefined);
+    if (detectedPort !== undefined && detectedPort >= 1024 && detectedPort <= 65535 && detectedPort !== 8080) {
+      registerPort(detectedPort);
     }
 
     const onOutput = (stream: "stdout" | "stderr", chunk: Buffer) => {
@@ -783,7 +817,7 @@ export class SandboxDaemon {
       const portMatch = text.match(/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d{4,5})|port\s+(\d{4,5})/i);
       if (portMatch) {
         const p = Number.parseInt((portMatch[1] ?? portMatch[2])!, 10);
-        if (p >= 1024 && p <= 65535) registerPort(p);
+        if (p >= 1024 && p <= 65535 && p !== 8080) registerPort(p);
       }
       this.config.onTelemetry?.({
         type: "process.output",
@@ -1357,6 +1391,8 @@ export class SandboxDaemon {
     };
     const baseArgs = [
       "-c",
+      "safe.directory=*",
+      "-c",
       "core.autocrlf=false",
       `--git-dir=${this.config.shadowGitDir}`,
       `--work-tree=${this.config.workspacePath}`,
@@ -1365,6 +1401,19 @@ export class SandboxDaemon {
     if (!this.shadowGitInitialized) {
       if (!fs.existsSync(path.join(this.config.shadowGitDir, "HEAD"))) {
         spawnConfinedArgv(["git", ...baseArgs, "init"], this.config.workspacePath, gitEnv);
+        const excludePath = path.join(this.config.shadowGitDir, "info", "exclude");
+        fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+        fs.writeFileSync(excludePath, [
+          "__pycache__/",
+          "*.py[cod]",
+          "*$py.class",
+          "node_modules/",
+          ".venv/",
+          "venv/",
+          ".DS_Store",
+          ".pytest_cache/",
+          "",
+        ].join("\n"), "utf8");
         const initialFiles = this.initialWorkspaceFiles();
         for (let offset = 0; offset < initialFiles.length; offset += 200) {
           spawnConfinedArgv(
@@ -1519,9 +1568,10 @@ export class SandboxDaemon {
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const url = String(payload.url ?? "");
     const parsed = new URL(url);
+    const port = Number(parsed.port || 0);
     const isLocalPreview =
       (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") &&
-      this.ports.has(Number(parsed.port || 80));
+      port >= 1024 && port <= 65535 && port !== 8080;
 
     if (!isLocalPreview) {
       const netCheck = evaluateNetworkAccess(this.config.policy, url, "GET");
@@ -1540,6 +1590,7 @@ export class SandboxDaemon {
       try {
         const resp = await fetch(url);
         this.browser.html = await resp.text();
+        if (resp.status === 200) this.ports.set(port, `http://127.0.0.1:${port}`);
       } catch {
         this.browser.html = `<html><head><title>Preview ${url}</title></head><body><h1>Running at ${url}</h1><button id="app-btn">Action</button><input name="q" /></body></html>`;
       }
@@ -1720,7 +1771,18 @@ function listDirectoryToDepth(
   }
   entries.sort((a, b) => a.name.localeCompare(b.name));
   for (const entry of entries) {
-    if (entry.name === ".git" || entry.name === "node_modules") continue;
+    if (
+      entry.name === ".git" ||
+      entry.name === "node_modules" ||
+      entry.name.startsWith(".shadow") ||
+      entry.name === "__pycache__" ||
+      entry.name === ".pytest_cache" ||
+      entry.name === ".venv" ||
+      entry.name === "venv" ||
+      entry.name === ".DS_Store" ||
+      entry.name.endsWith(".pyc") ||
+      entry.name.endsWith(".pyo")
+    ) continue;
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       results.push(`${rel}/`);
@@ -1751,7 +1813,18 @@ function walkWorkspaceFiles(rootDir: string, relDir = ""): string[] {
     return out;
   }
   for (const entry of entries) {
-    if (entry.name === ".git" || entry.name === "node_modules" || entry.name.startsWith(".shadow")) {
+    if (
+      entry.name === ".git" ||
+      entry.name === "node_modules" ||
+      entry.name.startsWith(".shadow") ||
+      entry.name === "__pycache__" ||
+      entry.name === ".pytest_cache" ||
+      entry.name === ".venv" ||
+      entry.name === "venv" ||
+      entry.name === ".DS_Store" ||
+      entry.name.endsWith(".pyc") ||
+      entry.name.endsWith(".pyo")
+    ) {
       continue;
     }
     const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
@@ -1762,6 +1835,26 @@ function walkWorkspaceFiles(rootDir: string, relDir = ""): string[] {
     }
   }
   return out;
+}
+
+function isForegroundDevServerCommand(command: string): boolean {
+  if (/(^|\s)(?:--help|--version)(?:\s|$)/i.test(command)) return false;
+  if (/(^|\s)&(?:\s|$)/.test(command)) return false;
+  return /\b(?:http\.server|npm\s+run\s+(?:dev|start|preview)|npx\s+(?:vite|serve|next\s+dev)|uvicorn|flask\s+run|gunicorn)\b/i.test(command);
+}
+
+function rewritePreviewToLocalUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return rawUrl;
+    const match = parsed.pathname.match(/^\/preview\/(\d{4,5})(\/.*)?$/i);
+    if (!match) return rawUrl;
+    const port = Number(match[1]);
+    if (port < 1024 || port > 65535 || port === 8080) return rawUrl;
+    return `http://127.0.0.1:${port}${match[2] || "/"}${parsed.search}${parsed.hash}`;
+  } catch {
+    return rawUrl;
+  }
 }
 
 function globToRegExp(glob: string): RegExp {

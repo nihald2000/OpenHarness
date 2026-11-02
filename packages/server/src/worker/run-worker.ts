@@ -27,6 +27,7 @@ export interface DurableRunWorkerOptions {
   deps: EngineDeps;
   activeSandboxes: Map<string, SandboxHandle>;
   heartbeatIntervalMs?: number; // default 5_000
+  onTerminal?: (tenantId: string, runId: string) => void;
 }
 
 export class DurableRunWorker implements RunWorker {
@@ -35,6 +36,7 @@ export class DurableRunWorker implements RunWorker {
   readonly deps: EngineDeps;
   readonly activeSandboxes: Map<string, SandboxHandle>;
   private readonly heartbeatIntervalMs: number;
+  private readonly onTerminal?: (tenantId: string, runId: string) => void;
   private readonly activeControllers = new Map<string, AbortController>();
   private readonly loopGuards = new Map<string, ToolLoopGuard>();
   private launchRun: (runId: string) => void = (runId) => { void this.startRun(runId); };
@@ -49,6 +51,7 @@ export class DurableRunWorker implements RunWorker {
     this.deps = opts.deps;
     this.activeSandboxes = opts.activeSandboxes;
     this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 5_000;
+    this.onTerminal = opts.onTerminal;
   }
 
   async enqueueAndStart(
@@ -192,6 +195,7 @@ export class DurableRunWorker implements RunWorker {
         status: "cancelled",
         error: reason,
       });
+      this.onTerminal?.(tenantId, runId);
       return tr.run;
     }
     return this.stateMachine.getRun(runId);
@@ -243,7 +247,7 @@ export class DurableRunWorker implements RunWorker {
     return tr.run;
   }
 
-  async retryRun(runId: string): Promise<DurableRunRecord> {
+  async retryRun(runId: string, onCreated?: (newRunId: string) => void): Promise<DurableRunRecord> {
     const prev = this.stateMachine.getRun(runId);
     if (!prev) {
       throw new HttpError(404, `Run not found: ${runId}`);
@@ -264,6 +268,7 @@ export class DurableRunWorker implements RunWorker {
       tools: prev.snapshot.tools,
       limits: prev.snapshot.limits,
     });
+    onCreated?.(run.id);
     this.launchRun(run.id);
     return run;
   }
@@ -322,7 +327,7 @@ export class DurableRunWorker implements RunWorker {
 
       const loopGuard =
         this.loopGuards.get(runId) ??
-        new ToolLoopGuard({ maxRepeatedIdentical: 3, maxPerPhase: 150 });
+        new ToolLoopGuard({ maxRepeatedIdentical: 3, maxPerPhase: 60 });
       this.loopGuards.set(runId, loopGuard);
 
       const toolTimeoutMs = run.snapshot.limits.toolTimeoutMs ?? 180_000;
@@ -536,6 +541,8 @@ export class DurableRunWorker implements RunWorker {
       if (this.activeControllers.get(runId) === ctrl) {
         this.activeControllers.delete(runId);
       }
+      const final = this.stateMachine.getRun(runId);
+      if (final && isTerminalRunStatus(final.status)) this.onTerminal?.(final.tenantId ?? "default", runId);
     }
   }
 }

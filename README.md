@@ -31,6 +31,10 @@ OpenHarness is a model-agnostic, long-horizon AI agent harness and developer wor
   - Ask mode is the default in the hosted web app and calls the configured model without provisioning a sandbox. Code mode still requires an explicitly selected, active sandbox runtime.
   - Chat attachments: use the composer `+` menu to select files or a folder, or drop files onto the composer. Uploads preserve folder paths, appear in the transcript, and are stored under tenant/session-scoped `dataDir/attachments`; each prompt accepts up to 100 files and 20 MB total, each file is limited to 20 MB, and each session stores up to 100 MB. Text and common images are passed as untrusted model context, PDFs are sent to Anthropic Messages models, and Code mode copies attached file bytes into the sandbox under `attachments/<group>/` for the agent to inspect. Protected credential paths such as `.env`, `.git`, and `.ssh` are rejected. Upload records are removed when the session is deleted.
 
+## Hosted Modal guest isolation
+
+The hosted deployment uses signed per-browser guest tenants and limits guests to one active run and 20 runs per day by default, with a global cap of three. The pinned Modal hub receives only a dedicated `OH_MODAL_SANDBOX_KEY`, runs each Linux session shell under a distinct non-root UID, and keeps session workspace/home/tmp directories private. Store the key in `openharness-sandbox-key`; never attach the `openharness-server` secret to the hub. Rotate the key by updating its dedicated secret and redeploying both Modal apps. Hub sessions still share a network namespace, and public preview ports are unauthenticated. See [Modal deployment and security details](deploy/modal/README.md).
+
 ## Development, Building & Testing
 
 ```bash

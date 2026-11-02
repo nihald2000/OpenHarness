@@ -209,8 +209,8 @@ test("2. Chaos, Fencing & Multi-Tenant Concurrency Audit: lease reaper, stale wo
     mode: "task",
   });
 
-  // Claim 1st job with short 20ms lease
-  const claim1 = await queue.claim("worker_1", 20);
+  // Leave enough scheduling headroom for slower CI hosts.
+  const claim1 = await queue.claim("worker_1", 200);
   assert.ok(claim1);
   assert.equal(claim1.fenceToken, 1);
 
@@ -219,8 +219,8 @@ test("2. Chaos, Fencing & Multi-Tenant Concurrency Audit: lease reaper, stale wo
   assert.ok(claim2);
   assert.notEqual(claim1.tenantId, claim2.tenantId, "Fair scheduler should interleave tenants");
 
-  // Wait for worker_1's 20ms lease to expire, then worker_3 claims it with fenceToken = 2
-  await new Promise((r) => setTimeout(r, 40));
+  // Wait beyond the lease before reaping.
+  await new Promise((r) => setTimeout(r, 400));
   const reaped = await queue.reapExpiredLeases(Date.now());
   assert.ok(reaped.includes(claim1.id));
 

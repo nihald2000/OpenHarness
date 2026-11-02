@@ -20,6 +20,9 @@ export type TransportOpts = {
   onDelta?: (delta: { text?: string; reasoning?: string; activity?: boolean }) => void;
 };
 
+const TRANSIENT_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+const TRANSIENT_SOCKET_CODES = new Set(["ECONNRESET", "ETIMEDOUT", "UND_ERR_SOCKET"]);
+
 function combineAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal {
   const active = signals.filter((s): s is AbortSignal => Boolean(s));
   if (typeof (AbortSignal as any).any === "function") {
@@ -62,6 +65,23 @@ async function post(
   body: unknown,
   opts: TransportOpts
 ) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await postOnce(url, headers, body, opts);
+    } catch (err) {
+      if (attempt >= 3 || opts.signal?.aborted || !isRetryablePostError(err)) throw err;
+      opts.onDelta?.({ activity: true });
+      await delayBeforeRetry(1000 * 2 ** attempt, opts.signal);
+    }
+  }
+}
+
+async function postOnce(
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  opts: TransportOpts
+) {
   const idleAbort = new AbortController();
   const idleMs = opts.idleTimeoutMs ?? 90_000;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -93,6 +113,42 @@ async function post(
     throw new ProviderHttpError(res.status, `HTTP ${res.status}: ${text}`, hdrs);
   }
   return { res, touch, done: () => clearTimeout(timer) };
+}
+
+function isRetryablePostError(error: unknown): boolean {
+  if (error instanceof ProviderHttpError) return TRANSIENT_HTTP_STATUSES.has(error.status);
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 5; depth++) {
+    if (current instanceof Error) {
+      const code = (current as Error & { code?: string }).code;
+      if (code && TRANSIENT_SOCKET_CODES.has(code)) return true;
+      if (/idle timeout|socket (?:hang up|closed|reset|timed? ?out)/i.test(current.message)) return true;
+      current = (current as Error & { cause?: unknown }).cause;
+    } else if (typeof current === "object") {
+      const detail = current as { code?: unknown; cause?: unknown };
+      if (typeof detail.code === "string" && TRANSIENT_SOCKET_CODES.has(detail.code)) return true;
+      current = detail.cause;
+    } else {
+      break;
+    }
+  }
+  return false;
+}
+
+function delayBeforeRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason ?? new Error("aborted"));
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason ?? new Error("aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function* sse(res: Response, touch: () => void): AsyncGenerator<any> {

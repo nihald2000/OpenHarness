@@ -13,6 +13,7 @@ import type { DaemonResponse, SandboxTransport } from "./transport.ts";
 export interface PinnedModalSandboxConfig {
   endpointUrl: string;
   sharedKey: string;
+  previewBaseUrl?: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -27,12 +28,14 @@ export class PinnedModalSandboxProvider implements SandboxProvider {
     persistentShell: true,
   };
   private readonly endpointUrl: string;
+  private readonly previewBaseUrl: string;
   private readonly sharedKey: string;
   private readonly fetchImpl: typeof fetch;
   private readonly transports = new Map<string, SandboxTransport>();
 
   constructor(config: PinnedModalSandboxConfig) {
     this.endpointUrl = config.endpointUrl.replace(/\/+$/, "");
+    this.previewBaseUrl = (config.previewBaseUrl ?? this.endpointUrl).replace(/\/+$/, "");
     this.sharedKey = config.sharedKey;
     this.fetchImpl = config.fetchImpl ?? fetch;
     if (!this.endpointUrl) throw new Error("OH_MODAL_SANDBOX_URL is empty");
@@ -130,7 +133,7 @@ export class PinnedModalSandboxProvider implements SandboxProvider {
   }
 
   resolveTunnelUrl(_handleId: string, port: number): string | undefined {
-    return port === 8080 ? undefined : `${this.endpointUrl}/preview/${port}/`;
+    return port === 8080 ? undefined : `${this.previewBaseUrl}/preview/${port}/`;
   }
 
   async pause(handle: SandboxHandle): Promise<void> {

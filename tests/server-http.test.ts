@@ -67,6 +67,14 @@ test("Step 4 (R2, S5, S6, S7): HTTP server, loadServerConfig guards, auth matrix
     assert.equal(healthRes.status, 200);
     assert.equal(healthRes.headers.get("x-content-type-options"), "nosniff");
     assert.equal(healthRes.headers.get("x-frame-options"), "DENY");
+    const healthBody = await healthRes.json() as any;
+    assert.equal(healthBody.ok, true);
+    assert.equal(healthBody.version, "0.2.0");
+    assert.equal(healthBody.components.server, "ready");
+    assert.ok(["pinned-hub", "dynamic"].includes(healthBody.components.sandboxMode));
+
+    const publicHold = await fetch(`${baseUrl}/v1/internal/hold`);
+    assert.equal(publicHold.status, 404, "internal keepalive must not be publicly usable without its process secret");
 
     // 3. Unauthenticated /v1/* is 401 off-loopback
     const unauthRes = await fetch(`${baseUrl}/v1/sessions`);
@@ -101,6 +109,21 @@ test("Step 4 (R2, S5, S6, S7): HTTP server, loadServerConfig guards, auth matrix
     });
     assert.equal(createARes.status, 201);
     const createdSession = (await createARes.json()) as { id: string; title: string };
+
+    const contextRes = await fetch(`${baseUrl}/v1/sessions/${createdSession.id}/context`, {
+      headers: { authorization: `Bearer ${jwtTenantA}` },
+    });
+    assert.equal(contextRes.status, 200);
+    const contextBody = await contextRes.json() as { contextUsage: { sessionId: string; contextWindow: number; estimatedTokens: number; messages: number } };
+    assert.equal(contextBody.contextUsage.sessionId, createdSession.id);
+    assert.ok(contextBody.contextUsage.contextWindow > 0);
+    assert.ok(contextBody.contextUsage.estimatedTokens > 0);
+    assert.equal(contextBody.contextUsage.messages, 0);
+
+    const contextBRes = await fetch(`${baseUrl}/v1/sessions/${createdSession.id}/context`, {
+      headers: { authorization: `Bearer ${jwtTenantB}` },
+    });
+    assert.equal(contextBRes.status, 404);
 
     // Tenant B cannot see Tenant A's session even if Tenant B sends x-tenant-id: tenant_alpha
     const listBRes = await fetch(`${baseUrl}/v1/sessions`, {

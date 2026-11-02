@@ -1,6 +1,6 @@
 export interface ToolLoopGuardOptions {
   maxRepeatedIdentical?: number; // default 3
-  maxPerPhase?: number; // default 25
+  maxPerPhase?: number; // default 60
 }
 
 export interface ToolLoopDecision {
@@ -34,7 +34,7 @@ export class ToolLoopGuard {
 
   constructor(opts?: ToolLoopGuardOptions) {
     this.maxRepeatedIdentical = opts?.maxRepeatedIdentical ?? 3;
-    this.maxPerPhase = opts?.maxPerPhase ?? 25;
+    this.maxPerPhase = opts?.maxPerPhase ?? 60;
   }
 
   recordCall(
@@ -83,6 +83,16 @@ export class ToolLoopGuard {
       return {
         action: "warn",
         reason: `Warning: "${toolName}" has been called ${nextCount} times with identical arguments. Do not repeat the same call; try a different approach.`,
+        signature: sig,
+        repeatCount: nextCount,
+        phaseCount: phaseTotal,
+      };
+    }
+
+    if (phaseTotal === this.maxPerPhase - 5) {
+      return {
+        action: "warn",
+        reason: `Approaching phase tool budget (${phaseTotal}/${this.maxPerPhase}). Finish verification and provide your final response within the next few steps.`,
         signature: sig,
         repeatCount: nextCount,
         phaseCount: phaseTotal,

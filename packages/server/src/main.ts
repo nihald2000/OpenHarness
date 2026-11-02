@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { OpenHarnessServer, HttpError } from "./server.ts";
 import { loadServerConfig, type LoadedServerConfig } from "./config.ts";
 import { MAX_ATTACHMENT_BYTES } from "./attachments.ts";
+import { INTERNAL_HOLD_KEY } from "./keepalive.ts";
 
 export const SECURITY_HEADERS: Record<string, string> = {
   "x-content-type-options": "nosniff",
@@ -25,6 +26,13 @@ const send = (
   res.writeHead(status, { "content-type": "application/json" });
   res.end(status === 204 ? undefined : JSON.stringify(body));
 };
+
+function sameSecret(value: unknown, expected: string): boolean {
+  if (typeof value !== "string") return false;
+  const actual = Buffer.from(value);
+  const wanted = Buffer.from(expected);
+  return actual.length === wanted.length && crypto.timingSafeEqual(actual, wanted);
+}
 
 export async function readJson(
   req: http.IncomingMessage,
@@ -114,13 +122,18 @@ export function createHttpServer(
     try {
       const url = new URL(req.url ?? "/", "http://internal");
       if (url.pathname === "/health") {
-        return send(res, 200, { ok: true, version: "0.2.0" });
+        const health = await app.handleRequest("GET", "/health", {});
+        return send(res, health.status, health.body, health.headers);
       }
       if (req.method === "GET" && url.pathname === "/v1/internal/hold") {
+        if (!sameSecret(req.headers["x-oh-internal"], INTERNAL_HOLD_KEY)) {
+          return send(res, 404, { error: "Not found" });
+        }
+        const secs = Math.max(5, Math.min(Number(url.searchParams.get("secs") ?? 100) || 100, 120));
         res.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" });
         res.write("holding\n");
-        const timer = setTimeout(() => res.end("released\n"), 55 * 60_000);
-        req.on("close", () => clearTimeout(timer));
+        const timer = setTimeout(() => res.end("released\n"), secs * 1000);
+        res.on("close", () => clearTimeout(timer));
         return;
       }
       if (req.method === "GET" && url.pathname === "/v1/guest/session") {

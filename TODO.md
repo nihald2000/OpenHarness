@@ -7,6 +7,7 @@
 
 ## Pinned Modal Sandbox Hub follow-up
 - [x] Implement the opt-in pinned hub, server URL/key discovery, and existing Modal provider fallback when `OH_MODAL_SANDBOX_URL` is unset; local verification is complete.
+- [x] Harden hosted hub sessions with dedicated-key-only secrets, minimal environment, per-session Linux UIDs/private directories, authenticated keepalive, guest run limits, frontend access-key removal, and deployment cleanup; local checks passed (66 tests passed, 2 skipped on Windows).
 - [ ] Build and deploy `openharness-sandboxd`, then configure/deploy `openharness-server` with the discovered hub URL and shared key.
 - [ ] Confirm a live guest run, preview/WebSocket tunnel, persistent session reconnect, and workspace isolation against the deployed Modal volume before calling this deployment verified.
 

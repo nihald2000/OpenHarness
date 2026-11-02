@@ -10,6 +10,7 @@ import { resolveModelProfile } from "../packages/core/src/provider/profiles.ts";
 
 test("Step 3 (R1): createHttpTransport handles OpenAI streaming SSE tool calls, Llama quirks, 429 Retry-After, Anthropic SSE tool_use, and AbortSignal cancellation", async () => {
   let llamaAttempts = 0;
+  let transientAttempts = 0;
 
   const server = http.createServer(async (req, res) => {
     const chunks: Buffer[] = [];
@@ -87,6 +88,18 @@ test("Step 3 (R1): createHttpTransport handles OpenAI streaming SSE tool calls, 
       return;
     }
 
+    if (req.url === "/v1/chat/completions" && body.model === "transient-503") {
+      transientAttempts++;
+      if (transientAttempts === 1) {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "temporarily unavailable" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "recovered" } }] }));
+      return;
+    }
+
     if (req.url === "/v1/messages" && body.model === "claude-3-7-sonnet") {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(
@@ -150,6 +163,16 @@ test("Step 3 (R1): createHttpTransport handles OpenAI streaming SSE tool calls, 
       maxRetryAttempts: 3,
       baseRetryDelayMs: 10,
     });
+
+    const retryActivities: unknown[] = [];
+    const retryResponse = await transport(
+      { model: "transient-503", messages: [], tools: [] } as any,
+      resolveModelProfile("gpt-4o"),
+      { onDelta: (delta) => { if (delta.activity) retryActivities.push(delta); } }
+    );
+    assert.equal(transientAttempts, 2);
+    assert.equal(retryResponse.text, "recovered");
+    assert.ok(retryActivities.length >= 1, "a retry keeps first-activity timers alive");
 
     const tools = [
       {

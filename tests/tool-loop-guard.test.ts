@@ -28,6 +28,23 @@ test("Step 6b (H6): ToolLoopGuard warns on repeated identical calls and aborts o
   assert.match(overCeiling.reason ?? "", /Exceeded maximum tool round-trips/);
 });
 
+test("ToolLoopGuard defaults to 60 calls and warns at five remaining", () => {
+  const guard = new ToolLoopGuard();
+  let decision = guard.recordCall("building", "tool-1", {});
+  for (let count = 2; count <= 55; count++) {
+    decision = guard.recordCall("building", `tool-${count}`, {});
+  }
+  assert.equal(decision.action, "warn");
+  assert.match(decision.reason ?? "", /55\/60/);
+  for (let count = 56; count <= 60; count++) {
+    decision = guard.recordCall("building", `tool-${count}`, {});
+  }
+  assert.equal(decision.action, "allow");
+  decision = guard.recordCall("building", "tool-61", {});
+  assert.equal(decision.action, "abort");
+  assert.match(decision.reason ?? "", /60/);
+});
+
 test("Step 6b (H7): diagnoseError maps provider, sandbox, timeout, and loop errors to structured codes and recoverability flags", () => {
   const auth = diagnoseError(Object.assign(new Error("Missing API key OPENAI_API_KEY"), { status: 401 }));
   assert.equal(auth.code, "AUTH_ERROR");

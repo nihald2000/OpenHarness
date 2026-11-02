@@ -19,6 +19,10 @@ test("Step 6 (S2, S3, S10): spawnConfined scrubs secret env vars from shell and 
   process.env.OH_SESSION_KEY = "oh-host-session-secret";
   process.env.MODAL_TOKEN_SECRET = "modal-host-secret";
   process.env.GITHUB_TOKEN = "ghp-host-secret";
+  process.env.GIT_DIR = "host-git-dir";
+  process.env.GIT_WORK_TREE = "host-git-work-tree";
+  process.env.GIT_INDEX_FILE = "host-git-index";
+  process.env.SSH_ASKPASS = "host-askpass";
 
   const policy = compileSandboxPolicy({
     runId: "run_confine",
@@ -105,12 +109,12 @@ test("Step 6 (S2, S3, S10): spawnConfined scrubs secret env vars from shell and 
       { "x-session-key": "key_env" },
       {
         command:
-          'echo "OPENAI=${OPENAI_API_KEY:-EMPTY};SESSION=${OH_SESSION_KEY:-EMPTY};MODAL=${MODAL_TOKEN_SECRET:-EMPTY};GH=${GITHUB_TOKEN:-EMPTY}"',
+          'echo "OPENAI=${OPENAI_API_KEY:-EMPTY};SESSION=${OH_SESSION_KEY:-EMPTY};MODAL=${MODAL_TOKEN_SECRET:-EMPTY};GH=${GITHUB_TOKEN:-EMPTY};GITDIR=${GIT_DIR:-EMPTY};GITWT=${GIT_WORK_TREE:-EMPTY};GITINDEX=${GIT_INDEX_FILE:-EMPTY};ASKPASS=${SSH_ASKPASS:-EMPTY};PYTHON=${PYTHONUNBUFFERED:-EMPTY};GITPROMPT=${GIT_TERMINAL_PROMPT:-EMPTY}"',
       }
     );
     assert.equal(envRes.status, 200);
     assert.equal(envRes.headers["x-oh-daemon"], "1");
-    assert.match(String(envRes.body.output), /OPENAI=EMPTY;SESSION=EMPTY;MODAL=EMPTY;GH=EMPTY/);
+    assert.match(String(envRes.body.output), /OPENAI=EMPTY;SESSION=EMPTY;MODAL=EMPTY;GH=EMPTY;GITDIR=EMPTY;GITWT=EMPTY;GITINDEX=EMPTY;ASKPASS=EMPTY;PYTHON=1;GITPROMPT=0/);
 
     // Verify background process also has scrubbed env
     const bgRes = await daemon.handleRequest(
@@ -162,6 +166,10 @@ test("Step 6 (S2, S3, S10): spawnConfined scrubs secret env vars from shell and 
     delete process.env.OH_SESSION_KEY;
     delete process.env.MODAL_TOKEN_SECRET;
     delete process.env.GITHUB_TOKEN;
+    delete process.env.GIT_DIR;
+    delete process.env.GIT_WORK_TREE;
+    delete process.env.GIT_INDEX_FILE;
+    delete process.env.SSH_ASKPASS;
     for (let attempt = 0; ; attempt++) {
       try {
         fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

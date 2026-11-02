@@ -1,86 +1,61 @@
-# Production Modal.com Sandbox Harness (Anthropic Code-Mode MCP)
+# Modal and Vercel deployment
 
-## OpenHarness Modal + Vercel deployment
+## Live topology
 
-This path builds the isolated sandbox image, starts a scale-to-zero Meta Muse Glimmer 30B endpoint, and deploys the hosted OpenHarness server. After the Glimmer deployment prints its URL, add it as `MUSE_GLIMMER_BASE_URL` to the existing Modal `openharness-server` secret before deploying the web server, and add the same URL to the Vercel project when prompted below.
+Vercel serves the web UI and rewrites `/v1/*` and `/health` to Modal's `openharness-server` app, function `server`, on port 4096. The server persists application data in the `openharness-data` Volume and creates tenant-scoped guest cookies.
 
-```bash
-python3 deploy/modal/build_sandbox_image.py
-modal deploy deploy/modal/muse_glimmer_server.py
-modal deploy deploy/modal/web_server.py
-vercel env add MUSE_GLIMMER_BASE_URL production && vercel deploy --prod  # enter the Muse Glimmer Modal URL when prompted
+The server calls the `openharness-sandboxd` app, function `sandboxd`, on port 8080. That always-on hub uses the `openharness-workspaces` Volume and creates a private workspace, home directory, temporary directory, and Linux uid per session. Per-session Modal Sandboxes remain available when `OH_MODAL_IMAGE_ID` is configured. The hub and server share only `OH_MODAL_SANDBOX_KEY` for hub authentication.
+
+## Secrets
+
+Create a random key locally and keep its value private:
+
+```powershell
+$k = python -c "import secrets; print(secrets.token_hex(32))"
+modal secret create openharness-sandbox-key OH_MODAL_SANDBOX_KEY=$k
 ```
 
-The Glimmer endpoint defaults to one H200 and scales to zero after five idle minutes. To use a lower-cost A100 80 GB option, configure `MUSE_GPU=A100-80GB:1` and `MUSE_MAX_MODEL_LEN=32768` before deploying. The default H200 profile uses a 65,536 token served context; raise it only after checking available GPU memory. Optional DFlash speculation is enabled with `MUSE_ENABLE_DFLASH=1`. The Modal backend receives its own `MUSE_GLIMMER_BASE_URL` setting/secret so the server can route model requests to the endpoint.
+If the sandbox shared key is already in `openharness-server`, remove it there. `openharness-server` contains model/provider keys, Modal credentials used by the server only, `OPENHARNESS_MODEL`, the guest cookie secret, and optional run-limit values. `openharness-sandbox-key` contains only `OH_MODAL_SANDBOX_KEY` and is attached to both Modal apps. Never attach `openharness-server` to the hub. Never put API keys in `VITE_*` frontend variables; remove any old frontend access-key environment variable from Vercel.
 
-This directory contains the production-grade remote sandbox execution harness built with the **official Modal Python SDK (`modal.Sandbox`)** and **Anthropic's "Code Execution with MCP" architecture**.
+The hub runs with a minimal environment and rejects startup if its key is missing or shorter than 32 characters. To rotate the key, update the `openharness-sandbox-key` secret with `--force`, then redeploy both apps so the server and hub use the same value.
 
-## Architecture Overview
+## First deployment
 
-Instead of burdening the LLM with 100+ bulky JSON tool definitions in its context window, this harness equips a secure Ubuntu 24.04 Linux VM sandbox on Modal with in-sandbox MCP bridges (`/mnt/mcp_servers/`).
+1. Create the two secrets as above and populate `openharness-server` with the required server credentials (including `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, and a guest signing secret).
+2. Deploy the hub: `modal deploy deploy/modal/sandbox_server.py`.
+3. Deploy the API: `modal deploy deploy/modal/web_server.py`.
+4. Set the `/v1/*` and `/health` destinations in `vercel.json` to the deployed `openharness-server` URL, then deploy the Vercel project with `vercel deploy --prod`.
+5. Verify guest access: `node scripts/smoke.mjs https://<project>.vercel.app`.
 
-The agent is instructed to **write Python code** that imports these modules directly. High-volume payloads (e.g. DOM nodes, massive search results, whole files) are filtered in sandbox memory/disk, returning only concise answers or artifacts to the LLM.
+After updates, deploy `sandbox_server.py` before `web_server.py` when changing the shared hub key or sandbox image. The web app works with Meta Model API through `MODEL_API_KEY` or with another provider configured in Admin Settings; the optional Muse Glimmer GPU server is not required.
 
-### Components
+## Run limits and operating costs
 
-1. **`modal_image.py`**:
-   - Ubuntu 24.04 LTS VM image (`runtime="vm"`).
-   - Pre-installed compilers & runtimes: Python 3.12, Node.js 22, Rust, Go, Clang, gcc/g++, `uv`, `pytest`.
-   - Browser & Web Testing: Playwright (`playwright install --with-deps chromium`), `@playwright/mcp`, `@axe-core/cli`, `lighthouse`, `xvfb`.
-   - MCP Server packages: `@playwright/mcp`, `@modelcontextprotocol/server-github`, `@modelcontextprotocol/server-filesystem`.
-   - Document & Office Engines: Pandoc, LibreOffice, Poppler-utils, ReportLab, OpenPyXL, python-docx, python-pptx, Matplotlib.
-   - Anthropic Sandbox Runtime: `@anthropic-ai/sandbox-runtime` (`srt`), Bubblewrap, network filtering configs (`/etc/srt/`).
+Guest limits are controlled by `OH_MAX_ACTIVE_RUNS` (global concurrent runs, default 3), `OH_GUEST_MAX_ACTIVE_RUNS` (per-browser concurrent runs, default 1), and `OH_GUEST_MAX_RUNS_PER_DAY` (default 20). The values apply in the single Modal server container and reset when that process restarts.
 
-2. **`mcp_code_bridge.py`**:
-   - Populates `/mnt/mcp_servers/` inside the sandbox with:
-     - `client.py`: Async & sync JSON-RPC stdio MCP client.
-     - `playwright/`: Headless Chromium navigation, screenshots, DOM evaluation, and Axe audits.
-     - `github/`: Repository search, file retrieval, and issue management.
-     - `filesystem/`: Bounded file read, write, search, and directory inspection.
-     - `skills/`: Generation of `.xlsx`, `.docx`, `.pptx`, `matplotlib` charts, and PDF conversion.
+The hub defaults to 0.25 CPU, 1 GiB memory, and one warm container. This can consume roughly $10–15/month of a $30 monthly free credit while idle; set `OH_SANDBOX_MIN_CONTAINERS=0` to reduce idle cost at the expense of first-request cold starts.
 
-3. **`sandbox_manager.py`**:
-   - `ModalSandboxManager` wrapping current official `modal.Sandbox` APIs.
-   - Timeout and cost protections: `timeout=1800` (30m max) and `idle_timeout=180` (3m idle kill).
-   - Dynamic network modes (`connected`, `github_only`, `airgapped`) using `outbound_domain_allowlist` and `outbound_cidr_allowlist`.
-   - State-preserving command execution: maintains `$CWD` (`/tmp/.agent_cwd`) and environment variables (`/tmp/.agent_env`) across commands.
-   - Output truncation capped at 12,000 characters to protect context windows.
-   - File transfer via `copy_from_local` and `copy_to_local`.
-   - Web application tunnels on ports 3000 and 8080.
-   - Zero-cost hibernation with `snapshot_filesystem()` and instant restoration via `Image.from_id()`.
+## Security boundaries and known limits
 
-4. **`agent_tools.py`**:
-   - Exposes 3 minimal Anthropic tools to the LLM:
-     - `discover_mcp_modules`
-     - `execute_sandbox_code`
-     - `export_artifact`
-   - Claude-optimized system prompt for code-mode MCP execution.
+- Session shell commands use distinct non-root UIDs on the Linux hub; each workspace and home directory is mode 700. Root-owned workspace files are reassigned to the session owner after authenticated writes.
+- Sessions still share the hub's network namespace. A session can potentially reach another session's dev-server port on localhost; the public `/preview/<port>` proxy is unauthenticated.
+- Modal Volumes are last-write-wins; both apps intentionally use one container because the JSON/local state path assumes one writer.
+- Modal web requests have a 150-second cap. SSE clients reconnect with their event cursor; background runs use authenticated public-ingress keepalive requests of at most 120 seconds.
+- Guest cookies isolate tenants in the application API but do not replace account login or isolate network namespaces.
 
-## Usage
+## Environment settings
 
-```python
-from sandbox_manager import ModalSandboxManager
-from agent_tools import AgentToolExecutor
+The deployment recognizes `OH_MODAL_IMAGE_ID` for per-session Modal Sandboxes and `OH_MODAL_SANDBOX_URL` to override hub URL discovery. `OH_MODAL_SANDBOX_RUNTIME` defaults to `gvisor`; set it to `vm` only when the selected image requires KVM. `OPENHARNESS_WEB_GUEST=1` enables signed guest cookies.
 
-# Initialize manager with tenant & session scope
-manager = ModalSandboxManager(tenant_id="tenant-123", session_id="session-456")
-sb = manager.create(network_mode="connected")
+## Local and legacy files
 
-executor = AgentToolExecutor(manager)
+The obsolete deployment files removed from this repository are `Dockerfile`, `docker-compose.yml`, `deploy/modal/app.py`, `deploy/modal/openharness.py`, `deploy/modal/build_image.py`, `deploy/modal/__init__.py`, `scripts/modal-stub.mjs`, and `scripts/ts-loader.mjs`. `web_server.py` and `sandbox_server.py` are the supported live deployment scripts.
 
-# Execute Python code that navigates via Playwright and captures a screenshot
-code = '''
-from mcp_servers.playwright import navigate, screenshot
-navigate("https://example.com")
-print(screenshot("/mnt/data/example.png"))
-'''
-result = executor.execute_sandbox_code(code)
-print(result["stdout"])
+For key rotation, generate a new random value, update `openharness-sandbox-key` using Modal's `--force` option, then redeploy the hub and API so both receive the same value:
 
-# Export generated artifact to host
-executor.export_artifact("/mnt/data/example.png", "./local_example.png")
-
-# Hibernate sandbox to zero-cost snapshot
-snapshot_id = manager.hibernate_to_snapshot()
-print(f"Hibernated to snapshot: {snapshot_id}")
+```powershell
+$k = python -c "import secrets; print(secrets.token_hex(32))"
+modal secret create --force openharness-sandbox-key OH_MODAL_SANDBOX_KEY=$k
+modal deploy deploy/modal/sandbox_server.py
+modal deploy deploy/modal/web_server.py
 ```

@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 import pathlib
 import json
-import hashlib
 import subprocess
 import modal
 
@@ -73,7 +72,10 @@ server_image = (
 @app.function(
     image=server_image,
     volumes={"/data": volume},
-    secrets=[modal.Secret.from_name("openharness-server")],
+    secrets=[
+        modal.Secret.from_name("openharness-server"),
+        modal.Secret.from_name("openharness-sandbox-key"),
+    ],
     cpu=0.5,
     memory=1024,
     timeout=3600,
@@ -93,10 +95,12 @@ def server():
             print(f"[openharness-server] warning: could not lookup openharness-sandboxd web url: {exc}", flush=True)
             sandbox_url = ""
     shared_key = os.environ.get("OH_MODAL_SANDBOX_KEY", "").strip()
-    if not shared_key and os.environ.get("MODAL_TOKEN_SECRET"):
-        shared_key = hashlib.sha256(
-            f"oh-sandboxd-v1:{os.environ['MODAL_TOKEN_SECRET']}".encode()
-        ).hexdigest()
+    if len(shared_key) < 32:
+        raise RuntimeError("Secret openharness-sandbox-key must define OH_MODAL_SANDBOX_KEY (>= 32 chars)")
+    try:
+        public_url = (modal.Function.from_name("openharness-server", "server").get_web_url() or "").strip()
+    except Exception:
+        public_url = ""
     env = {
         **os.environ,
         # The Modal worker-local socket is not available to the Node subprocess
@@ -107,6 +111,12 @@ def server():
         "OH_MODAL_IMAGE_ID": image_id,
         "OH_MODAL_SANDBOX_URL": sandbox_url,
         "OH_MODAL_SANDBOX_KEY": shared_key,
+        "OH_PUBLIC_URL": public_url,
+        # Keep the Modal account hostname out of preview links shown in the UI.
+        # Vercel rewrites these paths back to the Hub without changing the URL.
+        "OPENHARNESS_PREVIEW_BASE_URL": os.environ.get(
+            "OPENHARNESS_PREVIEW_BASE_URL", "https://openharness-web-six.vercel.app"
+        ),
         "OH_DEFAULT_RUNTIME": os.environ.get("OH_DEFAULT_RUNTIME", "modal"),
         "OH_MODAL_SANDBOX_RUNTIME": os.environ.get("OH_MODAL_SANDBOX_RUNTIME", "gvisor"),
         "OH_SANDBOX_IDLE_MS": os.environ.get("OH_SANDBOX_IDLE_MS", "180000"),

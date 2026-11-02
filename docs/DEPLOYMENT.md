@@ -8,44 +8,28 @@ Run `bun install`, then run `bun run server` and `bun run dev` in separate termi
 
 Run `bun run build:server`. Bun compiles `packages/server/src/main.ts` into `dist/openharness`. The binary uses `OPENHARNESS_HOST`, `OPENHARNESS_PORT`, `OPENHARNESS_DATA_DIR`, and `OPENHARNESS_WORKSPACE` at runtime.
 
-## Docker Compose
-
-Copy `.env.example` to `.env`, set matching admin/server tokens, a stable web session secret, and your public web URL. Configure OAuth client credentials and either an email allowlist or explicit signup policy as needed, then run:
-
-```bash
-docker compose up --build
-```
-
-Compose starts the API on port 4096 and the web UI on port 3000, persists server state in the `openharness-data` volume, and mounts the configured workspace to `/workspace`. Both runtime images are non-root and include HTTP health checks. Set `OPENHARNESS_WEB_SESSION_SECRET` to a stable random value in managed deployments. Do not mount sensitive host directories as the workspace.
-
 ## Secrets and backups
 
 Secret values use AES-256-GCM. When `OPENHARNESS_SECRET_KEY` is unset, the server creates `.openharness/secret.key` with restrictive file permissions and stores ciphertext in `.openharness/secrets.json`. Back up the key and data directory together; without the key, stored values cannot be decrypted. Set a stable `OPENHARNESS_SECRET_KEY` in managed deployments and keep it in the deployment secret manager.
 
 ## Modal backend
 
-`deploy/modal/web_server.py` runs the API server on Modal. The image installs the repository dependencies and starts `packages/server/src/main.ts` with Node. The function is exposed with `@modal.web_server(4096)`, so Modal's proxy streams SSE responses.
+`deploy/modal/web_server.py` runs the API at port 4096 in Modal app `openharness-server`, function `server`, with application data on Volume `openharness-data`. `deploy/modal/sandbox_server.py` runs the port-8080 hub in app `openharness-sandboxd`, function `sandboxd`, with workspaces on Volume `openharness-workspaces`. Vercel rewrites `/v1/*` and `/health` to the API. Guest browsers receive signed tenant cookies.
 
-1. Create the persistent volume and the token secret once per workspace:
+Create the dedicated hub key locally and store it only in the named secret:
 
-   ```bash
-   modal volume create --version=2 openharness-data
-   modal secret create openharness-server \
-     OPENHARNESS_SERVER_TOKEN="<server-token>" \
-     OPENHARNESS_ADMIN_TOKEN="<admin-token>"
-   ```
+```powershell
+$k = python -c "import secrets; print(secrets.token_hex(32))"
+modal secret create openharness-sandbox-key OH_MODAL_SANDBOX_KEY=$k
+```
 
-2. Deploy:
+The `openharness-server` Modal secret contains model/provider keys, `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` (server only), `OPENHARNESS_MODEL`, `OPENHARNESS_WEB_GUEST_SECRET`, and optional `OH_MAX_ACTIVE_RUNS`, `OH_GUEST_MAX_ACTIVE_RUNS`, and `OH_GUEST_MAX_RUNS_PER_DAY`. The `openharness-sandbox-key` secret contains only `OH_MODAL_SANDBOX_KEY` and is attached to both apps. Never attach `openharness-server` to the hub. Remove any old hub shared key from `openharness-server`; do not put a secret in a `VITE_*` variable. Remove any old frontend access-key environment variable from Vercel.
 
-   ```bash
-   modal deploy deploy/modal/web_server.py
-   ```
+Deploy in this order: create/update both secrets, run `modal deploy deploy/modal/sandbox_server.py`, then `modal deploy deploy/modal/web_server.py`; update Vercel rewrites to the Modal server URL and run `vercel deploy --prod`. Verify the guest cookie flow with `node scripts/smoke.mjs https://<project>.vercel.app`. The server works with `MODEL_API_KEY` for Meta Model API or with a provider configured in Admin Settings; a Muse Glimmer GPU endpoint is optional.
 
-The server keeps state on the `openharness-data` volume at `/data`, uses `/app` as the agent workspace, and runs the offline `mock` provider by default. Configure `OPENHARNESS_SERVER_TOKEN` and `OPENHARNESS_ADMIN_TOKEN` in the `openharness-server` Modal secret before deployment; the function attaches that secret at runtime and does not use fallback credentials. The hosted web deployment enables `OPENHARNESS_WEB_GUEST=1`: first-time visitors receive a signed guest cookie and can start chats without administrator sign-in; each browser gets a separate tenant. Settings and `/v1/admin/**` still require administrator sign-in. Guest chats can use the configured model API key, so enable this only for a public-facing app where visitor model usage is intended. The web deployment sets `OPENHARNESS_WEB_DISABLE_SANDBOX=1`, so Ask mode can call a configured model without provisioning a sandbox and no runtime is selected by default. Code mode remains available when an active runtime is explicitly selected. The function is capped at one container because the JSON state store assumes a single writer; simultaneous SSE streams are handled with `@modal.concurrent`. Do not scale `max_containers` until the Postgres/Redis adapters are in use (see [Scaling](SCALING.md)).
+The hub runs one warm container by default at 0.25 CPU and 1 GiB, which the deployment plan estimates at roughly $10–15/month against $30 of monthly free credit. Set `OH_SANDBOX_MIN_CONTAINERS=0` to trade first-request cold start for lower idle cost. Guest run limits default to 3 active runs globally, 1 active run per browser, and 20 runs per browser per day. They are in-memory limits and reset on process restart.
 
-To use Meta Model API, add `MODEL_API_KEY=<key>` to the existing `openharness-server` Modal secret and redeploy. The server defaults to `muse-spark-1.3` at `https://api.meta.ai/v1`; set `OPENHARNESS_MODEL` or `OPENHARNESS_BASE_URL` only to override those defaults. The key is read from the secret store/environment and is never returned by the settings API. OpenHarness routes the Muse model IDs directly to Meta, so their requests do not use Fireworks or Baseten credentials/credits.
-
-SSE keep-alive pings are sent every 5 seconds and the Bun server uses a 120-second idle timeout, so streams survive Modal's proxy and Bun's default 10-second request timeout. Modal requests can last up to one hour; clients should still reconnect with `Last-Event-ID` after a disconnect.
+The hub creates per-session workspace/home/tmp folders and dedicated non-root UIDs. The hub receives only its dedicated key and a minimal environment. Sessions share a network namespace, so a session may reach another session's development server via localhost; `/preview/<port>` is unauthenticated. Modal Volumes are last-write-wins, and both apps remain at one container while the local JSON state path assumes a single writer. Modal web requests cap at 150 seconds; background runs use authenticated keepalive requests under 120 seconds and SSE clients reconnect by event cursor.
 
 ## Vercel frontend
 

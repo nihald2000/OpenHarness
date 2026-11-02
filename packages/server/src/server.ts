@@ -62,12 +62,14 @@ import {
 } from "@openharness/core";
 import {
   CONSERVATIVE_DEFAULT_PROFILE,
+  resolveModelProfile,
   type ModelProfile,
 } from "../../core/src/provider/profiles.ts";
 import { EncryptedSecretStore } from "./secrets.ts";
 import { OidcVerifier, type OidcConfig } from "./oidc/auth.ts";
 import { CookieSessionStore } from "./auth/oauth.ts";
 import { createRunHooks } from "./run-hooks.ts";
+import { RunLimiter } from "./run-limiter.ts";
 import {
   AttachmentStore,
   isTextAttachment,
@@ -262,6 +264,7 @@ export class OpenHarnessServer {
     },
   };
   private defaultRuntime: string;
+  private readonly runLimiter = new RunLimiter();
   private knownRuntimes = new Set<string>(["local", "srt-local", "docker", "modal"]);
   private generatedAdminTokenPath?: string;
   private settingsPath: string;
@@ -376,10 +379,7 @@ export class OpenHarnessServer {
     const rawSavedRuntime = this.readUserSettings().defaultRuntime;
     const envDefaultRuntime = process.env.OH_DEFAULT_RUNTIME || undefined;
     const pinnedModalUrl = process.env.OH_MODAL_SANDBOX_URL?.trim();
-    const pinnedModalKey = process.env.OH_MODAL_SANDBOX_KEY?.trim() ||
-      (process.env.MODAL_TOKEN_SECRET
-        ? crypto.createHash("sha256").update(`oh-sandboxd-v1:${process.env.MODAL_TOKEN_SECRET}`).digest("hex")
-        : "");
+    const pinnedModalKey = process.env.OH_MODAL_SANDBOX_KEY?.trim() || "";
     this.defaultRuntime =
       rawSavedRuntime || envDefaultRuntime || this.config.defaultRuntime || "local";
     const modalImageId = process.env.OH_MODAL_IMAGE_ID || resolveModalImageId(serverCodeRoot);
@@ -413,7 +413,11 @@ export class OpenHarnessServer {
           "modal",
           (() => {
             if (pinnedModalUrl && pinnedModalKey) {
-              return new PinnedModalSandboxProvider({ endpointUrl: pinnedModalUrl, sharedKey: pinnedModalKey });
+              return new PinnedModalSandboxProvider({
+                endpointUrl: pinnedModalUrl,
+                sharedKey: pinnedModalKey,
+                previewBaseUrl: process.env.OPENHARNESS_PREVIEW_BASE_URL,
+              });
             }
             // Modal uses its SDK, image manifest, and API credentials; it does not probe local SRT or Docker binaries.
             const hasCreds = Boolean(process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET);
@@ -437,7 +441,11 @@ export class OpenHarnessServer {
         ],
       ]);
     if (this.config.providers && pinnedModalUrl && pinnedModalKey) {
-      this.providers.set("modal", new PinnedModalSandboxProvider({ endpointUrl: pinnedModalUrl, sharedKey: pinnedModalKey }));
+      this.providers.set("modal", new PinnedModalSandboxProvider({
+        endpointUrl: pinnedModalUrl,
+        sharedKey: pinnedModalKey,
+        previewBaseUrl: process.env.OPENHARNESS_PREVIEW_BASE_URL,
+      }));
     }
 
     let hooksRef: ReturnType<typeof createRunHooks> | null = null;
@@ -792,7 +800,9 @@ export class OpenHarnessServer {
       onResumeSandbox: hooks.onResumeSandbox,
     };
 
-    this.worker = new DurableWorker(this.jobQueue, this.deps);
+    this.worker = new DurableWorker(this.jobQueue, this.deps, {
+      onTerminal: (tenantId, runId) => this.runLimiter.release(tenantId, runId),
+    });
     this.runStateMachine = new RunStateMachine({ dataDir, stateStore: this.stateStore });
     this.emitter = new RunEventEmitter({ stateStore: this.stateStore, eventBus: this.eventBus });
     this.runWorker = new DurableRunWorker({
@@ -800,6 +810,7 @@ export class OpenHarnessServer {
       emitter: this.emitter,
       deps: this.deps,
       activeSandboxes: this.activeSandboxes,
+      onTerminal: (tenantId, runId) => this.runLimiter.release(tenantId, runId),
     });
     const keepalive = createKeepalive(() => this.config.port ?? Number(process.env.OPENHARNESS_PORT ?? 4096));
     this.runWorker.setRunLauncher((runId) => {
@@ -1131,7 +1142,18 @@ export class OpenHarnessServer {
   ): Promise<{ status: number; body: unknown; headers?: Record<string, string> }> {
     const parsedUrl = new URL(urlPath, "http://127.0.0.1:4096");
     if (method === "GET" && parsedUrl.pathname === "/health") {
-      return { status: 200, body: { ok: true, version: "0.2.0" } };
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          version: "0.2.0",
+          components: {
+            server: "ready",
+            defaultRuntime: this.defaultRuntime,
+            sandboxMode: process.env.OH_MODAL_SANDBOX_URL?.trim() ? "pinned-hub" : "dynamic",
+          },
+        },
+      };
     }
     const artifactMatch = parsedUrl.pathname.match(/^\/v1\/artifacts\/([A-Za-z0-9_.-]+)$/);
     if (method === "GET" && artifactMatch) {
@@ -1562,6 +1584,66 @@ export class OpenHarnessServer {
       return { status: 201, body: session };
     }
 
+    const sessionContextMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/context$/);
+    if (method === "GET" && sessionContextMatch) {
+      const sessionId = sessionContextMatch[1]!;
+      const session = await this.stateStore.getSession(tenantId, sessionId);
+      if (!session) return { status: 404, body: { error: "Session not found" } };
+
+      const [transcript, checkpoint] = await Promise.all([
+        this.stateStore.getMessages(tenantId, sessionId),
+        (session.activeRunId ?? session.runId)
+          ? this.stateStore.getStepCheckpoint(tenantId, session.activeRunId ?? session.runId!)
+          : Promise.resolve(null),
+      ]);
+      const runState = checkpoint?.state;
+      const modelId = runState?.model ?? session.model ?? this.getDefaultModel();
+      const contextManager = new LayeredContextManager({
+        workspaceRoot: this.getSessionWorkspaceRoot(tenantId, sessionId),
+        disableHostWorkspaceScan: this.hostedIsolation,
+      });
+      const promptState = runState ?? ({
+        agent: session.agent,
+        mode: session.mode ?? "chat",
+        runtime: session.runtime ?? undefined,
+        changedFiles: [],
+        plan: null,
+        sandboxNotice: undefined,
+      } as unknown as RunState);
+      const touchedPaths = transcript.messages.flatMap((message) => message.parts.flatMap((part) =>
+        part.type === "tool" && part.input && typeof (part.input as { path?: unknown }).path === "string"
+          ? [(part.input as { path: string }).path]
+          : []
+      ));
+      const systemPrompt = contextManager.buildStableSystemPrompt(promptState, touchedPaths);
+      let contextWindow = resolveModelProfile(modelId).contextWindow;
+      const providerSettings = this.readUserSettings().providers;
+      if (providerSettings && typeof providerSettings === "object") {
+        for (const provider of Object.values(providerSettings as Record<string, any>)) {
+          const configuredWindow = provider?.models?.[modelId]?.contextWindow;
+          if (typeof configuredWindow === "number" && Number.isFinite(configuredWindow) && configuredWindow > 0) {
+            contextWindow = configuredWindow;
+            break;
+          }
+        }
+      }
+      const compactions = transcript.messages.reduce((count, message) =>
+        count + message.parts.filter((part) => part.type === "compaction").length, 0);
+      return {
+        status: 200,
+        body: {
+          contextUsage: {
+            sessionId,
+            estimatedTokens: contextManager.estimateTranscriptTokens(systemPrompt, transcript.messages),
+            contextWindow,
+            triggerAt: contextManager.getTriggerTokens(contextWindow),
+            messages: transcript.messages.length,
+            compactions,
+          },
+        },
+      };
+    }
+
     const sessionMatch = pathname.match(/^\/v1\/sessions\/([^/]+)$/);
     if (sessionMatch) {
       const sessionId = sessionMatch[1]!;
@@ -1833,6 +1915,8 @@ export class OpenHarnessServer {
       const userMsgId = `msg_u_${Date.now()}`;
       const runId = `run_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
       const jobId = `job_${runId}`;
+      const acquired = this.runLimiter.tryAcquire(tenantId, runId, identity.admin === true);
+      if (!acquired.ok) return { status: acquired.status, body: { error: acquired.error } };
 
       const userMsg: Message = {
         info: { id: userMsgId, role: "user" },
@@ -1845,6 +1929,7 @@ export class OpenHarnessServer {
           ...attachmentParts,
         ],
       };
+      try {
       await this.stateStore.saveMessage(tenantId, sessionId, userMsg);
       await this.emitter.emit(tenantId, sessionId, {
         type: "message.updated",
@@ -1873,6 +1958,7 @@ export class OpenHarnessServer {
             typeof payload.clientTurnId === "string" ? payload.clientTurnId : undefined,
         });
         if (deduplicated) {
+          this.runLimiter.release(tenantId, runId);
           return {
             status: 202,
             body: { messageId: userMsgId, runId: run.id },
@@ -1916,6 +2002,10 @@ export class OpenHarnessServer {
         status: 202,
         body: { messageId: userMsgId, runId },
       };
+      } catch (err) {
+        this.runLimiter.release(tenantId, runId);
+        throw err;
+      }
     }
 
     if (method === "GET" && pathname === "/v1/runs") {
@@ -1952,6 +2042,13 @@ export class OpenHarnessServer {
       }
       const sandboxId = sbShellMatch[1]!;
       const daemon = getActiveSandboxDaemon(sandboxId);
+      const sandboxRecord = await this.sandboxRecords.get(sandboxId).catch(() => null);
+      if (!identity.admin && (
+        (sandboxRecord && sandboxRecord.tenantId !== tenantId) ||
+        (!sandboxRecord && daemon)
+      )) {
+        return { status: 404, body: { error: "Sandbox not found" } };
+      }
       const command = String(body?.command ?? "pwd");
       if (daemon) {
         const res = await daemon.handleRequest(
@@ -2062,10 +2159,24 @@ export class OpenHarnessServer {
 
     const runRetryMatch = pathname.match(/^\/v1\/runs\/([^/]+)\/retry$/);
     if (method === "POST" && runRetryMatch) {
+      let acquiredTenant: string | undefined;
+      let acquiredRun: string | undefined;
       try {
-        const retried = await this.runWorker.retryRun(runRetryMatch[1]!);
+        const prior = await this.runWorker.getRun(runRetryMatch[1]!);
+        if (!prior) return { status: 404, body: { error: "Run not found" } };
+        const priorTenant = prior.tenantId ?? "default";
+        if (priorTenant !== tenantId && !identity.admin) return { status: 404, body: { error: "Run not found" } };
+        const acquired = this.runLimiter.tryAcquire(priorTenant, prior.id, identity.admin === true);
+        if (!acquired.ok) return { status: acquired.status, body: { error: acquired.error } };
+        acquiredTenant = priorTenant;
+        acquiredRun = prior.id;
+        const retried = await this.runWorker.retryRun(runRetryMatch[1]!, (newRunId) => {
+          this.runLimiter.transfer(priorTenant, prior.id, newRunId);
+          acquiredRun = newRunId;
+        });
         return { status: 202, body: { runId: retried.id, run: retried } };
       } catch (err) {
+        if (acquiredTenant && acquiredRun) this.runLimiter.release(acquiredTenant, acquiredRun);
         const status = typeof (err as any)?.status === "number" ? (err as any).status : 400;
         return { status, body: { error: (err as Error).message } };
       }

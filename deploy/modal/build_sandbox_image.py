@@ -29,6 +29,7 @@ def build_sandbox_image() -> modal.Image:
             "bubblewrap",
             "socat",
             "util-linux",
+            "findutils",
             "build-essential",
             "jq",
             "tar",
@@ -39,7 +40,7 @@ def build_sandbox_image() -> modal.Image:
             "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs",
             # Install the same OS-level process sandbox that the daemon requires
             # for enforcing its per-run filesystem and network policy.
-            "npm install --global @anthropic-ai/sandbox-runtime && srt --version",
+            "npm install --global @anthropic-ai/sandbox-runtime && srt --version && setpriv --version",
             "useradd --create-home -u 1000 --shell /bin/bash agent || true",
         )
         .env({"PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright", "NODE_PATH": "/opt/oh/node_modules", "OH_VM_ISOLATED": "1"})

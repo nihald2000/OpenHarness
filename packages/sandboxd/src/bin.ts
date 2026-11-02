@@ -10,7 +10,8 @@ const { values } = parseArgs({
   },
 });
 
-const sessionKey = process.env.OH_SESSION_KEY ?? "dev-session-key";
+const sessionKey = (process.env.OH_SESSION_KEY ?? "").trim();
+if (sessionKey.length < 32) throw new Error("OH_SESSION_KEY (>= 32 chars) is required");
 const sessionId = process.env.OH_SESSION_ID ?? "sess_default";
 const runId = process.env.OH_RUN_ID ?? "run_default";
 const policy = process.env.OH_POLICY_B64
@@ -30,6 +31,13 @@ fs.mkdirSync("/workspace", { recursive: true });
 fs.mkdirSync("/memories", { recursive: true });
 fs.mkdirSync("/tmp/oh", { recursive: true });
 fs.mkdirSync("/oh/.shadow-git", { recursive: true });
+if (process.platform === "linux" && process.getuid?.() === 0) {
+  for (const directory of ["/workspace", "/workspace/.oh-home", "/tmp/oh"]) {
+    fs.mkdirSync(directory, { recursive: true });
+    fs.chownSync(directory, 1000, 1000);
+    fs.chmodSync(directory, 0o700);
+  }
+}
 
 const daemon = new SandboxDaemon({
   sessionId,
@@ -39,7 +47,9 @@ const daemon = new SandboxDaemon({
   workspacePath: "/workspace",
   memoriesPath: "/memories",
   tmpPath: "/tmp/oh",
+  homePath: "/workspace/.oh-home",
   shadowGitDir: "/oh/.shadow-git",
+  runAs: process.platform === "linux" && process.getuid?.() === 0 ? { uid: 1000, gid: 1000 } : undefined,
 });
 
 await daemon.listen(Number(values.port), values.host);

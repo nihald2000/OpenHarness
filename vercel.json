@@ -1,5 +1,28 @@
 {
   "rewrites": [
+    {
+      "source": "/preview/:port",
+      "destination": "https://nihald2000--openharness-sandboxd-sandboxd.us-east.modal.run/preview/:port/"
+    },
+    {
+      "source": "/preview/:port/",
+      "destination": "https://nihald2000--openharness-sandboxd-sandboxd.us-east.modal.run/preview/:port/"
+    },
+    {
+      "source": "/preview/:port/:path*",
+      "destination": "https://nihald2000--openharness-sandboxd-sandboxd.us-east.modal.run/preview/:port/:path*"
+    },
+    {
+      "source": "/:path*",
+      "has": [
+        {
+          "type": "header",
+          "key": "referer",
+          "value": "https://openharness-web-six\\.vercel\\.app/preview/(?<port>[0-9]{1,5})/.*"
+        }
+      ],
+      "destination": "https://nihald2000--openharness-sandboxd-sandboxd.us-east.modal.run/preview/:port/:path*"
+    },
     { "source": "/v1/:path*", "destination": "https://nihald2000--openharness-server-server.us-east.modal.run/v1/:path*" },
     { "source": "/health", "destination": "https://nihald2000--openharness-server-server.us-east.modal.run/health" },
     { "source": "/((?!v1/|health|assets/).*)", "destination": "/index.html" }

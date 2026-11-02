@@ -4,11 +4,70 @@ import http, { type IncomingMessage, type Server, type ServerResponse } from "no
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { compileSandboxPolicy } from "../../core/src/sandbox/policy.ts";
 import { SandboxDaemon } from "./server.ts";
 
 const SANDBOX_ID = /^[A-Za-z0-9_-]{3,96}$/;
 const MAX_BODY_BYTES = 40 * 1024 * 1024;
+
+function requireKey(value: string | undefined): string {
+  const key = (value ?? "").trim();
+  if (key.length < 32) throw new Error("OH_MODAL_SANDBOX_KEY (>= 32 chars) is required for the sandbox hub");
+  return key;
+}
+
+const perSessionUid = process.platform === "linux" && process.getuid?.() === 0 && process.env.OH_HUB_PER_SESSION_UID !== "0";
+type Owner = { uid: number; gid: number };
+
+function sessionOwner(base: string, sandboxId: string): Owner {
+  try {
+    const st = fs.statSync(path.join(base, "workspace"));
+    if (st.uid !== 0) return { uid: st.uid, gid: st.gid };
+  } catch {}
+  const root = path.dirname(base);
+  const occupied = new Set<number>();
+  try {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || path.join(root, entry.name) === base) continue;
+      try {
+        const st = fs.statSync(path.join(root, entry.name, "workspace"));
+        if (st.uid !== 0) occupied.add(st.uid);
+      } catch {}
+    }
+  } catch {}
+  const n = Number.parseInt(crypto.createHash("sha256").update(sandboxId).digest("hex").slice(0, 8), 16) % 40_000;
+  for (let offset = 0; offset < 40_000; offset++) {
+    const id = 20_000 + ((n + offset) % 40_000);
+    if (!occupied.has(id)) return { uid: id, gid: id };
+  }
+  throw new Error("No free per-session uid is available");
+}
+
+function prepareSessionDirs(root: string, base: string, tmpPath: string, owner: Owner): void {
+  fs.mkdirSync(root, { recursive: true });
+  fs.chmodSync(root, 0o711);
+  fs.mkdirSync("/tmp/oh", { recursive: true });
+  fs.chmodSync("/tmp/oh", 0o711);
+  fs.mkdirSync(base, { recursive: true, mode: 0o711 });
+  fs.chmodSync(base, 0o711);
+  for (const dir of [path.join(base, "workspace"), path.join(base, "home"), tmpPath]) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.chownSync(dir, owner.uid, owner.gid);
+    fs.chmodSync(dir, 0o700);
+  }
+  for (const dir of [path.join(base, "memories"), path.join(base, ".shadow-git")]) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(dir, 0o700);
+  }
+  reclaimOwnership(path.join(base, "workspace"), owner);
+}
+
+function reclaimOwnership(workspacePath: string, owner: Owner): void {
+  spawnSync("find", [workspacePath, "-xdev", "-user", "0", "-exec", "chown", "-h", `${owner.uid}:${owner.gid}`, "{}", "+"], {
+    stdio: "ignore", timeout: 20_000,
+  });
+}
 
 export interface SandboxHubOptions {
   host?: string;
@@ -91,21 +150,48 @@ function previewTarget(url: string | undefined): { port: number; path: string } 
   return { port, path: `${match[2] || "/"}${match[3] || ""}` };
 }
 
-export function createSandboxHubServer(options: SandboxHubOptions = {}): SandboxHubServer {
-  const root = path.resolve(options.root ?? process.env.OH_WORKSPACES_ROOT ?? "/workspaces");
-  const sessionKey = options.sessionKey ?? process.env.OH_MODAL_SANDBOX_KEY ?? process.env.OH_SESSION_KEY ?? "dev-session-key";
-  // The hub is itself the isolation boundary. Never pass Modal credentials to
-  // shell or background-process environments spawned by its session daemons.
-  for (const key of Object.keys(process.env)) {
-    if (key.startsWith("MODAL_")) delete process.env[key];
+function previewPortFromReferer(rawReferer: string | undefined): number | undefined {
+  if (!rawReferer) return undefined;
+  try {
+    const parsed = new URL(rawReferer);
+    const match = parsed.pathname.match(/^\/preview\/(\d{1,5})(?:\/|$)/);
+    if (!match) return undefined;
+    const port = Number(match[1]);
+    return port >= 1024 && port <= 65535 && port !== 8080 ? port : undefined;
+  } catch {
+    return undefined;
   }
+}
+
+function isReservedDaemonPath(pathname: string): boolean {
+  return /^\/(?:health|sessions(?:\/|$)|files(?:\/|$)|search(?:\/|$)|shell(?:\/|$)|exec(?:\/|$)|processes(?:\/|$)|checkpoints(?:\/|$)|workspace(?:\/|$)|ports(?:\/|$)|browser(?:\/|$)|ipython(?:\/|$)|preview(?:\/|$)|v1(?:\/|$))/.test(pathname);
+}
+
+export function createSandboxHubServer(options: SandboxHubOptions = {}): SandboxHubServer {
+  if (process.env.OH_HUB_PER_SESSION_UID === "1" && !perSessionUid) {
+    throw new Error("Per-session uid isolation requires a Linux root hub process");
+  }
+  const root = path.resolve(options.root ?? process.env.OH_WORKSPACES_ROOT ?? "/workspaces");
+  const sessionKey = requireKey(options.sessionKey ?? process.env.OH_MODAL_SANDBOX_KEY ?? process.env.OH_SESSION_KEY);
 
   const daemons = new Map<string, SandboxDaemon>();
+  const owners = new Map<string, Owner>();
   const getOrCreateDaemon = (sandboxId: string): SandboxDaemon => {
     const existing = daemons.get(sandboxId);
     if (existing) return existing;
     const base = path.join(root, sandboxId);
     const workspacePath = path.join(base, "workspace");
+    const tmpPath = path.join("/tmp/oh", sandboxId);
+    const homePath = path.join(base, "home");
+    const owner = perSessionUid ? sessionOwner(base, sandboxId) : undefined;
+    if (owner) {
+      prepareSessionDirs(root, base, tmpPath, owner);
+      owners.set(sandboxId, owner);
+    } else {
+      fs.mkdirSync(workspacePath, { recursive: true, mode: 0o700 });
+      fs.mkdirSync(homePath, { recursive: true, mode: 0o700 });
+      fs.mkdirSync(tmpPath, { recursive: true, mode: 0o700 });
+    }
     const runId = `hub_${sandboxId}`;
     const daemon = new SandboxDaemon({
       sessionId: sandboxId,
@@ -113,8 +199,10 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
       sessionKey,
       workspacePath,
       memoriesPath: path.join(base, "memories"),
-      tmpPath: path.join("/tmp/oh", sandboxId),
+      tmpPath,
+      homePath,
       shadowGitDir: path.join(base, ".shadow-git"),
+      runAs: owner,
       policy: compileSandboxPolicy({ runId, phase: "agent", workspacePath, networkMode: "open" }),
     });
     daemons.set(sandboxId, daemon);
@@ -123,13 +211,33 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
 
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? "/";
+    const requestUrl = new URL(url, "http://127.0.0.1");
     if (req.method === "GET" && url === "/health") {
       return sendJson(res, 200, { ok: true, osEnforced: true, mode: "pinned-hub", activeSandboxes: daemons.size }, { "x-oh-daemon": "1" });
+    }
+
+    const barePreview = requestUrl.pathname.match(/^\/preview\/(\d{1,5})$/);
+    if (req.method === "GET" && barePreview) {
+      const port = Number(barePreview[1]);
+      if (port < 1024 || port > 65535 || port === 8080) {
+        return sendJson(res, 400, { error: "Invalid preview port" });
+      }
+      res.writeHead(302, { location: `/preview/${port}/${requestUrl.search}` });
+      return res.end();
     }
 
     const preview = previewTarget(url);
     if (preview) return proxyPreview(req, res, preview.port, preview.path);
     if (url.startsWith("/preview/")) return sendJson(res, 400, { error: "Invalid preview port" });
+
+    const refererPort = previewPortFromReferer(typeof req.headers.referer === "string" ? req.headers.referer : undefined);
+    if (
+      req.method === "GET" &&
+      refererPort !== undefined &&
+      !isReservedDaemonPath(requestUrl.pathname)
+    ) {
+      return proxyPreview(req, res, refererPort, `${requestUrl.pathname}${requestUrl.search}`);
+    }
 
     const providedKey = req.headers["x-session-key"];
     if (!safeEquals(sessionKey, Array.isArray(providedKey) ? providedKey[0] : providedKey)) {
@@ -162,6 +270,10 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
 
     const daemon = getOrCreateDaemon(sandboxId);
     try {
+      const owner = owners.get(sandboxId);
+      if (req.method !== "GET" && req.method !== "HEAD" && owner) {
+        res.once("finish", () => reclaimOwnership(path.join(root, sandboxId, "workspace"), owner));
+      }
       const result = await daemon.handleRequest(req.method ?? "GET", url, {
         "x-session-key": sessionKey,
         "x-oh-request-id": String(req.headers["x-oh-request-id"] ?? ""),
@@ -215,7 +327,7 @@ function parseArgs(args: string[]): Required<SandboxHubOptions> {
     host: "0.0.0.0",
     port: 8080,
     root: process.env.OH_WORKSPACES_ROOT ?? "/workspaces",
-    sessionKey: process.env.OH_MODAL_SANDBOX_KEY ?? process.env.OH_SESSION_KEY ?? "dev-session-key",
+    sessionKey: requireKey(process.env.OH_MODAL_SANDBOX_KEY ?? process.env.OH_SESSION_KEY),
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];

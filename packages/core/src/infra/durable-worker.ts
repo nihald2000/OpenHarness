@@ -18,6 +18,7 @@ export interface DurableWorkerOptions {
   workerId?: string;
   leaseMs?: number;
   conversationIdleTtlSec?: number;
+  onTerminal?: (tenantId: string, runId: string) => void;
 }
 
 /**
@@ -33,6 +34,7 @@ export class DurableWorker {
   private deps: EngineDeps;
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private abortControllers = new Map<string, AbortController>();
+  private onTerminal?: DurableWorkerOptions["onTerminal"];
 
   constructor(queue: JobQueue, deps: EngineDeps, opts?: DurableWorkerOptions) {
     this.queue = queue;
@@ -40,6 +42,7 @@ export class DurableWorker {
     this.workerId = opts?.workerId ?? `worker-${process.pid}-${Math.random().toString(36).slice(2, 7)}`;
     this.leaseMs = opts?.leaseMs ?? 30_000;
     this.conversationIdleTtlSec = opts?.conversationIdleTtlSec ?? 300;
+    this.onTerminal = opts?.onTerminal;
   }
 
   /** Returns the cancellation signal owned by this worker for an active run. */
@@ -246,6 +249,7 @@ export class DurableWorker {
 
     const updatedJob = (await this.queue.getJob(job.id)) ?? job;
     if (this.abortControllers.get(job.runId) === controller) this.abortControllers.delete(job.runId);
+    if (isTerminalPhase(state.phase)) this.onTerminal?.(state.tenantId, state.runId);
     return { job: updatedJob, state, events: allEvents };
   }
 
@@ -493,6 +497,7 @@ export class DurableWorker {
       phase: "cancelled",
     });
     this.deps.eventBus.publish(env);
+    this.onTerminal?.(tenantId, runId);
     return runRecord;
   }
 

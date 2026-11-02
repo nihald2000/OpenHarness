@@ -6,12 +6,28 @@ import type { CompiledSandboxPolicy } from "../../core/src/sandbox/policy.ts";
 export const BASE_ENV: Readonly<Record<string, string>> = {
   PATH: "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
   HOME: "/home/agent",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_ASKPASS: "",
   LANG: "C.UTF-8",
   TERM: "xterm-256color",
   PLAYWRIGHT_BROWSERS_PATH: "/ms-playwright",
+  PYTHONUNBUFFERED: "1",
 };
 
 export const SECRETISH = /(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|SESSION|MODAL|AWS|GITHUB)/i;
+const BLOCKED_USER_ENV = new Set([
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_PREFIX",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_NAMESPACE",
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_PARAMETERS",
+  "SSH_ASKPASS",
+]);
 
 /** srt's own settings schema (sandbox-runtime src/sandbox/sandbox-config.ts). */
 export function toSrtSettings(p: CompiledSandboxPolicy) {
@@ -41,6 +57,8 @@ export function toSrtSettings(p: CompiledSandboxPolicy) {
 export type ConfineConfig = {
   srtSettingsPath: string;
   runAs?: { uid: number; gid: number };
+  homePath?: string;
+  tmpPath?: string;
   useSrt?: boolean;
   srtProbe?: (settingsPath: string) => boolean;
 };
@@ -95,7 +113,12 @@ export function buildCleanEnv(userEnv: Record<string, string> = {}): Record<stri
     if (process.env.TMP) env.TMP = process.env.TMP;
   }
   for (const [k, v] of Object.entries(userEnv)) {
-    if (/^[A-Z_][A-Z0-9_]*$/i.test(k) && !SECRETISH.test(k) && typeof v === "string") {
+    if (
+      /^[A-Z_][A-Z0-9_]*$/i.test(k) &&
+      !SECRETISH.test(k) &&
+      !BLOCKED_USER_ENV.has(k.toUpperCase()) &&
+      typeof v === "string"
+    ) {
       env[k] = v;
     }
   }
@@ -135,38 +158,43 @@ export function spawnConfined(
   cwd: string,
   userEnv: Record<string, string> = {}
 ): ChildProcess {
-  const env = buildCleanEnv(userEnv);
+  const sessionEnv = { ...userEnv };
+  if (cfg.runAs && cfg.homePath) {
+    sessionEnv.HOME = cfg.homePath;
+    sessionEnv.npm_config_cache = path.join(cfg.homePath, ".npm");
+    sessionEnv.XDG_CACHE_HOME = path.join(cfg.homePath, ".cache");
+  }
+  if (cfg.runAs && cfg.tmpPath) sessionEnv.TMPDIR = cfg.tmpPath;
+  const env = buildCleanEnv(sessionEnv);
+  if (!cfg.runAs || !cfg.homePath) env.HOME = cwd;
+  env.GIT_CEILING_DIRECTORIES = process.env.OH_WORKSPACES_ROOT
+    ? path.resolve(process.env.OH_WORKSPACES_ROOT)
+    : path.dirname(path.resolve(cwd));
   const disableSrt = process.env.OH_DISABLE_SRT === "1";
   const requestedSrt = disableSrt ? false : cfg.useSrt ?? isSrtInstalled();
   const useSrt = !disableSrt && requestedSrt && !(isVmIsolated() && !canExecuteUnderSrt(cfg.srtSettingsPath, cfg.srtProbe));
-  let argv: string[];
-  if (useSrt) {
-    const drop = cfg.runAs
-      ? [
-          "setpriv",
-          "--reuid",
-          String(cfg.runAs.uid),
-          "--regid",
-          String(cfg.runAs.gid),
-          "--init-groups",
-          "--no-new-privs",
-          "--",
-        ]
-      : [];
-    argv = [
-      ...drop,
-      "srt",
-      "--settings",
-      cfg.srtSettingsPath,
-      "--",
+  const drop = cfg.runAs && process.platform === "linux" && process.getuid?.() === 0
+    ? ["setpriv", "--reuid", String(cfg.runAs.uid), "--regid", String(cfg.runAs.gid), "--clear-groups", "--no-new-privs", "--"]
+    : [];
+  const shell = [
       gitBashExecutable(),
       "--noprofile",
       "--norc",
       "-c",
       command,
     ];
+  let argv: string[];
+  if (useSrt) {
+    argv = [
+      ...drop,
+      "srt",
+      "--settings",
+      cfg.srtSettingsPath,
+      "--",
+      ...shell,
+    ];
   } else {
-    argv = [gitBashExecutable(), "--noprofile", "--norc", "-c", command];
+    argv = [...drop, ...shell];
   }
   return spawn(argv[0]!, argv.slice(1), { cwd, env, detached: true });
 }
