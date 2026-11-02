@@ -10,10 +10,12 @@ import React, {
 import { ArrowUp, FileText, FolderUp, Plus, Square, TerminalSquare, Wrench, X } from "lucide-react";
 import type { CommandInfo } from "@openharness/sdk";
 import { Spinner } from "./ui";
+import { VoiceMicButton } from "./voice-mic-button";
 
 export interface ComposerHandle {
   focus: () => void;
   setText: (text: string) => void;
+  appendText: (text: string) => void;
   restoreAttachments: (files: SelectedAttachment[]) => void;
 }
 
@@ -121,6 +123,10 @@ export const Composer = forwardRef<
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
       });
+    },
+    appendText: (val: string) => {
+      setText((current) => current ? `${current}${/\s$/.test(current) ? "" : " "}${val}` : val);
+      requestAnimationFrame(() => textareaRef.current?.focus());
     },
     restoreAttachments: (files: SelectedAttachment[]) => {
       setAttachments((current) => [...files, ...current]);
@@ -449,6 +455,8 @@ export const Composer = forwardRef<
               aria-activedescendant={activeCmdId}
               className="max-h-60 min-h-[2.25rem] flex-1 resize-none bg-transparent py-2 px-1 text-sm leading-normal text-fg placeholder:text-muted focus:outline-none"
             />
+
+            <VoiceMicButton onTranscript={(transcript) => setText((current) => current ? `${current}${/\s$/.test(current) ? "" : " "}${transcript}` : transcript)} disabled={disabled || active || sending} />
 
             {active ? (
               <button

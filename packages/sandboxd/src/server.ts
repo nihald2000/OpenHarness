@@ -403,6 +403,18 @@ export class SandboxDaemon {
     if (method === "POST" && pathname === "/files/inspect_artifact") {
       return this.artifactOperation("inspect", payload);
     }
+    if (method === "POST" && pathname === "/files/visual_audit") {
+      const outputPath = String(payload.outputPath ?? "deliverables/sam_visual_audit.png");
+      const output = this.resolveSafePath(outputPath, "write");
+      const encoded = String(payload.imageBase64 ?? "");
+      if (!output.allowed) return { status: 403, body: { error: output.error } };
+      if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded) || encoded.length > 24 * 1024 * 1024) {
+        return { status: 400, body: { error: "Invalid or oversized audit image" } };
+      }
+      fs.mkdirSync(path.dirname(output.resolvedPath), { recursive: true });
+      const result = await this.runArtifactWorker("audit", { ...payload, output: output.resolvedPath, outputPath });
+      return result.error ? { status: 422, body: result } : { status: 200, body: result };
+    }
     if (method === "GET" && pathname === "/artifacts/scan") {
       return { status: 200, body: { artifacts: this.scanDeliverableArtifacts() } };
     }
@@ -476,7 +488,7 @@ export class SandboxDaemon {
       return { status: 200, body: { owner: this.browserOwner } };
     }
     if (this.browserOwner === "human" && pathname.startsWith("/browser/") &&
-        !new Set(["/browser/observe", "/browser/console_logs", "/browser/network_errors"]).has(pathname)) {
+        !new Set(["/browser/observe", "/browser/visual_regions", "/browser/console_logs", "/browser/network_errors"]).has(pathname)) {
       return { status: 423, body: { error: "Browser is under human control" } };
     }
     if (pathname.startsWith("/browser/")) {

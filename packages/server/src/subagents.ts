@@ -82,6 +82,7 @@ export interface RunSubagentOptions {
   toolRouter: ToolRouter;
   emit?: (tenantId: string, sessionId: string, ev: OpenHarnessEvent) => Promise<void>;
   maxSteps?: number;
+  modelRouting?: { glimmerAvailable: boolean; metaApiAvailable: boolean };
 }
 
 const writeQueues = new Map<string, Promise<void>>();
@@ -110,6 +111,24 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
   const prompt = String(input.prompt ?? input.task ?? "");
   const requestedTools = Array.isArray(input.tools) ? input.tools.map(String) : undefined;
   const maxSteps = Math.min(25, Number(opts.maxSteps ?? (input.budget as any)?.maxIterations ?? 25));
+  const parentModel = ctx.state.model;
+  const canRouteMeta = /^muse-/i.test(parentModel) && !parentModel.startsWith("mock/");
+  const isParallelAuditRole = ["explore", "reviewer", "tester"].includes(role);
+  let model = canRouteMeta && role === "document" && opts.modelRouting?.metaApiAvailable
+    ? "muse-wonder-1.0"
+    : canRouteMeta && isParallelAuditRole
+      ? opts.modelRouting?.glimmerAvailable
+        ? "muse-glimmer"
+        : opts.modelRouting?.metaApiAvailable ? "muse-spark-1.3-contributor" : parentModel
+      : parentModel;
+  const fallbackModel = model === "muse-glimmer" && opts.modelRouting?.metaApiAvailable
+    ? "muse-spark-1.3-contributor"
+    : parentModel;
+  const modelLabel = (id: string) => id === "muse-glimmer" ? "Muse Glimmer 30B · Modal"
+    : id === "muse-wonder-1.0" ? "Muse Wonder 1.0"
+      : id === "muse-spark-1.3-contributor" ? "Muse Spark 1.3 Contributor"
+        : id === "muse-spark-1.3" ? "Muse Spark 1.3" : id;
+  const providerLabel = model === "muse-glimmer" ? "Meta Open-Weights · Modal" : model.startsWith("muse-") ? "Meta Model API" : undefined;
   const childSessionId = `sub_${ctx.runId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
   const parentMsgId = ctx.state.assistantMessageId ?? `msg-a-${ctx.runId}-${ctx.state.iteration}`;
@@ -119,6 +138,8 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
     role,
     task: prompt,
     status: "running",
+    model,
+    ...(providerLabel ? { providerLabel } : {}),
     usage: { input: 0, output: 0 },
   };
   if (emit) {
@@ -154,10 +175,10 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
   try {
     for (let step = 0; step < maxSteps; step++) {
       const isLastStep = step === maxSteps - 1;
-      const turn = await provider.generateTurn({
+      const request = (signal?: AbortSignal) => provider.generateTurn({
         runId: childSessionId,
         sessionId: ctx.sessionId,
-        model: ctx.state.model,
+        model,
         systemPrompt,
         messages,
         tools: isLastStep
@@ -168,8 +189,19 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
               parameters: t.parameters,
             })),
         maxOutputTokens: ctx.state.budgets.maxOutputTokensPerCall,
-        signal: ctx.signal,
+        signal,
       });
+      let turn;
+      try {
+        const signal = model === "muse-glimmer" && step === 0
+          ? (ctx.signal ? AbortSignal.any([ctx.signal, AbortSignal.timeout(25_000)]) : AbortSignal.timeout(25_000))
+          : ctx.signal;
+        turn = await request(signal);
+      } catch (error) {
+        if (step !== 0 || model === fallbackModel) throw error;
+        model = fallbackModel;
+        turn = await request(ctx.signal);
+      }
 
       if (turn.usage) {
         usage.input += turn.usage.input ?? 0;
@@ -251,6 +283,8 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
       role,
       task: prompt,
       status: "completed",
+      model,
+      ...(model.startsWith("muse-") ? { providerLabel: model === "muse-glimmer" ? "Meta Open-Weights · Modal" : "Meta Model API" } : {}),
       summary,
       usage,
     };
@@ -270,6 +304,7 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
         report: summary,
         usage,
       },
+      metadata: { childSessionId, model, ...(model.startsWith("muse-") ? { providerLabel: model === "muse-glimmer" ? "Meta Open-Weights · Modal" : "Meta Model API" } : {}) },
     };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -279,6 +314,8 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
       role,
       task: prompt,
       status: "failed",
+      model,
+      ...(model.startsWith("muse-") ? { providerLabel: model === "muse-glimmer" ? "Meta Open-Weights · Modal" : "Meta Model API" } : {}),
       summary: errMsg,
       usage,
     };
@@ -293,6 +330,7 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
     return {
       output: null,
       error: `Subagent (${role}) failed: ${errMsg}`,
+      metadata: { childSessionId, model, ...(model.startsWith("muse-") ? { providerLabel: model === "muse-glimmer" ? "Meta Open-Weights · Modal" : "Meta Model API" } : {}) },
     };
   }
 }

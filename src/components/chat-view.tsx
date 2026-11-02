@@ -830,7 +830,12 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
             <span>Loading conversation...</span>
           </div>
         ) : messages.length === 0 && !optimisticPrompt ? (
-          <EmptyState />
+          <EmptyState onChooseDemo={(agent, prompt) => {
+            setRunMode("task");
+            try { localStorage.setItem("oh-default-mode", "task"); } catch {}
+            void handleSelectAgent(agent);
+            composerRef.current?.setText(prompt);
+          }} />
         ) : (
           <Transcript
             messages={messages}
@@ -956,13 +961,15 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                     {changedFiles.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {changedFiles.map((file) => (
-                          <span
+                          <button
+                            type="button"
                             key={file}
-                            className="max-w-full truncate rounded-md border border-border bg-bg px-2 py-1 font-mono text-[11px] text-fg"
+                            onClick={() => { setStudioTargetPath(file); setStudioOpen(true); setBrowserDock("closed"); }}
+                            className="max-w-full truncate rounded-md border border-border bg-bg px-2 py-1 font-mono text-[11px] text-fg hover:border-accent hover:text-accent"
                             title={file}
                           >
                             {file}
-                          </span>
+                          </button>
                         ))}
                       </div>
                     )}
@@ -1116,7 +1123,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         sessionId={sessionId}
         files={changedFiles}
         initialPath={studioTargetPath}
-        onClose={() => setStudioOpen(false)}
+        onClose={() => { setStudioOpen(false); setStudioTargetPath(undefined); }}
         onCreate={(prompt) => void handleSend(prompt)}
         onEdit={(prompt) => window.dispatchEvent(new CustomEvent("oh:try-fix", { detail: { prompt } }))}
       />}
@@ -1137,6 +1144,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         takeover={takeover}
         takeoverNote={takeoverNote}
         onTakeoverNote={setTakeoverNote}
+        onVoiceNote={(transcript) => setTakeoverNote((current) => current ? `${current}${/\s$/.test(current) ? "" : " "}${transcript}` : transcript)}
         takeoverBusy={takeoverBusy}
         onTakeControl={!takeover && session?.sandboxHandleId && (session.status === "running" || session.status === "awaiting_input") ? () => void requestTakeover() : undefined}
         onReturnControl={() => void returnTakeover()}

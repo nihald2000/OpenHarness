@@ -85,9 +85,24 @@ def extract_text(path):
         from pptx import Presentation
         deck = Presentation(str(path))
         return "\n\n".join("# Slide " + str(i + 1) + "\n" + "\n".join(
-            shape.text for shape in slide.shapes if getattr(shape, "has_text_frame", False))
+            slide_text_blocks(slide))
             for i, slide in enumerate(deck.slides))
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def slide_text_blocks(slide):
+    blocks = []
+    for shape in slide.shapes:
+        if getattr(shape, "has_text_frame", False):
+            value = getattr(shape, "text", None)
+            if value and value.strip():
+                blocks.append(value.strip())
+        if getattr(shape, "has_table", False):
+            for row in shape.table.rows:
+                value = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                if value:
+                    blocks.append(value)
+    return blocks
 
 
 def preview(path, limit):
@@ -95,22 +110,28 @@ def preview(path, limit):
     pages, sheets, errors = [], [], []
     if ext in (".xlsx", ".xlsm"):
         import openpyxl
-        formulas = openpyxl.load_workbook(path, data_only=False, read_only=True)
-        values = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        if path.stat().st_size > 35 * 1024 * 1024:
+            raise ValueError("Spreadsheet exceeds the 35 MB preview limit")
+        formulas = openpyxl.load_workbook(path, data_only=False, read_only=False)
+        values = openpyxl.load_workbook(path, data_only=True, read_only=False)
         for sheet in formulas.worksheets[:12]:
-            cached = values[sheet.title]
+            cached = values[sheet.title] if sheet.title in values.sheetnames else sheet
             lines = []
-            for row in sheet.iter_rows(max_row=60, max_col=12):
+            max_row = min(sheet.max_row or 1, 60)
+            max_col = min(sheet.max_column or 1, 12)
+            for row_index in range(1, max_row + 1):
                 cells = []
-                for cell in row:
-                    value = cached[cell.coordinate].value
+                for col_index in range(1, max_col + 1):
+                    cell = sheet.cell(row=row_index, column=col_index)
+                    value = cached.cell(row=row_index, column=col_index).value
+                    coordinate = f"{openpyxl.utils.get_column_letter(col_index)}{row_index}"
                     cells.append("" if cell.value is None else str(cell.value))
                     if isinstance(value, str) and value.startswith("#") and value in ("#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!"):
-                        errors.append(sheet.title + "!" + cell.coordinate + " " + value)
+                        errors.append(sheet.title + "!" + coordinate + " " + value)
                     if isinstance(cell.value, str) and cell.value.startswith("=") and isinstance(value, str) and value.startswith("#"):
-                        errors.append(sheet.title + "!" + cell.coordinate + " " + value)
+                        errors.append(sheet.title + "!" + coordinate + " " + value)
                 lines.append(" | ".join(cells))
-            sheets.append({"name": sheet.title, "rows": sheet.max_row, "columns": sheet.max_column})
+            sheets.append({"name": sheet.title, "rows": max_row, "columns": max_col})
             pages.append(render_card(sheet.title, lines, len(pages) + 1))
         formulas.close()
         values.close()
@@ -153,8 +174,10 @@ def preview(path, limit):
         from pptx import Presentation
         deck = Presentation(str(path))
         total = len(deck.slides)
-        for index, slide in enumerate(deck.slides[:limit]):
-            lines = [shape.text for shape in slide.shapes if getattr(shape, "has_text_frame", False)]
+        for index, slide in enumerate(deck.slides):
+            if index >= limit:
+                break
+            lines = slide_text_blocks(slide)
             pages.append(render_card("Slide " + str(index + 1), lines, index + 1))
     else:
         pages.append(render_card(path.name, extract_text(path).splitlines(), 1))
@@ -179,21 +202,36 @@ def inspect(path):
                             "headers": rows[0] if rows else [], "rows": [[{"value": value} for value in row] for row in rows]}]}
     if ext in (".xlsx", ".xlsm"):
         import openpyxl
-        book = openpyxl.load_workbook(path, data_only=False, read_only=True)
-        cached = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        if size > 35 * 1024 * 1024:
+            raise ValueError("Spreadsheet exceeds the 35 MB inspect limit")
+        book = openpyxl.load_workbook(path, data_only=False, read_only=False)
+        cached = openpyxl.load_workbook(path, data_only=True, read_only=False)
         sheets = []
         errors = []
         for sheet in book.worksheets[:12]:
             cached_sheet = cached[sheet.title]
-            rows = [[{"value": cell.value, **({"formula": cell.value} if isinstance(cell.value, str) and cell.value.startswith("=") else {}),
-                      **({"error": True} if isinstance(cached_sheet[cell.coordinate].value, str) and cached_sheet[cell.coordinate].value.startswith("#") else {})}
-                     for cell in row] for row in sheet.iter_rows(max_row=250, max_col=30)]
-            for row in sheet.iter_rows():
-                for cell in row:
-                    value = cached_sheet[cell.coordinate].value
-                    if isinstance(cell.value, str) and cell.value.startswith("=") and isinstance(value, str) and value in ("#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!"):
-                        errors.append(sheet.title + "!" + cell.coordinate + " " + value)
-            sheets.append({"name": sheet.title, "rowCount": sheet.max_row, "colCount": sheet.max_column,
+            max_row = min(sheet.max_row or 1, 250)
+            max_col = min(sheet.max_column or 1, 30)
+            rows = []
+            for row_index in range(1, max_row + 1):
+                row = []
+                for col_index in range(1, max_col + 1):
+                    cell = sheet.cell(row=row_index, column=col_index)
+                    cached_value = cached_sheet.cell(row=row_index, column=col_index).value
+                    error_values = ("#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!")
+                    is_error = (isinstance(cell.value, str) and cell.value in error_values) or (isinstance(cached_value, str) and cached_value in error_values)
+                    row.append({"value": cell.value, **({"formula": cell.value} if isinstance(cell.value, str) and cell.value.startswith("=") else {}),
+                                **({"error": True} if is_error else {})})
+                rows.append(row)
+            for row_index in range(1, max_row + 1):
+                for col_index in range(1, max_col + 1):
+                    cell = sheet.cell(row=row_index, column=col_index)
+                    value = cached_sheet.cell(row=row_index, column=col_index).value
+                    error_values = ("#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!")
+                    error_value = cell.value if isinstance(cell.value, str) and cell.value in error_values else value
+                    if (isinstance(cell.value, str) and cell.value.startswith("=") and isinstance(value, str) and value in error_values) or (isinstance(error_value, str) and error_value in error_values):
+                        errors.append(sheet.title + "!" + cell.coordinate + " " + error_value)
+            sheets.append({"name": sheet.title, "rowCount": max_row, "colCount": max_col,
                            "headers": [str(cell.value or "") for cell in next(sheet.iter_rows(max_row=1), [])],
                            "rows": rows})
         book.close()
@@ -214,7 +252,7 @@ def inspect(path):
         deck = Presentation(str(path))
         slides = []
         for index, slide in enumerate(deck.slides):
-            blocks = [shape.text.strip() for shape in slide.shapes if getattr(shape, "has_text_frame", False) and shape.text.strip()]
+            blocks = slide_text_blocks(slide)
             notes = ""
             try:
                 notes = slide.notes_slide.notes_text_frame.text
@@ -248,9 +286,62 @@ def inspect(path):
     return {"kind": kind, **result, "size": size}
 
 
+def visual_audit(args):
+    from PIL import Image, ImageDraw, ImageFont
+    encoded = str(args.get("imageBase64", ""))
+    if not encoded or len(encoded) > 24 * 1024 * 1024:
+        raise ValueError("Audit image payload is missing or too large")
+    source = Image.open(io.BytesIO(base64.b64decode(encoded, validate=True))).convert("RGBA")
+    raw_regions = args.get("regions", [])
+    regions = []
+    for item in raw_regions[:80] if isinstance(raw_regions, list) else []:
+        if not isinstance(item, dict):
+            continue
+        box = item.get("box") if isinstance(item.get("box"), (list, tuple)) else None
+        x = float(item.get("x", box[0] if box and len(box) >= 4 else 0))
+        y = float(item.get("y", box[1] if box and len(box) >= 4 else 0))
+        w = float(item.get("width", box[2] - x if box and len(box) >= 4 else 0))
+        h = float(item.get("height", box[3] - y if box and len(box) >= 4 else 0))
+        if max(abs(x), abs(y), abs(w), abs(h)) <= 1.5:
+            x, w = x * source.width, w * source.width
+            y, h = y * source.height, h * source.height
+        x, y = max(0, min(source.width - 1, int(x))), max(0, min(source.height - 1, int(y)))
+        w, h = max(2, min(source.width - x, int(w))), max(2, min(source.height - y, int(h)))
+        regions.append({"label": str(item.get("label", "region"))[:64], "x": x, "y": y, "width": w, "height": h})
+    collisions = []
+    for i, a in enumerate(regions):
+        for b in regions[i + 1:]:
+            overlap_w = min(a["x"] + a["width"], b["x"] + b["width"]) - max(a["x"], b["x"])
+            overlap_h = min(a["y"] + a["height"], b["y"] + b["height"]) - max(a["y"], b["y"])
+            if overlap_w > 6 and overlap_h > 6:
+                collisions.append({"a": a["label"], "b": b["label"]})
+    banner_height = 42
+    image = Image.new("RGBA", (source.width, source.height + banner_height), (248, 250, 252, 255))
+    image.alpha_composite(source, (0, banner_height))
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    draw.rectangle((0, 0, source.width, banner_height), fill=(15, 23, 42, 255))
+    draw.text((18, 14), f"SAM 3.1 VISUAL QA · {len(regions)} REGIONS VERIFIED", fill=(255, 255, 255, 255), font=ImageFont.load_default())
+    for index, region in enumerate(regions):
+        color = (244, 96, 80, 190) if any(region["label"] in (c["a"], c["b"]) for c in collisions) else (34, 211, 238, 190)
+        x, y = region["x"], region["y"] + banner_height
+        draw.rounded_rectangle((x, y, x + region["width"], y + region["height"]), radius=4, fill=(*color[:3], 34), outline=color, width=3)
+        draw.text((x + 3, max(banner_height, y - 13)), region["label"][:28], fill=(4, 25, 40, 255), font=ImageFont.load_default())
+    output = Image.alpha_composite(image, overlay).convert("RGB")
+    output_path = pathlib.Path(args["output"])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output.save(output_path, format="PNG", optimize=True, compress_level=9)
+    score = max(0, 100 - 8 * len(collisions))
+    return {"outputPath": args.get("outputPath"), "size": output_path.stat().st_size, "regionCount": len(regions),
+            "collisions": collisions, "layoutScore": score, "width": output.width, "height": output.height, "regions": regions}
+
+
 def main():
     action = sys.argv[1]
     args = json.loads(base64.b64decode(sys.argv[2]))
+    if action == "audit":
+        print(json.dumps(visual_audit(args)))
+        return
     path = pathlib.Path(args["path"])
     if action == "preview":
         result = preview(path, max(1, min(20, int(args.get("maxPages", 4)))))

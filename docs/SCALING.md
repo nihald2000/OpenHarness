@@ -52,3 +52,9 @@ The adapter contract includes tenant-scoped schedule record storage. Migration `
    - `LayeredContextManager` maintains a byte-identical prefix, clears old tool outputs after 6 turns (spilling full outputs to `.openharness/outputs/<callId>.txt`), recites todo/feature/budget state every 8 turns, precomputes structured LLM compactions at 85% of trigger, shrinks on overflow (`85% -> 70% -> 50% -> 35%`), performs 5-attempt 80% hard resets if needed, and resets context across feature handoffs in `long_task` mode.
    - `executeLongHorizonTask` orchestrates Initializer (`feature_list.json`, `progress.md`, `init.sh`) and Coding sessions through `Plan -> Build -> Test -> Fix -> Review -> Shadow-Git Checkpoint -> Handoff`, with structural diff detection of test tampering (`detectTestTamperingInDiff`).
    - `StuckDetector` monitors all 7 stuck heuristics, and `RiskPolicyGate` + `HookRunner` enforce sub-command shell risk classification, confirmation policies (`always`, `risky`, `never`), taint tracking for untrusted external content, and deterministic lifecycle hooks.
+
+5. **Hosted SSE and optional inference warmup (`packages/server`, `deploy/modal`)**:
+   - Hosted `/v1/events` connections emit ready and periodic ping events and rotate after 45 seconds; the browser client debounces short reconnects. Durable event sequence and replay behavior are preserved.
+   - The Modal API control plane can keep one 0.5 CPU / 1 GiB container warm for the showcase. This is an explicit availability/cost tradeoff and remains configurable in the Modal entrypoint.
+   - Muse Glimmer remains optional and scales to zero; `/v1/models/warmup` is a rate-limited best-effort wake request. The API continues using configured providers when the GPU endpoint is unavailable.
+   - Voice and visual audit calls use the configured Meta Model API and degrade without requiring the optional GPU endpoint.

@@ -247,6 +247,7 @@ export class OpenHarnessServer {
   private readonly takeoverResumeMessages = new Map<string, Message>();
   private readonly takeoverTimers = new Map<string, NodeJS.Timeout>();
   private readonly liveTicketWindows = new Map<string, { startedAt: number; count: number }>();
+  private lastGlimmerWarmupAt = 0;
   readonly secretStore: EncryptedSecretStore;
   readonly attachments: AttachmentStore;
   readonly checkpointManager: SessionCheckpointManager;
@@ -545,6 +546,45 @@ export class OpenHarnessServer {
     return this.secretStore.getProviderApiKey("meta");
   }
 
+  async transcribeAudio(
+    _identity: Identity,
+    rawBody: Buffer,
+    contentType: string,
+    filename = "voice-note.webm",
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    if (rawBody.byteLength === 0) return { status: 400, body: { error: "Audio payload is empty." } };
+    if (rawBody.byteLength > 4 * 1024 * 1024) return { status: 413, body: { error: "Audio payload exceeds 4 MiB." } };
+    if (!/^audio\/(webm|mp4|mpeg|ogg|wav|x-wav|m4a|aac|3gpp)$/.test(mediaType)) {
+      return { status: 415, body: { error: "Unsupported audio content type." } };
+    }
+    const apiKey = this.getMetaApiKey();
+    if (!apiKey) {
+      if (this.getDefaultModel().startsWith("mock/")) {
+        return { status: 200, body: { text: "", model: "muse-voice-transcribe", provider: "Meta Model API", offline: true } };
+      }
+      return { status: 503, body: { error: "Audio transcription is unavailable without MODEL_API_KEY." } };
+    }
+    const safeFilename = filename.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "voice-note.webm";
+    const form = new FormData();
+    form.append("model", process.env.MUSE_VOICE_MODEL ?? "muse-voice-transcribe");
+    form.append("file", new Blob([new Uint8Array(rawBody)], { type: mediaType }), safeFilename);
+    try {
+      const response = await fetch(`${this.getDefaultBaseUrl().replace(/\/+$/, "")}/audio/transcriptions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${apiKey}` },
+        body: form,
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!response.ok) return { status: response.status >= 500 ? 502 : response.status, body: { error: "Meta audio transcription request failed." } };
+      const payload = await response.json() as { text?: unknown };
+      if (typeof payload.text !== "string") return { status: 502, body: { error: "Transcription response did not include text." } };
+      return { status: 200, body: { text: payload.text, model: "muse-voice-transcribe", provider: "Meta Model API" } };
+    } catch {
+      return { status: 502, body: { error: "Meta audio transcription request failed." } };
+    }
+  }
+
   private getDefaultModel(): string {
     const saved = this.readUserSettings().model;
     const configured = (saved && saved !== "muse-wonder-1.0" ? saved : undefined) ?? this.config.defaultModel;
@@ -734,6 +774,97 @@ export class OpenHarnessServer {
         const res = await hooksRef!.onRunVerification(toolCtx.state);
         return { output: res };
       },
+      onVisualSegmentAudit: async (input, toolCtx) => {
+        const source = input.source === "file" ? "file" : "browser";
+        const requestedPath = String(input.path ?? "");
+        const outputPath = String(input.output_path ?? "deliverables/sam_visual_audit.png");
+        if (!outputPath || outputPath.includes("..") || path.isAbsolute(outputPath)) {
+          return { output: null, error: "output_path must stay inside the workspace" };
+        }
+        if (!toolCtx.requestSandbox) return { output: null, error: "Visual audit requires an active sandbox" };
+        let imageBase64 = "";
+        let mimeType = "image/png";
+        let browserInfo: { width?: number; height?: number; regions?: Array<Record<string, unknown>> } = {};
+        if (source === "browser") {
+          const screenshot = await toolCtx.requestSandbox("POST", "/browser/screenshot", {});
+          if (screenshot.status !== 200 || typeof screenshot.body.dataBase64 !== "string") {
+            return { output: null, error: String(screenshot.body.error ?? "Could not capture the live browser frame") };
+          }
+          imageBase64 = screenshot.body.dataBase64;
+          mimeType = typeof screenshot.body.mimeType === "string" ? screenshot.body.mimeType : "image/png";
+          const dom = await toolCtx.requestSandbox("POST", "/browser/visual_regions", {}).catch(() => ({ status: 503, body: {} }));
+          if (dom.status === 200) browserInfo = dom.body as typeof browserInfo;
+        } else {
+          if (!requestedPath || requestedPath.includes("..") || path.isAbsolute(requestedPath)) {
+            return { output: null, error: "source=file requires a workspace-relative path" };
+          }
+          const ext = path.extname(requestedPath).toLowerCase();
+          if ([".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"].includes(ext)) {
+            const preview = await toolCtx.requestSandbox("POST", "/files/preview_document", { path: requestedPath, maxPages: 1 });
+            const page = Array.isArray(preview.body.pages) ? preview.body.pages[0] as Record<string, unknown> | undefined : undefined;
+            if (preview.status !== 200 || typeof page?.dataBase64 !== "string") return { output: null, error: String(preview.body.error ?? "Could not render the requested document") };
+            imageBase64 = page.dataBase64;
+            mimeType = typeof page.mimeType === "string" ? page.mimeType : "image/jpeg";
+          } else {
+            const image = await toolCtx.requestSandbox("POST", "/files/read_bytes", { path: requestedPath });
+            if (image.status !== 200 || typeof image.body.dataBase64 !== "string" || !String(image.body.mimeType ?? "").startsWith("image/")) {
+              return { output: null, error: String(image.body.error ?? "The requested file is not a readable image") };
+            }
+            imageBase64 = image.body.dataBase64;
+            mimeType = String(image.body.mimeType);
+          }
+        }
+        if (imageBase64.length > 20 * 1024 * 1024) return { output: null, error: "The audit image exceeds the transfer limit" };
+
+        let semanticRegions: Array<Record<string, unknown>> = [];
+        if (providerRef) {
+          const imageMessage: Message = {
+            info: { id: `sam_audit_${toolCtx.runId}`, role: "user" },
+            createdAt: Date.now(),
+            parts: [
+              { type: "text", text: "Inspect this application or document image. Return only JSON: {\"regions\":[{\"label\":string,\"x\":number,\"y\":number,\"width\":number,\"height\":number}],\"layoutScore\":number}. Coordinates should be normalized to 0..1. Identify meaningful UI controls, sections, visual blocks, and obvious overlap or clipping." },
+              { type: "attachment", id: `sam_${toolCtx.runId}`, groupId: `sam_${toolCtx.runId}`, name: "visual-audit.png", relativePath: "visual-audit.png", workspacePath: "visual-audit.png", mimeType, size: Buffer.from(imageBase64, "base64").byteLength, dataBase64: imageBase64 },
+            ],
+          };
+          try {
+            const response = await providerRef.generateTurn({
+              runId: toolCtx.runId,
+              sessionId: toolCtx.sessionId,
+              model: "sam-3.1",
+              systemPrompt: "You are a visual audit model. Analyze the image and return the requested compact JSON only.",
+              messages: [imageMessage],
+              tools: [],
+              maxOutputTokens: 1200,
+              signal: AbortSignal.timeout(15_000),
+            });
+            const match = response.text.match(/\{[\s\S]*\}/);
+            if (match) {
+              const parsed = JSON.parse(match[0]) as { regions?: unknown };
+              if (Array.isArray(parsed.regions)) semanticRegions = parsed.regions.filter((region): region is Record<string, unknown> => Boolean(region && typeof region === "object" && !Array.isArray(region))).slice(0, 40);
+            }
+          } catch (error) {
+            this.log.info(`SAM visual interpretation unavailable; using exact browser regions where available (${error instanceof Error ? error.message : String(error)})`);
+          }
+        }
+        const exactRegions = Array.isArray(browserInfo.regions) && Number(browserInfo.width) > 0 && Number(browserInfo.height) > 0
+          ? browserInfo.regions.map((region) => ({
+              label: String(region.label ?? "control"),
+              x: Number(region.x ?? 0) / Number(browserInfo.width),
+              y: Number(region.y ?? 0) / Number(browserInfo.height),
+              width: Number(region.width ?? 0) / Number(browserInfo.width),
+              height: Number(region.height ?? 0) / Number(browserInfo.height),
+            }))
+          : [];
+        const regions = [...semanticRegions, ...exactRegions].slice(0, 80);
+        if (regions.length === 0) regions.push({ label: source === "browser" ? "visible application" : "visual document", x: 0.04, y: 0.04, width: 0.92, height: 0.92 });
+        const rendered = await toolCtx.requestSandbox("POST", "/files/visual_audit", { imageBase64, outputPath, regions });
+        if (rendered.status !== 200) return { output: null, error: String(rendered.body.error ?? "Could not render the annotated visual audit") };
+        toolCtx.state.changedFiles = Array.from(new Set([...(toolCtx.state.changedFiles ?? []), outputPath]));
+        return {
+          output: { model: "sam-3.1", outputPath, source, regionCount: rendered.body.regionCount, collisions: rendered.body.collisions ?? [], layoutScore: rendered.body.layoutScore, regions: rendered.body.regions ?? regions },
+          metadata: { model: "sam-3.1", providerLabel: "Meta Model API · SAM 3.1", outputPath, artifacts: [{ path: outputPath, mimeType: "image/png", kind: "image" }] },
+        };
+      },
       onHandoff: async (brief) => ({
         output: { handoffInitiated: true, brief },
       }),
@@ -744,6 +875,10 @@ export class OpenHarnessServer {
           provider: providerRef!,
           toolRouter,
           emit: emitRef ?? undefined,
+          modelRouting: {
+            glimmerAvailable: Boolean(process.env.MUSE_GLIMMER_BASE_URL),
+            metaApiAvailable: Boolean(this.getMetaApiKey()),
+          },
         }),
     });
 
@@ -828,6 +963,18 @@ export class OpenHarnessServer {
               return {
                 baseUrl: process.env.MUSE_GLIMMER_BASE_URL,
                 apiKey: this.secretStore.getDecrypted("MUSE_GLIMMER_API_KEY") ?? process.env.MUSE_GLIMMER_API_KEY ?? "modal-open-weights",
+              };
+            }
+          }
+          if (profile.apiKeyEnv === "MUSE_SPARK_OPEN_API_KEY" && process.env.MUSE_SPARK_OPEN_BASE_URL) {
+            const providers = this.readUserSettings().providers as Record<string, any> | undefined;
+            const hasCustomOverride = Object.values(providers ?? {}).some((entry) =>
+              entry?.type === "openai" && entry.models && Object.hasOwn(entry.models, model)
+            );
+            if (!hasCustomOverride) {
+              return {
+                baseUrl: process.env.MUSE_SPARK_OPEN_BASE_URL,
+                apiKey: this.secretStore.getDecrypted("MUSE_SPARK_OPEN_API_KEY") ?? process.env.MUSE_SPARK_OPEN_API_KEY ?? "modal-open-weights",
               };
             }
           }
@@ -1375,7 +1522,7 @@ export class OpenHarnessServer {
       "x-vercel-cache": "MISS",
     });
     (res as any).flushHeaders?.();
-    res.write(`: open ${" ".repeat(2048)}\nretry: 1000\n\n`);
+    res.write(`: open ${" ".repeat(2048)}\nretry: 500\nevent: ready\ndata: {"ok":true}\n\n`);
 
     let last = after;
     let replaying = true;
@@ -1404,9 +1551,18 @@ export class OpenHarnessServer {
     replaying = false;
     for (const e of pending) write(e);
 
-    res.write("retry: 1000\n\n");
-    const ping = setInterval(() => res.write(`: ping ${Date.now()}\n\n`), 15_000);
-    const rotate = setTimeout(() => res.end(), 110_000);
+    res.write("retry: 500\n\n");
+    const ping = setInterval(() => {
+      if (!res.writableEnded && !res.destroyed) {
+        res.write(`event: ping\ndata: {"ts":${Date.now()}}\n\n`);
+      }
+    }, 10_000);
+    const rotate = setTimeout(() => {
+      if (!res.writableEnded && !res.destroyed) {
+        res.write(`event: rotate\ndata: {"retryMs":250}\n\n`);
+        res.end();
+      }
+    }, 45_000);
     res.on("close", () => {
       clearInterval(ping);
       clearTimeout(rotate);
@@ -1857,13 +2013,25 @@ export class OpenHarnessServer {
         }
       }
       if (this.getMetaApiKey()) {
-        for (const mId of ["muse-spark-1.3", "muse-spark-1.3-contributor", "muse-wonder-1.0"]) {
-          modelMap.set(mId, {
-            id: mId,
-            name: mId === "muse-spark-1.3" ? "Muse Spark 1.3" : mId,
-            provider: "Meta Model API",
+        const metaModels = [
+          { id: "muse-spark-1.3", name: "Muse Spark 1.3", provider: "Meta Model API", providerDetail: "Meta Model API · Frontier Reasoning" },
+          { id: "muse-wonder-1.0", name: "Muse Wonder 1.0", provider: "Meta Model API", providerDetail: "Meta Model API · Creative & Studio" },
+          { id: "muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor", provider: "Meta Model API", providerDetail: "Meta Model API · Fast Agentic" },
+        ];
+        for (const model of metaModels) {
+          modelMap.set(model.id, {
+            ...model,
             contextWindow: 128000,
-            isDefault: mId === defaultModelId,
+            isDefault: model.id === defaultModelId,
+          });
+        }
+        if (process.env.MUSE_SPARK_OPEN_BASE_URL || process.env.MUSE_SPARK_OPEN_API_KEY) {
+          modelMap.set("meta-models/muse-spark-open-1026", {
+            id: "meta-models/muse-spark-open-1026",
+            name: "Muse Spark Open",
+            provider: "Meta Open-Weights",
+            contextWindow: 256000,
+            isDefault: defaultModelId === "meta-models/muse-spark-open-1026",
           });
         }
       }
@@ -1871,12 +2039,23 @@ export class OpenHarnessServer {
         modelMap.set("muse-glimmer", {
           id: "muse-glimmer",
           name: "Muse Glimmer 30B (Modal Open-Weights)",
-          provider: "Modal vLLM (Meta Open Weights)",
+          provider: "Meta Open-Weights · Modal Serverless GPU",
           contextWindow: 131072,
           isDefault: defaultModelId === "muse-glimmer",
         });
       }
       return { status: 200, body: Array.from(modelMap.values()) };
+    }
+
+    if (method === "POST" && pathname === "/v1/models/warmup") {
+      const baseUrl = process.env.MUSE_GLIMMER_BASE_URL?.trim().replace(/\/+$/, "");
+      if (!baseUrl) return { status: 503, body: { error: "Muse Glimmer is not configured." } };
+      const now = Date.now();
+      if (now - this.lastGlimmerWarmupAt >= 60_000) {
+        this.lastGlimmerWarmupAt = now;
+        void fetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(90_000) }).catch(() => {});
+      }
+      return { status: 202, body: { warming: true, model: "muse-glimmer" } };
     }
 
     if (method === "GET" && pathname === "/v1/runtimes") {

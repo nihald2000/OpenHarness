@@ -27,13 +27,25 @@ The hub runs with a minimal environment and rejects startup if its key is missin
 4. Set the `/v1/*` and `/health` destinations in `vercel.json` to the deployed `openharness-server` URL, then deploy the Vercel project with `vercel deploy --prod`.
 5. Verify guest access: `node scripts/smoke.mjs https://<project>.vercel.app`.
 
+For the optional Muse Glimmer GPU endpoint and static Vercel SPA, use this deployment order:
+
+```sh
+python deploy/modal/build_sandbox_image.py
+modal deploy deploy/modal/muse_glimmer_server.py
+modal deploy deploy/modal/sandbox_server.py
+modal deploy deploy/modal/web_server.py
+vercel deploy --prod
+```
+
+The GPU endpoint is optional. `web_server.py` discovers its URL when the app exists and otherwise starts with Meta Model API or an Admin Settings provider. The API entrypoint keeps one small CPU container warm and rotates SSE streams at 45 seconds; Glimmer uses zero minimum containers and a 10-minute idle window.
+
 After updates, deploy `sandbox_server.py` before `web_server.py` when changing the shared hub key or sandbox image. The web app works with Meta Model API through `MODEL_API_KEY` or with another provider configured in Admin Settings; the optional Muse Glimmer GPU server is not required.
 
 ## Run limits and operating costs
 
-Guest limits are controlled by `OH_MAX_ACTIVE_RUNS` (global concurrent runs, default 3), `OH_GUEST_MAX_ACTIVE_RUNS` (per-browser concurrent runs, default 1), and `OH_GUEST_MAX_RUNS_PER_DAY` (default 20). The values apply in the single Modal server container and reset when that process restarts.
+Guest limits are controlled by `OH_MAX_ACTIVE_RUNS` (global concurrent runs), `OH_GUEST_MAX_ACTIVE_RUNS` (per-browser concurrent runs), and `OH_GUEST_DAILY_RUN_LIMIT` (per-browser daily runs). The hackathon entrypoint defaults are 10, 3, and 50. The values apply in the single Modal server container and reset when that process restarts.
 
-The hub defaults to 1 CPU, 3 GiB memory, zero warm containers, and a 10-minute scale-down window. The first sandbox request after idle has a cold-start delay. The API sets `OH_MAX_ACTIVE_RUNS=2` by default in `web_server.py`; the general run-limiter default remains 3 when running outside this Modal entrypoint.
+The hub defaults to 1 CPU, 3 GiB memory, zero warm containers, and a 10-minute scale-down window. The first sandbox request after idle has a cold-start delay. The API entrypoint keeps one warm 0.5 CPU / 1 GiB container (`min_containers=1`, `scaledown_window=300`) for the showcase; this has a small baseline cost. The general run-limiter default remains 3 when running outside this Modal entrypoint.
 
 ## Security boundaries and known limits
 

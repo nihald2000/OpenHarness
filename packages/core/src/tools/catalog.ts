@@ -5,6 +5,7 @@ import { deflateSync } from "node:zlib";
 import type { FeatureItem, PlanData, TodoItem } from "@openharness/sdk";
 import type {
   BrowserCheck,
+  BrowserCheckTarget,
   BrowserCheckStep,
   RegisteredTool,
   RunState,
@@ -24,9 +25,9 @@ const IGNORED_WORKSPACE_DIRS = new Set(["node_modules", ".git", "dist", ".openha
 
 const READ_TOOL_NAMES = ["read_file", "list", "glob", "search", "ask_user"] as const;
 const BUILD_TOOL_NAMES = ["write_file", "edit", "apply_patch", "bash", "verify", "delegate", "todo_write", "update_plan", "request_takeover", "service_start"] as const;
-const WEB_TOOL_NAMES = ["process_start", "process_logs", "process_stop", "preview_url", "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_screenshot", "browser_console", "browser_check_def", "browser_check_run"] as const;
+const WEB_TOOL_NAMES = ["process_start", "process_logs", "process_stop", "preview_url", "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_screenshot", "browser_console", "browser_check_def", "browser_check_run", "visual_segment_audit"] as const;
 const WEB_INTENT = /\b(web|ui|page|browser|frontend|react|vue|svelte|vite|next|html|css|preview|dev server|express|api server)\b/i;
-const DOC_TOOL_NAMES = ["generate_image", "render_document_preview"] as const;
+const DOC_TOOL_NAMES = ["generate_image", "render_document_preview", "visual_segment_audit"] as const;
 const DOC_INTENT = /\b(doc|docx|word|pdf|excel|xlsx|spreadsheet|workbook|csv|ppt|pptx|powerpoint|slide|deck|presentation|report|whitepaper|invoice|resume|cv|brochure|poster|flyer|certificate|chart|diagram|infographic|epub|generate image|cover image)\b/i;
 
 export function selectTools(state: RunState, all: RegisteredTool[]): RegisteredTool[] {
@@ -64,6 +65,75 @@ function pngChunk(type: string, data: Buffer): Buffer {
   const length = Buffer.alloc(4); length.writeUInt32BE(data.length);
   const checksum = Buffer.alloc(4); checksum.writeUInt32BE(crc32(Buffer.concat([name, data])));
   return Buffer.concat([length, name, data, checksum]);
+}
+
+function normalizeBrowserTarget(raw: unknown): BrowserCheckTarget | string | undefined {
+  if (typeof raw === "string") return raw.trim() || undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const value = raw as Record<string, unknown>;
+  const target = value.target && typeof value.target === "object" && !Array.isArray(value.target)
+    ? value.target as Record<string, unknown> : value;
+  const role = typeof target.role === "string" ? target.role : undefined;
+  const name = typeof target.name === "string" ? target.name : undefined;
+  const label = typeof target.label === "string" ? target.label : undefined;
+  const text = typeof target.text === "string" ? target.text : undefined;
+  const css = typeof target.css === "string" ? target.css
+    : typeof target.selector === "string" ? target.selector : undefined;
+  if (!role && !label && !text && !css) return undefined;
+  return {
+    ...(role ? { role, name: name ?? text ?? label ?? "" } : {}),
+    ...(label ? { label } : {}),
+    ...(text ? { text } : {}),
+    ...(css ? { css } : {}),
+    ...(target.exact === true ? { exact: true } : {}),
+  };
+}
+
+/** Accept common model-emitted action/type forms and store one canonical flow shape. */
+export function normalizeBrowserCheckSteps(rawSteps: unknown[]): BrowserCheckStep[] | undefined {
+  const normalized: BrowserCheckStep[] = [];
+  for (const raw of rawSteps) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const step = raw as Record<string, unknown>;
+    if (typeof step.goto === "string" || typeof step.navigate === "string" || typeof step.url === "string") {
+      normalized.push({ goto: String(step.goto ?? step.navigate ?? step.url) });
+      continue;
+    }
+    const action = String(step.action ?? step.type ?? "").toLowerCase().replaceAll("_", "");
+    if (["navigate", "goto", "open"].includes(action)) {
+      normalized.push({ goto: String(step.path ?? step.url ?? step.value ?? step.target ?? "/") });
+    } else if (action === "click" || "click" in step) {
+      const target = normalizeBrowserTarget(step.click ?? step.target ?? step.selector ?? step.css ?? step);
+      if (!target) return undefined;
+      normalized.push({ click: target });
+    } else if (["fill", "type", "input"].includes(action) || "fill" in step) {
+      const target = normalizeBrowserTarget(step.fill ?? step.target ?? step.selector ?? step.css ?? step);
+      if (!target) return undefined;
+      normalized.push({ fill: target, value: String(step.value ?? step.textValue ?? step.input ?? "") });
+    } else if (action === "press" || "press" in step) {
+      normalized.push({ press: String(step.press ?? step.key ?? step.value ?? "Enter") });
+    } else if (["wait", "sleep"].includes(action) || "wait" in step || "waitMs" in step) {
+      normalized.push({ waitMs: Number(step.ms ?? step.timeout ?? step.waitMs ?? step.value ?? step.wait ?? 500) });
+    } else if (["expecthidden", "asserthidden"].includes(action) || "expectHidden" in step) {
+      const target = normalizeBrowserTarget(step.expectHidden ?? step.target ?? step.selector ?? step.css ?? step.text ?? step.value);
+      if (!target) return undefined;
+      normalized.push({ expectHidden: target });
+    } else if (["expecturl", "asserturl"].includes(action) || "expectUrl" in step) {
+      normalized.push({ expectUrl: String(step.expectUrl ?? step.url ?? step.value ?? step.target ?? "") });
+    } else if (["expectvisible", "assertvisible", "asserttext", "expecttext", "assert", "verify"].includes(action) || "expectVisible" in step || "expectText" in step) {
+      const textAssert = action === "asserttext" || action === "expecttext" || "expectText" in step;
+      const rawTarget = step.expectText ?? step.expectVisible ?? step.target ?? step.selector ?? step.css ?? step.text ?? step.value;
+      const target = normalizeBrowserTarget(rawTarget);
+      if (!target) return undefined;
+      if (textAssert) normalized.push({ expectText: target, ...(typeof step.equals === "string" ? { equals: step.equals } : {}), ...(typeof step.contains === "string" ? { contains: step.contains } : typeof step.text === "string" ? { contains: step.text } : {}) });
+      else normalized.push({ expectVisible: target, ...(typeof step.timeoutMs === "number" ? { timeoutMs: step.timeoutMs } : {}) });
+    } else if (typeof step.wait === "number") {
+      normalized.push({ waitMs: step.wait });
+    } else {
+      return undefined;
+    }
+  }
+  return normalized;
 }
 
 function editorialPng(width: number, height: number): Buffer {
@@ -223,6 +293,7 @@ export interface SandboxToolRouterOptions {
     commands: string[] | undefined,
     ctx: ToolExecutionContext
   ) => Promise<ToolExecutionResult>;
+  onVisualSegmentAudit?: (input: Record<string, unknown>, ctx: ToolExecutionContext) => Promise<ToolExecutionResult>;
 }
 
 /**
@@ -473,7 +544,12 @@ export class StandardToolRouter implements ToolRouter {
             fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, png);
           }
           ctx.state.changedFiles = Array.from(new Set([...(ctx.state.changedFiles ?? []), outputPath]));
-          return { output: { path: outputPath, mimeType: "image/png", width, height, bytes: png.byteLength, generatedBy } };
+          return {
+            output: { path: outputPath, mimeType: "image/png", width, height, bytes: png.byteLength, generatedBy },
+            metadata: generatedBy === "configured-image-api"
+              ? { model: process.env.OH_IMAGE_MODEL ?? "muse-image-1.0", providerLabel: "Meta Model API · Muse Image 1.0", outputPath, artifacts: [{ path: outputPath, mimeType: "image/png", kind: "image" }] }
+              : { outputPath, artifacts: [{ path: outputPath, mimeType: "image/png", kind: "image" }] },
+          };
         },
       },
       {
@@ -517,6 +593,25 @@ export class StandardToolRouter implements ToolRouter {
             return { output, error: formulaErrors.length ? `Spreadsheet contains formula errors: ${formulaErrors.join(", ")}` : undefined };
           } catch { return { output: null, error: `Could not parse document preview output: ${stdout.slice(-1000)}` }; }
         },
+      },
+
+      {
+        name: "visual_segment_audit",
+        description: "Audit a live browser frame or workspace visual with SAM 3.1, annotate key visual regions and overlaps, and save an inline-ready PNG proof. Use source=browser for the current preview, or source=file with a workspace image/document path.",
+        readOnly: false,
+        idempotent: false,
+        requiresSandbox: true,
+        parameters: {
+          type: "object",
+          properties: {
+            source: { type: "string", enum: ["browser", "file"], default: "browser" },
+            path: { type: "string" },
+            output_path: { type: "string", default: "deliverables/sam_visual_audit.png" },
+          },
+        },
+        execute: async (input, ctx) => this.opts.onVisualSegmentAudit
+          ? this.opts.onVisualSegmentAudit(input, ctx)
+          : { output: null, error: "Visual audit is unavailable in this server configuration." },
       },
       // 1. Legacy & baseline tools (preserved 100% compatible)
       {
@@ -1401,7 +1496,7 @@ export class StandardToolRouter implements ToolRouter {
 
       {
         name: "browser_check_def",
-        description: "Define and immediately run a repeatable browser verification flow against this run's local preview. Once defined, do not weaken or replace it.",
+        description: "Define and immediately run a repeatable browser verification flow against this run's local preview. Steps accept canonical goto/click/fill/press/waitMs/expectVisible/expectHidden/expectUrl forms and common {action|type, ...} forms, for example {action:'navigate',path:'/'} or {action:'assert_text',text:'VERIFIED'}. Once defined, do not weaken or replace it.",
         readOnly: false,
         idempotent: false,
         requiresSandbox: true,
@@ -1411,15 +1506,21 @@ export class StandardToolRouter implements ToolRouter {
           properties: {
             name: { type: "string", minLength: 1, maxLength: 80 },
             port: { type: "integer", minimum: 1024, maximum: 65535 },
-            steps: { type: "array", minItems: 1, maxItems: 30, items: { type: "object" } },
+            steps: { type: "array", minItems: 1, maxItems: 30, items: { type: "object", properties: {
+              goto: { type: "string" }, navigate: { type: "string" }, url: { type: "string" }, action: { type: "string" }, type: { type: "string" },
+              path: { type: "string" }, target: { type: ["string", "object"] }, selector: { type: "string" }, css: { type: "string" }, text: { type: "string" }, label: { type: "string" }, role: { type: "string" }, name: { type: "string" },
+              value: { type: ["string", "number"] }, textValue: { type: "string" }, key: { type: "string" }, ms: { type: "number" }, timeout: { type: "number" }, wait: { type: "number" }, waitMs: { type: "number" },
+              click: { type: ["string", "object"] }, fill: { type: ["string", "object"] }, press: { type: "string" }, expectVisible: { type: ["string", "object"] }, expectHidden: { type: ["string", "object"] }, expectUrl: { type: "string" }, expectText: { type: ["string", "object"] }, contains: { type: "string" }, equals: { type: "string" }, matches: { type: "string" },
+            } } },
             failOnConsoleErrors: { type: "boolean" },
           },
         },
         execute: async (input, ctx) => {
           const name = String(input.name ?? "").trim();
-          const steps = Array.isArray(input.steps) ? input.steps as BrowserCheckStep[] : [];
+          const rawSteps = Array.isArray(input.steps) ? input.steps : [];
+          const steps = normalizeBrowserCheckSteps(rawSteps);
           if (!name || name.length > 80) return { output: null, error: "Browser check name must contain 1 to 80 characters" };
-          if (!steps.length || steps.length > 30) return { output: null, error: "A browser check must contain 1 to 30 steps" };
+          if (!steps?.length || steps.length > 30) return { output: null, error: "A browser check must contain 1 to 30 supported steps (goto, click, fill, press, waitMs, expectVisible, expectHidden, expectUrl, or a supported action/type form)" };
           const attempts = ctx.state.browserCheckAttempts ?? (ctx.state.browserCheckAttempts = {});
           const totalAttempts = (attempts[name] ?? 0) + 1;
           attempts[name] = totalAttempts;
@@ -1436,6 +1537,9 @@ export class StandardToolRouter implements ToolRouter {
             if ("wait" in step && (!Number.isFinite(Number(step.wait)) || Number(step.wait) < 0 || Number(step.wait) > 5_000)) {
               return { output: null, error: "Browser check waits must be between 0 and 5000 ms" };
             }
+            if ("waitMs" in step && (!Number.isFinite(step.waitMs) || step.waitMs < 0 || step.waitMs > 5_000)) {
+              return { output: null, error: "Browser check waits must be between 0 and 5000 ms" };
+            }
             if ("goto" in step && typeof step.goto !== "string") return { output: null, error: "goto must be a URL or path" };
             if ("expectText" in step && ![step.equals, step.contains, step.matches].some((value) => typeof value === "string")) {
               return { output: null, error: "expectText requires equals, contains, or matches" };
@@ -1444,7 +1548,7 @@ export class StandardToolRouter implements ToolRouter {
                 (!Number.isFinite(step.timeoutMs) || step.timeoutMs < 1 || step.timeoutMs > 5_000)) {
               return { output: null, error: "expectVisible timeoutMs must be between 1 and 5000" };
             }
-            for (const key of ["click", "fill", "expectVisible", "expectText"] as const) {
+            for (const key of ["click", "fill", "expectVisible", "expectHidden", "expectText"] as const) {
               if (key in step) {
                 const target: unknown = step[key as keyof typeof step];
                 if (typeof target === "string") {

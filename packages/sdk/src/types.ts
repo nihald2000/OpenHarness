@@ -263,6 +263,8 @@ export interface DelegatedTaskPart {
   role: "explorer" | "coder" | "verifier" | "reviewer" | string;
   task: string;
   status: "running" | "completed" | "failed" | "conflict";
+  model?: string;
+  providerLabel?: string;
   background?: boolean;
   worktreeBranch?: string;
   summary?: string;
@@ -352,6 +354,7 @@ export interface ModelInfo {
   id: string;
   name: string;
   provider?: string;
+  providerDetail?: string;
   contextWindow?: number;
   isDefault?: boolean;
 }

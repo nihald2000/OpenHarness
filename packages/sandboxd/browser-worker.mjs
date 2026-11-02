@@ -202,9 +202,56 @@ function checkUrl(rawUrl, baseUrl) {
   return url.href;
 }
 
+function normalizeFlowTarget(raw) {
+  if (typeof raw === "string") return raw.trim() || undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const source = raw.target && typeof raw.target === "object" && !Array.isArray(raw.target) ? raw.target : raw;
+  const result = {};
+  if (typeof source.role === "string") { result.role = source.role; result.name = String(source.name ?? source.text ?? source.label ?? ""); }
+  if (typeof source.label === "string") result.label = source.label;
+  if (typeof source.text === "string") result.text = source.text;
+  if (typeof source.css === "string") result.css = source.css;
+  else if (typeof source.selector === "string") result.css = source.selector;
+  if (source.exact === true) result.exact = true;
+  return Object.keys(result).length ? result : undefined;
+}
+
+function normalizeFlowStep(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const step = raw;
+  if (typeof step.goto === "string" || typeof step.navigate === "string" || typeof step.url === "string") return { goto: String(step.goto ?? step.navigate ?? step.url) };
+  const action = String(step.action ?? step.type ?? "").toLowerCase().replaceAll("_", "");
+  if (["navigate", "goto", "open"].includes(action)) return { goto: String(step.path ?? step.url ?? step.value ?? step.target ?? "/") };
+  if (action === "click" || "click" in step) {
+    const target = normalizeFlowTarget(step.click ?? step.target ?? step.selector ?? step.css ?? step);
+    return target === undefined ? undefined : { click: target };
+  }
+  if (["fill", "type", "input"].includes(action) || "fill" in step) {
+    const target = normalizeFlowTarget(step.fill ?? step.target ?? step.selector ?? step.css ?? step);
+    return target === undefined ? undefined : { fill: target, value: String(step.value ?? step.textValue ?? step.input ?? "") };
+  }
+  if (action === "press" || "press" in step) return { press: String(step.press ?? step.key ?? step.value ?? "Enter") };
+  if (["wait", "sleep"].includes(action) || "wait" in step || "waitMs" in step) return { waitMs: Number(step.ms ?? step.timeout ?? step.waitMs ?? step.value ?? step.wait ?? 500) };
+  if (["expecthidden", "asserthidden"].includes(action) || "expectHidden" in step) {
+    const target = normalizeFlowTarget(step.expectHidden ?? step.target ?? step.selector ?? step.css ?? step.text ?? step.value);
+    return target === undefined ? undefined : { expectHidden: target };
+  }
+  if (["expecturl", "asserturl"].includes(action) || "expectUrl" in step) return { expectUrl: String(step.expectUrl ?? step.url ?? step.value ?? step.target ?? "") };
+  if (["expectvisible", "assertvisible", "asserttext", "expecttext", "assert", "verify"].includes(action) || "expectVisible" in step || "expectText" in step) {
+    const textAssert = ["asserttext", "expecttext"].includes(action) || "expectText" in step;
+    const target = normalizeFlowTarget(step.expectText ?? step.expectVisible ?? step.target ?? step.selector ?? step.css ?? step.text ?? step.value);
+    if (target === undefined) return undefined;
+    if (textAssert) return { expectText: target, ...(typeof step.equals === "string" ? { equals: step.equals } : {}), ...(typeof step.contains === "string" ? { contains: step.contains } : typeof step.text === "string" ? { contains: step.text } : {}) };
+    return { expectVisible: target, ...(typeof step.timeoutMs === "number" ? { timeoutMs: step.timeoutMs } : {}) };
+  }
+  if (typeof step.wait === "number") return { waitMs: step.wait };
+  return undefined;
+}
+
 async function runFlow(payload) {
   const activePage = await ensurePage();
-  const steps = Array.isArray(payload.steps) ? payload.steps : [];
+  const rawSteps = Array.isArray(payload.steps) ? payload.steps : [];
+  const steps = rawSteps.map(normalizeFlowStep);
   const port = Number(payload.port);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("run_flow requires a valid preview port");
   if (steps.length < 1 || steps.length > 30) throw new Error("run_flow supports 1 to 30 steps");
@@ -252,7 +299,7 @@ async function runFlow(payload) {
       const step = steps[i];
       failedStep = i;
       failedStepValue = step;
-      if (!step || typeof step !== "object") throw new Error("invalid flow step");
+      if (!step || typeof step !== "object") throw new Error("unsupported flow step");
       if ("goto" in step) {
         const url = checkUrl(step.goto, baseUrl);
         const response = await checkPage.goto(url, { waitUntil: "load", timeout: 15_000 });
@@ -271,6 +318,9 @@ async function runFlow(payload) {
       } else if ("expectVisible" in step) {
         await flowLocator(step.expectVisible, checkPage).first().waitFor({ state: "visible", timeout: Math.min(5_000, Math.max(1, Number(step.timeoutMs) || 5_000)) });
         record(i, step, "visible");
+      } else if ("expectHidden" in step) {
+        await flowLocator(step.expectHidden, checkPage).first().waitFor({ state: "hidden", timeout: Math.min(5_000, Math.max(1, Number(step.timeoutMs) || 5_000)) });
+        record(i, step, "hidden");
       } else if ("expectUrl" in step) {
         const expected = checkUrl(step.expectUrl, baseUrl);
         await checkPage.waitForURL(expected, { timeout: 5_000 });
@@ -288,8 +338,8 @@ async function runFlow(payload) {
         } while (!matched && Date.now() < deadline);
         if (!matched) throw new Error(`expected text did not match; got "${actual.slice(0, 120)}"`);
         record(i, step, actual.slice(0, 300));
-      } else if ("wait" in step) {
-        const waitMs = Number(step.wait);
+      } else if ("wait" in step || "waitMs" in step) {
+        const waitMs = Number(step.waitMs ?? step.wait);
         if (!Number.isFinite(waitMs) || waitMs < 0 || waitMs > 5_000) throw new Error("wait must be between 0 and 5000 ms");
         await checkPage.waitForTimeout(waitMs);
         record(i, step, `waited ${waitMs} ms`);
@@ -394,6 +444,17 @@ async function handleCommand(command) {
       return { id, status: 200, body: { url: activePage.url(), title: await activePage.title() } };
     }
     if (action === "snapshot") return { id, status: 200, body: await snapshot() };
+    if (action === "visual_regions") {
+      const regions = await activePage.evaluate(() => Array.from(document.querySelectorAll("button,input,textarea,select,a,[role=button],[role=link]"))
+        .slice(0, 100).map((element) => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          if (rect.width < 2 || rect.height < 2 || style.visibility === "hidden" || style.display === "none") return null;
+          const label = element.getAttribute("aria-label") || element.getAttribute("title") || element.innerText || element.getAttribute("placeholder") || element.tagName.toLowerCase();
+          return { label: String(label).replace(/\\s+/g, " ").trim().slice(0, 60), x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        }).filter(Boolean));
+      return { id, status: 200, body: { width: activePage.viewportSize()?.width ?? VIEWPORT.width, height: activePage.viewportSize()?.height ?? VIEWPORT.height, regions } };
+    }
     if (action === "observe") {
       const observed = await snapshot();
       await maskSensitiveFields();

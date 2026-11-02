@@ -100,6 +100,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<"dark" | "light">("light");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const glimmerWarmupStarted = useRef(false);
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
@@ -363,6 +364,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       version: prev.version + 1,
     }));
   }, []);
+
+  useEffect(() => {
+    if (glimmerWarmupStarted.current || !catalog.models.some((model) => model.id === "muse-glimmer")) return;
+    glimmerWarmupStarted.current = true;
+    void client.modelsWarmup().catch(() => {});
+  }, [catalog.models]);
 
   useEffect(() => {
     let active = true;

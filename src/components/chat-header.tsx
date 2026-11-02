@@ -107,8 +107,9 @@ export function ChatHeader({
   const modelOptions: SelectOption[] = models.map((m) => ({
     id: m.id,
     label: m.name || m.id,
+    description: m.providerDetail ?? m.provider,
     meta: `${m.id}${m.contextWindow ? ` - ${Math.round(m.contextWindow / 1000)}k ctx` : ""}`,
-    badge: m.isDefault ? "Default" : undefined,
+    badge: m.isDefault ? "Default" : /Glimmer|Open-Weights/i.test(`${m.id} ${m.provider ?? ""}`) ? "Open-Weights" : /Wonder/i.test(m.id) ? "Creative" : undefined,
   }));
 
   const sessionExplicitRuntime = session?.runtime;

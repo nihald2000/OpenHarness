@@ -1,6 +1,48 @@
 # OpenHarness
 
-OpenHarness is a model-agnostic, long-horizon AI agent harness and developer workspace (`packages/{core,server,sdk,sandboxd,cli}` + Vite React SPA in `src/`). Configured models (OpenAI, Anthropic, Meta Llama API, Together, Groq, Fireworks, Ollama, vLLM, LiteLLM, or the offline `mock/*` provider) run through a durable state machine (**plan → build → test → fix → review → checkpoint**) with real HTTP/SSE model transport, realpath-enforced workspace containment, and isolated sandboxes (`srt-local`, `docker`, `modal`).
+OpenHarness is a long-horizon agent workspace for building, testing, and reviewing software and polished documents. Its durable run engine, tenant-scoped APIs, and Vite SPA pair real model-provider integrations with isolated workspaces and sandbox runtimes.
+
+**Live demo:** [openharness-web-six.vercel.app](https://openharness-web-six.vercel.app/)
+
+## Meta Global AI Developer Hackathon — Push the Frontier
+
+OpenHarness combines a coding and document agent loop with real browser checks, user takeover, voice notes, and visual evidence. The static Vercel SPA connects to the Modal control plane and isolated Modal sandbox hub; the optional Muse Glimmer GPU endpoint is discovered by the Modal app when deployed.
+
+### Meta model and visual stack
+
+| Model | Purpose | Integration path |
+| --- | --- | --- |
+| Muse Spark 1.3 | Primary agent reasoning | `packages/core/src/provider/profiles.ts`, `packages/server/src/server.ts` |
+| Muse Wonder 1.0 | Document and creative subagent | `packages/server/src/subagents.ts` |
+| Muse Glimmer 30B | Open weights on Modal GPU; optional, scale-to-zero | `deploy/modal/muse_glimmer_server.py`, `deploy/modal/web_server.py`, `packages/server/src/server.ts` |
+| Muse Image 1.0 | Image generation and artifact creation | `packages/core/src/tools/catalog.ts` |
+| Muse Voice Transcribe | Voice notes in composer and browser takeover | `packages/server/src/main.ts`, `packages/server/src/server.ts`, `src/components/voice-mic-button.tsx` |
+| SAM 3.1 | Visual-region audit with annotated image proof | `packages/core/src/tools/catalog.ts`, `packages/sandboxd/artifact-worker.py` |
+
+### Hackathon contribution ledger (Oct 26 – Nov 4, 2026)
+
+| Contribution | Main modules |
+| --- | --- |
+| Durable browser checks, event evidence, and takeover-aware review | `packages/core/src/agent/verification.ts`, `packages/core/src/tools/catalog.ts`, `packages/sandboxd/browser-worker.mjs`, `packages/server/src/run-hooks.ts` |
+| Isolated live browser, screenshots, and user control | `packages/sandboxd/src/browser-bridge.ts`, `packages/server/src/server.ts`, `src/components/live-browser.tsx` |
+| Document Studio preview, extraction, conversion, and artifact viewer | `packages/sandboxd/artifact-worker.py`, `packages/sandboxd/src/server.ts`, `src/components/studio-canvas.tsx` |
+| Meta model profiles, optional Modal GPU routing, and warmup | `packages/core/src/provider/profiles.ts`, `packages/server/src/subagents.ts`, `deploy/modal/muse_glimmer_server.py` |
+| Muse Voice capture and transcription | `src/components/voice-mic-button.tsx`, `src/components/composer.tsx`, `src/components/live-browser.tsx`, `packages/server/src/main.ts` |
+| Visual audit output and inline artifacts | `packages/core/src/tools/catalog.ts`, `packages/sandboxd/artifact-worker.py`, `src/components/parts/tool-card.tsx` |
+| Judge showcase and model attribution | `src/components/empty-state.tsx`, `src/components/chat-header.tsx`, `src/components/parts/step-footer.tsx`, `src/components/parts/task-card.tsx` |
+| Regression coverage for these paths | `tests/hackathon-regression-suite.test.ts`, `tests/browser-check-flow.test.ts`, `tests/token-reduction-agent-ui.test.ts` |
+
+### Modal and Vercel deployment
+
+```sh
+python deploy/modal/build_sandbox_image.py
+modal deploy deploy/modal/muse_glimmer_server.py
+modal deploy deploy/modal/sandbox_server.py
+modal deploy deploy/modal/web_server.py
+vercel deploy --prod
+```
+
+Muse Glimmer deployment is optional: normal operation works with `MODEL_API_KEY` or another provider set in Admin Settings. Vercel hosts only the static SPA; the API and SSE streams run on Modal.
 
 ## Built During the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)
 

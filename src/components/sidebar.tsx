@@ -61,7 +61,15 @@ export function Sidebar() {
     commands,
     loading: catalogLoading,
   } = useCatalog();
-  const waitingInAnotherChat = sessions.find((session) => session.id !== activeSessionId && (session.status === "awaiting_input" || session.pauseReason === "takeover"));
+  const [dismissedWaiting, setDismissedWaiting] = useState<string[]>(() => {
+    try { return JSON.parse(sessionStorage.getItem("oh.dismissedWaiting") ?? "[]") as string[]; } catch { return []; }
+  });
+  const waitingInAnotherChat = sessions.find((session) => {
+    if (session.status !== "awaiting_input" && session.pauseReason !== "takeover") return false;
+    if (dismissedWaiting.includes(session.id)) return false;
+    const updated = typeof session.updatedAt === "number" ? session.updatedAt : new Date(session.updatedAt).getTime();
+    return session.id === activeSessionId || (Number.isFinite(updated) && now - updated <= 30 * 60_000);
+  });
 
   const [query, setQuery] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -266,9 +274,16 @@ export function Sidebar() {
         </div>
 
         {waitingInAnotherChat && (
-          <Link href={`/c/${encodeURIComponent(waitingInAnotherChat.id)}`} className="mx-3 mb-2 block rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-fg">
-            {waitingInAnotherChat.pauseReason === "takeover" ? "Browser control is waiting in " : "A question is waiting in "}<span className="font-semibold">{waitingInAnotherChat.title || "Untitled chat"}</span>
-          </Link>
+          <div className="mx-3 mb-2 flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-fg">
+            <Link href={`/c/${encodeURIComponent(waitingInAnotherChat.id)}`} className="min-w-0 flex-1">
+              {waitingInAnotherChat.pauseReason === "takeover" ? "Browser control is waiting in " : "A question is waiting in "}<span className="font-semibold">{waitingInAnotherChat.title || "Untitled chat"}</span>
+            </Link>
+            <button type="button" aria-label="Dismiss waiting alert" className="shrink-0 rounded p-1 text-muted hover:bg-hover hover:text-fg" onClick={() => setDismissedWaiting((current) => {
+              const next = Array.from(new Set([...current, waitingInAnotherChat.id]));
+              try { sessionStorage.setItem("oh.dismissedWaiting", JSON.stringify(next)); } catch {}
+              return next;
+            })}><X className="size-3.5" /></button>
+          </div>
         )}
 
         <div className="px-3 pt-1 pb-2 border-b border-border">

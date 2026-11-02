@@ -106,7 +106,7 @@ export function createHttpServer(
       res.setHeader("vary", "Origin");
       res.setHeader(
         "access-control-allow-headers",
-        "Content-Type, Authorization, X-OpenHarness-Admin, X-Oh-Key, Last-Event-ID"
+        "Content-Type, Authorization, X-OpenHarness-Admin, X-Oh-Key, X-Audio-Filename, Last-Event-ID"
       );
       res.setHeader(
         "access-control-allow-methods",
@@ -176,6 +176,18 @@ export function createHttpServer(
       const identity = await app.authenticate(authHeaders);
       if (!identity) {
         return send(res, 401, { error: "unauthorized" });
+      }
+      if (req.method === "POST" && url.pathname === "/v1/audio/transcribe") {
+        const rawBody = await readRawBody(req, 4 * 1024 * 1024);
+        const filenameHeader = req.headers["x-audio-filename"];
+        const filename = Array.isArray(filenameHeader) ? filenameHeader[0] : filenameHeader;
+        const out = await app.transcribeAudio(
+          identity,
+          rawBody,
+          String(req.headers["content-type"] ?? ""),
+          filename ? decodeURIComponent(filename) : undefined,
+        );
+        return send(res, out.status, out.body);
       }
       const rawFileMatch = url.pathname.match(/^\/v1\/sessions\/([^/]+)\/file\/raw$/);
       if (req.method === "GET" && rawFileMatch) {

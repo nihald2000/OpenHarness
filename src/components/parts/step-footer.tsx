@@ -11,8 +11,17 @@ export function StepFooter({ messages }: { messages: Message[] }) {
   let outputTokens = 0;
   let modelCalls = 0;
   const toolCallIds = new Set<string>();
+  const modelBadges = new Map<string, string>();
 
   for (const m of messages) {
+    if (m.info.role === "assistant" && m.info.model && !m.info.model.startsWith("mock/")) {
+      const id = m.info.model;
+      const label = id === "muse-glimmer" ? "Muse Glimmer 30B · Modal"
+        : id === "muse-spark-1.3" ? "Muse Spark 1.3"
+          : id === "muse-spark-1.3-contributor" ? "Muse Spark 1.3 Contributor"
+            : id === "muse-wonder-1.0" ? "Muse Wonder 1.0" : id;
+      modelBadges.set(id, label);
+    }
     for (const p of m.parts) {
       if (p.type === "tool") toolCallIds.add(p.callId);
       if (p.type === "step") {
@@ -51,6 +60,7 @@ export function StepFooter({ messages }: { messages: Message[] }) {
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted">
       {items.map((item) => <span key={item}>{item}</span>)}
+      {[...modelBadges.values()].map((label) => <span key={label} className="rounded-full border border-border bg-elev px-2 py-0.5 text-[10px] text-accent">{label}</span>)}
     </div>
   );
 }

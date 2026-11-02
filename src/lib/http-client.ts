@@ -36,6 +36,7 @@ export interface HttpClientOptions {
     onopen: (() => void) | null;
     onmessage: ((ev: { data: string; lastEventId?: string }) => void) | null;
     onerror: ((err: unknown) => void) | null;
+    addEventListener?: (type: string, listener: (event: { data?: string }) => void) => void;
     close: () => void;
   };
 }
@@ -76,6 +77,8 @@ export class HttpOpenHarnessClient {
     const isBlob = typeof Blob !== "undefined" && body instanceof Blob;
     if (body !== undefined && !isBlob) {
       headers["content-type"] = "application/json";
+    } else if (isBlob) {
+      headers["content-type"] = (body as Blob).type || "application/octet-stream";
     }
     if (this.token) {
       headers["authorization"] = `Bearer ${this.token}`;
@@ -111,6 +114,27 @@ export class HttpOpenHarnessClient {
 
   async models(): Promise<ModelInfo[]> {
     return this.request<ModelInfo[]>("GET", "/v1/models");
+  }
+
+  async modelsWarmup(): Promise<void> {
+    await this.request<{ warming: boolean; model: string }>("POST", "/v1/models/warmup", {});
+  }
+
+  async transcribeAudio(blob: Blob, filename = "voice-note.webm"): Promise<{ text: string; model: string; provider: string }> {
+    const headers: Record<string, string> = {
+      "content-type": blob.type || "audio/webm",
+      "x-audio-filename": encodeURIComponent(filename),
+    };
+    if (this.token) headers.authorization = `Bearer ${this.token}`;
+    if (this.accessKey) headers["x-oh-key"] = this.accessKey;
+    const response = await this.fetchFn(`${this.base}/v1/audio/transcribe`, {
+      method: "POST", headers, credentials: "include", body: blob,
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      throw new OpenHarnessError(payload.error ?? `HTTP ${response.status}`, response.status);
+    }
+    return await response.json() as { text: string; model: string; provider: string };
   }
 
   async commands(): Promise<CommandInfo[]> {
@@ -281,10 +305,12 @@ export class HttpOpenHarnessClient {
       );
     },
 
-    inspectFile: async (id: string, filePath: string): Promise<Record<string, unknown>> => {
+    inspectFile: async (id: string, filePath: string, signal?: AbortSignal): Promise<Record<string, unknown>> => {
       return this.request<Record<string, unknown>>(
         "GET",
-        `/v1/sessions/${encodeURIComponent(id)}/file/inspect?path=${encodeURIComponent(filePath)}`
+        `/v1/sessions/${encodeURIComponent(id)}/file/inspect?path=${encodeURIComponent(filePath)}`,
+        undefined,
+        signal
       );
     },
 
@@ -572,12 +598,28 @@ export class HttpOpenHarnessClient {
     if (this.accessKey) q.set("key", this.accessKey);
     const url = `${this.base}/v1/events?${q.toString()}`;
 
+    let reconnectingTimer: ReturnType<typeof setTimeout> | undefined;
+    let plannedRotate = false;
+    const clearReconnectTimer = () => {
+      if (reconnectingTimer) clearTimeout(reconnectingTimer);
+      reconnectingTimer = undefined;
+    };
+    const markConnected = () => {
+      clearReconnectTimer();
+      plannedRotate = false;
+      onStatus?.("open");
+    };
     onStatus?.("connecting");
     const es = this.esFactory
       ? this.esFactory(url)
       : new EventSource(url, { withCredentials: true });
 
-    es.onopen = () => onStatus?.("open");
+    es.onopen = markConnected;
+    es.addEventListener?.("ready", markConnected);
+    es.addEventListener?.("ping", markConnected);
+    es.addEventListener?.("rotate", () => {
+      plannedRotate = true;
+    });
     es.onmessage = (m: { data: string; lastEventId?: string }) => {
       const ev = JSON.parse(m.data) as OpenHarnessEvent & { seq?: number };
       const seq = Number(m.lastEventId || ev.seq || 0);
@@ -587,11 +629,13 @@ export class HttpOpenHarnessClient {
       onEvent(ev);
     };
     es.onerror = (e: unknown) => {
-      onStatus?.("reconnecting");
+      clearReconnectTimer();
+      reconnectingTimer = setTimeout(() => onStatus?.("reconnecting"), plannedRotate ? 4_500 : 3_500);
       onError?.(e);
     };
     return {
       close: () => {
+        clearReconnectTimer();
         es.close();
         onStatus?.("closed");
       },

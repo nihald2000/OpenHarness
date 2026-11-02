@@ -13,7 +13,7 @@ app = modal.App("openharness-muse-glimmer")
 hf_cache = modal.Volume.from_name("openharness-hf-cache", create_if_missing=True)
 vllm_cache = modal.Volume.from_name("openharness-vllm-cache", create_if_missing=True)
 GPU_CONFIG = os.environ.get("MUSE_GPU", "H200:1")
-image = modal.Image.from_registry("vllm/vllm-openai:muse-glimmer").entrypoint([])
+image = modal.Image.from_registry("vllm/vllm-openai:muse-glimmer", add_python="3.11").entrypoint([]).env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 secrets = [modal.Secret.from_name("openharness-server")] if os.environ.get("USE_MODAL_SECRET") == "1" else []
 
 
@@ -24,8 +24,9 @@ secrets = [modal.Secret.from_name("openharness-server")] if os.environ.get("USE_
     secrets=secrets,
     min_containers=0,
     max_containers=1,
-    scaledown_window=300,
+    scaledown_window=int(os.environ.get("MUSE_SCALEDOWN_WINDOW", "600")),
     timeout=3600,
+    enable_memory_snapshot=True,
 )
 @modal.concurrent(max_inputs=16)
 @modal.web_server(port=8000, startup_timeout=900)

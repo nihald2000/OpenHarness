@@ -86,6 +86,10 @@ export function ToolCard({
   const summary = getToolSummary(part);
 
   const meta = (part.metadata ?? {}) as Record<string, unknown>;
+  const modelBadge = typeof meta.model === "string"
+    ? meta.model === "sam-3.1" ? "SAM 3.1" : meta.model === "muse-image-1.0" ? "Muse Image 1.0" : meta.model
+    : undefined;
+  const providerLabel = typeof meta.providerLabel === "string" ? meta.providerLabel : undefined;
   const artifacts = Array.isArray(meta.artifacts) ? meta.artifacts as Array<{ path: string; mimeType?: string; size?: number; kind?: string }> : [];
   const input = (part.input ?? {}) as Record<string, unknown>;
 
@@ -157,6 +161,7 @@ export function ToolCard({
         />
         <Icon className="size-3.5 shrink-0 text-muted" aria-hidden="true" />
         <span className="font-medium text-fg shrink-0">{label}</span>
+        {(modelBadge || providerLabel) && <span className="shrink-0 rounded-full border border-border bg-bg px-2 py-0.5 text-[10px] text-accent" title={providerLabel}>{modelBadge ?? providerLabel}</span>}
         {summary && (
           <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted">
             {summary}
@@ -191,10 +196,10 @@ export function ToolCard({
       </button>
 
       {part.state === "completed" && candidatePath && sessionId && (
-        <div className="border-t border-border bg-bg/50 px-3 py-2"><a href={client.session.fileRawUrl(sessionId, candidatePath, { download: true })} download className="inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-code px-3 py-1.5 font-mono text-[11px] text-accent hover:bg-hover">Download {candidatePath.split(/[\\/]/).at(-1)}</a></div>
+        <div className="flex flex-wrap gap-2 border-t border-border bg-bg/50 px-3 py-2"><button type="button" onClick={() => window.dispatchEvent(new CustomEvent("oh:open-artifact", { detail: { path: candidatePath } }))} className="inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-code px-3 py-1.5 font-mono text-[11px] text-accent hover:bg-hover">Open in Studio · {candidatePath.split(/[\\/]/).at(-1)}</button><a href={client.session.fileRawUrl(sessionId, candidatePath, { download: true })} download className="inline-flex items-center gap-2 rounded-full border border-border bg-code px-3 py-1.5 font-mono text-[11px] text-muted hover:bg-hover">Download</a></div>
       )}
 
-      {part.state === "completed" && artifacts.length > 0 && sessionId && <div className="flex flex-wrap gap-2 border-t border-border bg-bg/50 p-3">{artifacts.map((artifact) => <a key={artifact.path} href={client.session.fileRawUrl(sessionId, artifact.path)} target="_blank" rel="noreferrer" className="flex max-w-64 items-center gap-2 rounded-lg border border-border bg-elev px-2 py-1.5 text-[11px] text-accent">{artifact.mimeType?.startsWith("image/") && <img src={client.session.fileRawUrl(sessionId, artifact.path)} alt="" className="size-10 rounded object-cover" />}<span className="truncate">{artifact.path}</span><span className="text-muted">Open</span></a>)}</div>}
+      {part.state === "completed" && artifacts.length > 0 && sessionId && <div className="flex flex-wrap gap-2 border-t border-border bg-bg/50 p-3">{artifacts.map((artifact) => <div key={artifact.path} className="flex max-w-full items-center gap-2 rounded-lg border border-border bg-elev px-2 py-1.5 text-[11px] text-accent">{artifact.mimeType?.startsWith("image/") && <img src={client.session.fileRawUrl(sessionId, artifact.path)} alt="" className="size-10 rounded object-cover" />}<button type="button" onClick={() => window.dispatchEvent(new CustomEvent("oh:open-artifact", { detail: { path: artifact.path } }))} className="max-w-56 truncate text-left" title={artifact.path}>{artifact.path}</button><span className="text-muted">Open in Studio</span><a href={client.session.fileRawUrl(sessionId, artifact.path, { download: true })} download aria-label={`Download ${artifact.path}`} title="Download" className="rounded p-1 text-muted hover:bg-hover hover:text-accent">↓</a></div>)}</div>}
 
       {isError && <div className="border-t border-border bg-bg/50 px-3 py-2"><button type="button" onClick={() => window.dispatchEvent(new CustomEvent("oh:try-fix", { detail: { prompt: `The tool ${part.tool} failed. Diagnose and fix the underlying issue.\nError: ${part.error ?? "unknown error"}\nInput: ${stringify(part.input)}` } }))} className="rounded-md border border-border px-2.5 py-1.5 text-[11px] font-medium text-accent hover:bg-hover">Try fixing</button></div>}
 

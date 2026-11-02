@@ -70,6 +70,8 @@ export function TaskCard({
 
   const input = (part.input ?? {}) as Record<string, unknown>;
   const meta = (part.metadata ?? {}) as Record<string, unknown>;
+  const model = typeof meta.model === "string" ? meta.model : undefined;
+  const providerLabel = typeof meta.providerLabel === "string" ? meta.providerLabel : undefined;
 
   const subagentName =
     (typeof input.subagent_type === "string" && input.subagent_type) ||
@@ -112,6 +114,7 @@ export function TaskCard({
             <span>{subagentName}</span>
           </span>
           <span className="truncate font-medium text-fg">{description}</span>
+          {(model || providerLabel) && <span className="shrink-0 rounded-full border border-border bg-bg px-2 py-0.5 text-[10px] text-accent">{model === "muse-glimmer" ? "Muse Glimmer 30B · Modal" : model === "muse-wonder-1.0" ? "Muse Wonder 1.0" : model ?? providerLabel}</span>}
         </div>
 
         <div className="flex items-center gap-2">

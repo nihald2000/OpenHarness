@@ -80,8 +80,8 @@ server_image = (
     memory=1024,
     timeout=3600,
     max_containers=1,
-    min_containers=0,
-    scaledown_window=60,
+    min_containers=1,
+    scaledown_window=300,
 )
 @modal.concurrent(max_inputs=100)
 @modal.web_server(4096, startup_timeout=60)
@@ -94,6 +94,15 @@ def server():
         except Exception as exc:
             print(f"[openharness-server] warning: could not lookup openharness-sandboxd web url: {exc}", flush=True)
             sandbox_url = ""
+    glimmer_url = os.environ.get("MUSE_GLIMMER_BASE_URL", "").strip()
+    if not glimmer_url:
+        try:
+            raw_glimmer = (modal.Function.from_name("openharness-muse-glimmer", "serve").get_web_url() or "").strip()
+            if raw_glimmer:
+                glimmer_url = f"{raw_glimmer.rstrip('/')}/v1"
+        except Exception as exc:
+            print(f"[openharness-server] info: optional Muse endpoint is not deployed ({exc})", flush=True)
+            glimmer_url = ""
     shared_key = os.environ.get("OH_MODAL_SANDBOX_KEY", "").strip()
     if len(shared_key) < 32:
         raise RuntimeError("Secret openharness-sandbox-key must define OH_MODAL_SANDBOX_KEY (>= 32 chars)")
@@ -128,8 +137,12 @@ def server():
         "OPENHARNESS_HOST": "0.0.0.0",
         "OPENHARNESS_PORT": "4096",
         "OPENHARNESS_DATA_DIR": "/data",
-        "OH_MAX_ACTIVE_RUNS": os.environ.get("OH_MAX_ACTIVE_RUNS", "2"),
+        "OH_GUEST_MAX_ACTIVE_RUNS": os.environ.get("OH_GUEST_MAX_ACTIVE_RUNS", "3"),
+        "OH_GUEST_DAILY_RUN_LIMIT": os.environ.get("OH_GUEST_DAILY_RUN_LIMIT", "50"),
     }
+    if glimmer_url:
+        env["MUSE_GLIMMER_BASE_URL"] = glimmer_url
+    env["OH_MAX_ACTIVE_RUNS"] = os.environ.get("OH_MAX_ACTIVE_RUNS", "10")
     print(f"[openharness-server] active OH_MODAL_IMAGE_ID={image_id}", flush=True)
     print(f"[openharness-server] active OH_MODAL_SANDBOX_URL={sandbox_url}", flush=True)
     subprocess.Popen(

@@ -428,7 +428,7 @@ export class DurableWorker {
     }
 
     if (opts?.extend) {
-      // OpenHands traffic-control doubling pattern (§9 G.1)
+      // Double the remaining run budget when the user explicitly extends it (§9 G.1).
       state.budgets.maxIterations *= 2;
       state.budgets.maxRunDurationSec *= 2;
       if (state.budgets.maxCostPerRun) {

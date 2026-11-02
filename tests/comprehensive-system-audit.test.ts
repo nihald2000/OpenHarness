@@ -256,11 +256,11 @@ test("3. Provider Fuzzing, Fallback Models & Rate Pacing Audit: malformed JSON s
 
   // 3b. Text tool-call fallback dialects
   const advertised = ["read_file", "edit", "search"];
-  const hermesXml = '<tool_call>{"name": "edit", "parameters": {"path": "a.ts", "old_str": "1", "new_str": "2"}}</tool_call>';
+  const taggedToolXml = '<tool_call>{"name": "edit", "parameters": {"path": "a.ts", "old_str": "1", "new_str": "2"}}</tool_call>';
   const fnTag = '<function=read_file>{"path": "README.md"}</function>';
   const llamaPythonic = '[search(pattern="TODO", limit=5), unadvertised_tool(x=1)]';
 
-  const c1 = parseTextToolCalls(hermesXml, advertised, "r1");
+  const c1 = parseTextToolCalls(taggedToolXml, advertised, "r1");
   assert.equal(c1.length, 1);
   assert.equal(c1[0]!.name, "edit");
   assert.equal(c1[0]!.arguments.path, "a.ts");

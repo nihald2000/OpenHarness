@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpRight, Maximize2, Minimize2, MousePointer2, X } from "lucide-react";
 import { mapFramePointToViewport } from "../../packages/core/src/sandbox/live-coordinates";
 import { client } from "@/lib/client";
+import { VoiceMicButton } from "./voice-mic-button";
 
 type DockState = "closed" | "docked" | "expanded";
 type Props = {
@@ -19,6 +20,7 @@ type Props = {
   takeoverBusy?: boolean;
   onTakeControl?: () => void;
   onReturnControl?: () => void;
+  onVoiceNote?: (text: string) => void;
   verifyLabel?: string;
   onDockWidthChange?: (width: number) => void;
 };
@@ -30,7 +32,7 @@ const pageIsHidden = () => document.visibilityState === "hidden";
 
 export function LiveBrowser({
   sessionId, runId, previewUrl, state, setState, control = false, takeover, takeoverNote = "",
-  onTakeoverNote, takeoverBusy = false, onTakeControl, onReturnControl, verifyLabel, onDockWidthChange,
+  onTakeoverNote, takeoverBusy = false, onTakeControl, onReturnControl, onVoiceNote, verifyLabel, onDockWidthChange,
 }: Props) {
   const [status, setStatus] = useState("Disconnected");
   const [page, setPage] = useState({ title: "", url: "" });
@@ -262,6 +264,7 @@ export function LiveBrowser({
       {takeover && <span className="max-w-56 truncate text-accent" title={takeover.instructions || takeover.reason}>{takeover.instructions || takeover.reason}</span>}
       {control ? <>
         <input aria-label="Note for the agent" value={takeoverNote} onChange={(e) => onTakeoverNote?.(e.target.value)} placeholder="Note for the agent" className="w-36 rounded border border-border bg-bg px-2 py-1" />
+        <VoiceMicButton compact onTranscript={onVoiceNote ?? (() => {})} disabled={takeoverBusy} />
         <button type="button" disabled={takeoverBusy} onClick={onReturnControl} className="rounded bg-accent px-2 py-1 font-medium text-accent-fg">{takeoverBusy ? "Returning…" : "Return control"}</button>
       </> : onTakeControl && <button type="button" disabled={takeoverBusy} onClick={onTakeControl} className="rounded border border-border px-2 py-1">{takeoverBusy ? "Requesting…" : "Take control"}</button>}
       {(previewUrl || page.url) && <button type="button" onClick={() => window.open(previewUrl || page.url, "_blank", "noopener,noreferrer")} className="inline-flex items-center gap-1 rounded border border-border px-2 py-1">Open preview <ArrowUpRight size={13} /></button>}

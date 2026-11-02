@@ -14,7 +14,7 @@ export class RunLimiter {
   constructor(
     globalActive = Number(process.env.OH_MAX_ACTIVE_RUNS ?? 3),
     perTenantActive = Number(process.env.OH_GUEST_MAX_ACTIVE_RUNS ?? 1),
-    perTenantDaily = Number(process.env.OH_GUEST_MAX_RUNS_PER_DAY ?? 20),
+    perTenantDaily = Number(process.env.OH_GUEST_DAILY_RUN_LIMIT ?? process.env.OH_GUEST_MAX_RUNS_PER_DAY ?? 20),
   ) {
     this.globalActive = positiveLimit(globalActive, 3);
     this.perTenantActive = positiveLimit(perTenantActive, 1);

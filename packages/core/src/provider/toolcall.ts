@@ -212,7 +212,7 @@ function normalizeSingleQuotesAndNewlines(input: string): string {
  * Recognizes:
  * 1. Llama pythonic lists: `[fn(a=1, b="x"), other(k=True)]`
  * 2. `<function=name>{json}</function>`
- * 3. `<tool_call>{json}</tool_call>` (Hermes/Qwen)
+ * 3. `<tool_call>{json}</tool_call>` (generic tagged tool-call output)
  * 4. JSON blocks `{"name": "...", "arguments"|"parameters": ...}` (fenced or bare)
  * Only matches tool names in `advertisedToolNames`.
  */

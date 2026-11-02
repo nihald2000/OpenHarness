@@ -101,3 +101,8 @@
 ### Phase L: MCP Client Connections — In Progress
 - Added `McpClientManager` with four in-process defaults, eight MCP presets, JSON-RPC HTTP/SSE and stdio connectors, tool discovery, admin routes, and server-management tools. Registered it with `StandardToolRouter` and exported it and `SkillsRegistry` from `packages/core/src/index.ts`.
 - Add protocol-level integration coverage and verify lifecycle behavior on Linux, macOS, and Windows before marking MCP support complete. Connection state and memory remain process-local; this does not establish multi-node MCP readiness.
+
+### Phase M: Hackathon Model and Showcase UX — In Progress
+- Added Modal discovery for optional Muse Glimmer, throttled asynchronous warmup, first-turn subagent routing with cold-start fallback, Meta provider labels, and shorter SSE rotation for the static web client.
+- Added Muse Voice recording/transcription, a visual-audit tool that writes an annotated PNG using semantic model output plus exact browser bounds, and a judge-facing demo landing state.
+- Focused unit checks pass; browser permission tests, live Meta endpoint checks, and a deployed Glimmer cold-start run remain outstanding. Do not mark this phase complete until those checks pass.

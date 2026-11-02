@@ -147,8 +147,8 @@ export interface RunState {
 }
 
 export type BrowserCheckTarget = {
-  role: string;
-  name: string;
+  role?: string;
+  name?: string;
   label?: string;
   text?: string;
   css?: string;
@@ -157,13 +157,15 @@ export type BrowserCheckTarget = {
 
 export type BrowserCheckStep =
   | { goto: string }
-  | { click: BrowserCheckTarget }
-  | { fill: BrowserCheckTarget; value: string }
+  | { click: BrowserCheckTarget | string }
+  | { fill: BrowserCheckTarget | string; value: string }
   | { press: string }
-  | { expectText: BrowserCheckTarget; equals: string; contains?: string; matches?: string }
-  | { expectVisible: BrowserCheckTarget; timeoutMs?: number }
+  | { expectText: BrowserCheckTarget | string; equals?: string; contains?: string; matches?: string }
+  | { expectVisible: BrowserCheckTarget | string; timeoutMs?: number }
+  | { expectHidden: BrowserCheckTarget | string; timeoutMs?: number }
   | { expectUrl: string }
-  | { wait: number };
+  | { wait: number }
+  | { waitMs: number };
 
 export interface BrowserCheck {
   name: string;

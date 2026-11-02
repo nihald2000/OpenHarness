@@ -33,7 +33,7 @@ export interface StuckDetectionResult {
 }
 
 /**
- * StuckDetector implementing OpenHands' 5 heuristics + OpenHarness's 2 additions (§9 G.2).
+ * StuckDetector implementing five common heuristics and two local additions (§9 G.2).
  * Scans the last 20 events and treats parallel calls from one model response as one combined attempt.
  */
 export class StuckDetector {
