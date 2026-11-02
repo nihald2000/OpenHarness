@@ -208,6 +208,7 @@ export interface SandboxToolRouterOptions {
   mcpManager?: McpClientManager;
   sandboxEnabled?: boolean;
   ensureSandbox?: (state: RunState) => Promise<{ id: string; workspacePath: string }>;
+  requestSandbox?: (handleId: string, method: string, path: string, body?: Record<string, unknown>) => Promise<{ status: number; body: Record<string, unknown> }>;
   resolvePreviewUrl?: (sandboxId: string, port: number) => Promise<string | undefined> | string | undefined;
   onSandboxStop?: (ctx: ToolExecutionContext) => Promise<ToolExecutionResult>;
   onDelegate?: (
@@ -301,16 +302,28 @@ export class StandardToolRouter implements ToolRouter {
     if (!tool) {
       return { output: null, error: `Unknown tool: ${name}` };
     }
-    if (!HOST_TOOLS.has(name) && !name.startsWith("mcp__") && !ctx.sandboxHandleId && this.opts.ensureSandbox && ctx.state) {
+    const needsSandbox = !HOST_TOOLS.has(name) && (!name.startsWith("mcp__") || name.startsWith("mcp__document_studio__"));
+    if (needsSandbox && !ctx.sandboxHandleId && this.opts.ensureSandbox && ctx.state) {
       try {
         const h = await this.opts.ensureSandbox(ctx.state);
         ctx.sandboxHandleId = h.id;
         ctx.state.sandboxHandleId = h.id;
+        if (!ctx.requestSandbox && this.opts.requestSandbox) {
+          ctx.requestSandbox = (method, route, body) => this.opts.requestSandbox!(h.id, method, route, body);
+        }
       } catch {
         // Workspace tools can still use the local fallback daemon when no selected runtime is available.
       }
     }
+    const capturesArtifacts = ["bash", "write_file", "edit", "apply_patch", "generate_image", "render_document_preview"].includes(name) || name.startsWith("mcp__document_studio__");
+    const beforeArtifacts = capturesArtifacts ? await this.readArtifactScan(ctx) : [];
     const rawRes = await tool.execute(input, ctx);
+    if (capturesArtifacts) {
+      const beforeByPath = new Map(beforeArtifacts.map((artifact) => [artifact.path, artifact.mtimeMs]));
+      const artifacts = (await this.readArtifactScan(ctx)).filter((artifact) => !beforeByPath.has(artifact.path) || artifact.mtimeMs > (beforeByPath.get(artifact.path) ?? 0))
+        .map(({ path: artifactPath, mimeType, size, kind }) => ({ path: artifactPath, mimeType, size, kind }));
+      if (artifacts.length) rawRes.metadata = { ...rawRes.metadata, artifacts };
+    }
     if (!rawRes.error && name === "process_start") ctx.state.webTools = true;
     const outputField = name === "process_logs" ? "logs" : name === "browser_snapshot" ? "snapshot" : undefined;
     const fieldValue = outputField && rawRes.output && typeof rawRes.output === "object"
@@ -332,6 +345,18 @@ export class StandardToolRouter implements ToolRouter {
       };
     }
     return rawRes;
+  }
+
+  private async readArtifactScan(ctx: ToolExecutionContext): Promise<Array<{ path: string; mimeType: string; size: number; kind: string; mtimeMs: number }>> {
+    try {
+      const response = ctx.requestSandbox
+        ? await ctx.requestSandbox("GET", "/artifacts/scan")
+        : await (async () => {
+            const d = await this.getDaemonAndHeaders(ctx);
+            return d.daemon.handleRequest("GET", "/artifacts/scan", d.headers);
+          })();
+      return Array.isArray(response.body.artifacts) ? response.body.artifacts as Array<{ path: string; mimeType: string; size: number; kind: string; mtimeMs: number }> : [];
+    } catch { return []; }
   }
 
   private async getDaemonAndHeaders(ctx: ToolExecutionContext) {
@@ -460,6 +485,16 @@ export class StandardToolRouter implements ToolRouter {
         execute: async (input, ctx) => {
           const filePath = String(input.path ?? "");
           if (!filePath || filePath.includes("..") || path.isAbsolute(filePath)) return { output: null, error: "path must stay inside the workspace" };
+          const activeDaemon = ctx.sandboxHandleId ? getActiveSandboxDaemon(ctx.sandboxHandleId) : undefined;
+          if (activeDaemon || ctx.requestSandbox) {
+            const response = ctx.requestSandbox
+              ? await ctx.requestSandbox("POST", "/files/preview_document", { path: filePath, maxPages: input.max_pages ?? 3 })
+              : await activeDaemon!.handleRequest("POST", "/files/preview_document", { "x-session-key": activeDaemon!.config.sessionKey }, { path: filePath, maxPages: input.max_pages ?? 3 });
+            if (response.status !== 200) return { output: null, error: String(response.body.error ?? "Document preview failed") };
+            const output = response.body;
+            const formulaErrors = Array.isArray(output.formulaErrors) ? output.formulaErrors : [];
+            return { output, error: formulaErrors.length ? `Spreadsheet contains formula errors: ${formulaErrors.join(", ")}` : undefined };
+          }
           const script = `import sys,json,os,tempfile,subprocess,base64,shutil,pathlib,re\nfrom pathlib import Path\na=json.loads(base64.b64decode(sys.argv[1])); root=Path.cwd().resolve(); src=(root/a['path']).resolve(); src.relative_to(root)\nif not src.is_file(): raise SystemExit('Document not found')\nlimit=max(1,min(4,int(a.get('max_pages',3)))); errors=[]; sheets=[]\nif src.suffix.lower() in ('.xlsx','.xlsm'):\n import openpyxl\n wb=openpyxl.load_workbook(src,data_only=False,read_only=True); cached=openpyxl.load_workbook(src,data_only=True,read_only=True)\n for ws in wb.worksheets:\n  cws=cached[ws.title]; sheets.append({'name':ws.title,'rows':ws.max_row,'columns':ws.max_column})\n  for row in ws.iter_rows():\n   for cell in row:\n    val=cws[cell.coordinate].value\n    if isinstance(cell.value,str) and cell.value.startswith('=') and isinstance(val,str) and val in ('#REF!','#DIV/0!','#VALUE!','#NAME?','#N/A','#NUM!'): errors.append(ws.title+'!'+cell.coordinate+' '+val)\n wb.close(); cached.close()\ntmp=Path(tempfile.mkdtemp(prefix='oh_preview_')); profile=Path(tempfile.mkdtemp(prefix='lo_prof_')); pdf=src if src.suffix.lower()=='.pdf' else tmp/(src.stem+'.pdf')\ntry:\n if src.suffix.lower()!='.pdf':\n  env=os.environ.copy(); env.update({'HOME':'/tmp','TMPDIR':'/tmp'}); p=subprocess.run(['soffice','-env:UserInstallation=file://'+str(profile),'--headless','--convert-to','pdf','--outdir',str(tmp),str(src)],capture_output=True,text=True,timeout=45,env=env)\n  if p.returncode or not pdf.exists(): raise RuntimeError((p.stderr or p.stdout or 'LibreOffice conversion failed')[-1200:])\n pages=[]; total=1\n try:\n  from pypdf import PdfReader; total=len(PdfReader(str(pdf)).pages)\n except Exception: pass\n indexes=sorted(set([0,(total-1)//2,total-1]))[:limit]\n for idx in indexes:\n  out=tmp/('p'+str(idx+1)); proc=subprocess.run(['pdftoppm','-f',str(idx+1),'-l',str(idx+1),'-jpeg','-jpegopt','quality=78','-r','144','-scale-to','1280',str(pdf),str(out)],capture_output=True,timeout=45)\n  jpg=Path(str(out)+'-'+str(idx+1)+'.jpg')\n  if proc.returncode or not jpg.exists(): raise RuntimeError('pdftoppm failed: '+proc.stderr.decode(errors='replace')[-500:])\n  pages.append({'page':idx+1,'mimeType':'image/jpeg','dataBase64':base64.b64encode(jpg.read_bytes()).decode()})\n print(json.dumps({'pageCount':total,'sheets':sheets,'formulaErrors':errors,'pages':pages}))\nfinally: shutil.rmtree(tmp,ignore_errors=True); shutil.rmtree(profile,ignore_errors=True)`;
           const arg = Buffer.from(JSON.stringify({ path: filePath, max_pages: input.max_pages ?? 3 })).toString("base64");
           const daemon = ctx.sandboxHandleId ? getActiveSandboxDaemon(ctx.sandboxHandleId) : undefined;
@@ -545,6 +580,20 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
+          const requestedPath = String(input.path ?? "");
+          if (requestedPath.replace(/\\/g, "/").startsWith(".openharness/outputs/")) {
+            try {
+              const target = resolveInside(ctx.workspaceRoot, requestedPath);
+              if (!fs.existsSync(target)) return { output: null, error: `File not found: ${requestedPath}` };
+              const content = fs.readFileSync(target, "utf8");
+              const hasPaging = input.offset !== undefined || input.limit !== undefined;
+              if (!hasPaging) return { output: content };
+              const lines = content.split("\n");
+              const offset = Math.max(1, Number(input.offset ?? 1));
+              const limit = Math.min(2000, Math.max(1, Number(input.limit ?? 2000)));
+              return { output: lines.slice(offset - 1, offset - 1 + limit).map((line, i) => `${String(offset + i).padStart(5, " ")} | ${line}`).join("\n"), truncated: offset - 1 + limit < lines.length };
+            } catch (err) { return { output: null, error: (err as Error).message }; }
+          }
           const d = await this.getDaemonAndHeaders(ctx);
           const hasPaging = input.offset !== undefined || input.limit !== undefined;
           if (d) {
@@ -710,6 +759,14 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
+          const requestedPath = String(input.path ?? "").replace(/\\/g, "/");
+          if (requestedPath === ".openharness/outputs" || requestedPath.startsWith(".openharness/outputs/")) {
+            try {
+              const target = resolveInside(ctx.workspaceRoot, requestedPath);
+              const entries = fs.readdirSync(target, { withFileTypes: true });
+              return { output: entries.map((entry) => ({ name: entry.name, type: entry.isDirectory() ? "directory" : "file" })) };
+            } catch (err) { return { output: null, error: (err as Error).message }; }
+          }
           const d = await this.getDaemonAndHeaders(ctx);
           if (d) {
             const res = await d.daemon.handleRequest("POST", "/files/view", d.headers, {
@@ -1389,10 +1446,15 @@ export class StandardToolRouter implements ToolRouter {
             }
             for (const key of ["click", "fill", "expectVisible", "expectText"] as const) {
               if (key in step) {
-                const target = step[key as keyof typeof step] as Record<string, unknown>;
-                if (!target || typeof target !== "object" || !(
-                  (typeof target.role === "string" && typeof target.name === "string") ||
-                  typeof target.label === "string" || typeof target.text === "string" || typeof target.css === "string"
+                const target: unknown = step[key as keyof typeof step];
+                if (typeof target === "string") {
+                  if (!target.trim()) return { output: null, error: `${key} selector cannot be empty` };
+                  continue;
+                }
+                const targetObject = target as Record<string, unknown> | null;
+                if (!targetObject || typeof targetObject !== "object" || !(
+                  (typeof targetObject.role === "string" && typeof targetObject.name === "string") ||
+                  typeof targetObject.label === "string" || typeof targetObject.text === "string" || typeof targetObject.css === "string"
                 )) return { output: null, error: `${key} target needs role/name, label, text, or css` };
               }
             }
@@ -1443,12 +1505,8 @@ export class StandardToolRouter implements ToolRouter {
           for (const check of selected) {
             const port = check.port ?? (ctx.state.previewUrl ? Number(new URL(ctx.state.previewUrl).port) : undefined) ?? ports[ports.length - 1];
             if (!port || !ports.includes(port)) return { output: results, error: `Browser check "${check.name}" has no active preview port` };
-            let response = await d.daemon.handleRequest("POST", "/browser/run_flow", d.headers, { port, steps: check.steps, failOnConsoleErrors: check.failOnConsoleErrors });
-            let result = response.body as Record<string, any>;
-            if (!result.passed && /timeout|timed out/i.test(String(result.error ?? ""))) {
-              response = await d.daemon.handleRequest("POST", "/browser/run_flow", d.headers, { port, steps: check.steps, failOnConsoleErrors: check.failOnConsoleErrors });
-              result = response.body as Record<string, any>;
-            }
+            const response = await d.daemon.handleRequest("POST", "/browser/run_flow", d.headers, { port, steps: check.steps, failOnConsoleErrors: check.failOnConsoleErrors });
+            const result = response.body as Record<string, any>;
             const { screenshotJpegBase64: _screenshot, ...safeResult } = result;
             results.push({ check: check.name, ...safeResult, evidence: formatBrowserEvidence(check.name, check.steps.length, result, "") });
           }

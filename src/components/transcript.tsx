@@ -6,6 +6,7 @@ import { MessageList, WorkingIndicator } from "./message-row";
 
 export function Transcript({
   messages,
+  sessionId,
   status,
   phase,
   error,
@@ -15,6 +16,7 @@ export function Transcript({
   activityOverride,
 }: {
   messages: Message[];
+  sessionId?: string;
   status?: RunStatus;
   phase?: RunPhase;
   error?: string;
@@ -89,6 +91,7 @@ export function Transcript({
         >
           <MessageList
             messages={messages}
+            sessionId={sessionId}
             active={active && !optimisticPrompt}
             permissions={permissions}
           />

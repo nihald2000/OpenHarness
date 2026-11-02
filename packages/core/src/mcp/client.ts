@@ -406,6 +406,20 @@ export class McpClientManager {
   private async callDocumentStudio(name: string, args: JsonObject, ctx?: ToolExecutionContext): Promise<unknown> {
     const workspace = ctx?.workspaceRoot ?? this.workspaceRoot;
     const daemon = ctx?.sandboxHandleId ? getActiveSandboxDaemon(ctx.sandboxHandleId) : undefined;
+    if ((daemon || ctx?.requestSandbox) && name === "extract_markdown") {
+      const response = ctx?.requestSandbox
+        ? await ctx.requestSandbox("POST", "/files/extract_markdown", { path: asString(args.path), maxChars: args.maxChars ?? 40_000 })
+        : await daemon!.handleRequest("POST", "/files/extract_markdown", { "x-session-key": daemon!.config.sessionKey }, { path: asString(args.path), maxChars: args.maxChars ?? 40_000 });
+      if (response.status !== 200) throw new Error(String(response.body.error ?? "Document extraction failed"));
+      return response.body;
+    }
+    if ((daemon || ctx?.requestSandbox) && name === "convert_document") {
+      const response = ctx?.requestSandbox
+        ? await ctx.requestSandbox("POST", "/files/convert_document", { inputPath: asString(args.inputPath), outputPath: asString(args.outputPath) })
+        : await daemon!.handleRequest("POST", "/files/convert_document", { "x-session-key": daemon!.config.sessionKey }, { inputPath: asString(args.inputPath), outputPath: asString(args.outputPath) });
+      if (response.status !== 200) throw new Error(String(response.body.error ?? "Document conversion failed"));
+      return response.body;
+    }
     const runPython = async (source: string, values: JsonObject): Promise<JsonObject> => {
       const code = `import base64;exec(base64.b64decode('${Buffer.from(source).toString("base64")}'))`;
       const argument = Buffer.from(JSON.stringify(values)).toString("base64");
@@ -440,7 +454,18 @@ export class McpClientManager {
       const theme = ["default", "neutral", "dark", "forest"].includes(requestedTheme) ? requestedTheme : "default";
       let buffer: Buffer | undefined;
       const id = randomUUID().replace(/-/g, "");
-      if (daemon) {
+      if (ctx?.requestSandbox) {
+        const sourcePath = `/tmp/oh_mermaid_${id}.mmd`, resultPath = `/tmp/oh_mermaid_${id}.svg`;
+        const write = await ctx.requestSandbox("POST", "/files/write_bytes", { path: sourcePath, dataBase64: Buffer.from(code).toString("base64"), overwrite: true });
+        if (write.status === 200) {
+          const command = `/opt/oh/node_modules/.bin/mmdc -p /opt/oh/mermaid-puppeteer.json -i ${sourcePath} -o ${resultPath} -t ${theme}`;
+          const rendered = await ctx.requestSandbox("POST", "/exec", { command, timeoutSec: 45 });
+          if (rendered.status === 200 && Number(rendered.body.exitCode ?? 0) === 0) {
+            const read = await ctx.requestSandbox("POST", "/files/read_bytes", { path: resultPath });
+            if (read.status === 200 && typeof read.body.dataBase64 === "string") buffer = Buffer.from(read.body.dataBase64, "base64");
+          }
+        }
+      } else if (daemon) {
         const headers = { "x-session-key": daemon.config.sessionKey };
         const sourcePath = `/tmp/oh_mermaid_${id}.mmd`, resultPath = `/tmp/oh_mermaid_${id}.svg`;
         const sourceWrite = await daemon.handleRequest("POST", "/files/write_bytes", headers, { path: sourcePath, dataBase64: Buffer.from(code).toString("base64"), overwrite: true });

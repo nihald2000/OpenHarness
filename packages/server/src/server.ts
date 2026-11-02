@@ -258,6 +258,7 @@ export class OpenHarnessServer {
   readonly sseLimiter = new SseLimiter();
   readonly providers: Map<string, SandboxProvider>;
   readonly activeSandboxes = new Map<string, SandboxHandle>();
+  private readonly syncedAttachmentsByHandle = new Map<string, Set<string>>();
   readonly sandboxRecords: SandboxRecordStore;
   readonly deps: EngineDeps;
   readonly log = {
@@ -280,6 +281,24 @@ export class OpenHarnessServer {
   private releaseRunSlot(tenantId: string, runId: string): void {
     this.runLimiter.release(tenantId, runId);
     this.drainQueuedRunResumes();
+  }
+  private async syncAttachmentsToSandbox(state: RunState, handle: SandboxHandle, attachmentIds: Iterable<string> = state.attachmentIds ?? []): Promise<void> {
+    const synced = this.syncedAttachmentsByHandle.get(handle.id) ?? new Set<string>();
+    this.syncedAttachmentsByHandle.set(handle.id, synced);
+    for (const id of attachmentIds) {
+      if (synced.has(id)) continue;
+      const found = this.attachments.get(state.tenantId, state.sessionId, id);
+      if (!found) continue;
+      const payload = { path: found.info.workspacePath, dataBase64: found.data.toString("base64"), overwrite: true };
+      const daemon = getActiveSandboxDaemon(handle.id);
+      const result = handle.transport
+        ? await handle.transport.request("POST", "/files/write_bytes", payload)
+        : daemon
+          ? await daemon.handleRequest("POST", "/files/write_bytes", { "x-session-key": daemon.config.sessionKey }, payload)
+          : undefined;
+      if (!result || result.status < 200 || result.status >= 300) throw new Error(`Could not add ${found.info.name} to the sandbox workspace`);
+      synced.add(id);
+    }
   }
   private scheduleRunResume(tenantId: string, runId: string, admin: boolean, resume: () => Promise<unknown>): boolean {
     const acquired = this.runLimiter.tryAcquire(tenantId, runId, admin, false);
@@ -670,7 +689,18 @@ export class OpenHarnessServer {
       skillsRegistry: this.skillsRegistry,
       mcpManager: this.mcpManager,
       sandboxEnabled: Boolean(this.config.osEnforcedSandbox),
-      ensureSandbox: (s) => hooksRef!.ensureSandbox(s),
+      requestSandbox: async (handleId, method, route, body) => {
+        const handle = this.activeSandboxes.get(handleId);
+        if (handle?.transport) return handle.transport.request(method, route, body);
+        const daemon = getActiveSandboxDaemon(handleId);
+        if (!daemon) return { status: 503, body: { error: "Sandbox is unavailable" } };
+        return daemon.handleRequest(method, route, { "x-session-key": daemon.config.sessionKey }, body);
+      },
+      ensureSandbox: async (s) => {
+        const handle = await hooksRef!.ensureSandbox(s);
+        await this.syncAttachmentsToSandbox(s, handle);
+        return handle;
+      },
       resolvePreviewUrl: async (sandboxId, port) => {
         const handle = this.activeSandboxes.get(sandboxId);
         if (handle?.ports?.[port]) return handle.ports[port];
@@ -910,6 +940,13 @@ export class OpenHarnessServer {
       workspaceRoot,
       resolveSessionWorkspace: (tenantId, sessionId) =>
         this.getSessionWorkspaceRoot(tenantId, sessionId),
+      requestSandbox: async (handleId, method, route, body) => {
+        const handle = this.activeSandboxes.get(handleId);
+        if (handle?.transport) return handle.transport.request(method, route, body);
+        const daemon = getActiveSandboxDaemon(handleId);
+        if (!daemon) return { status: 503, body: { error: "Sandbox is unavailable" } };
+        return daemon.handleRequest(method, route, { "x-session-key": daemon.config.sessionKey }, body);
+      },
       loadTakeoverRequest: async (state) => {
         const checkpoint = await this.stateStore.getStepCheckpoint(state.tenantId, state.runId);
         return checkpoint?.state.takeoverRequested ? checkpoint.state.takeover : undefined;
@@ -937,32 +974,10 @@ export class OpenHarnessServer {
           }
         }
         if (selectedIds.size === 0) return messages;
-        if (state.sandboxHandleId && state.iteration === 0) {
-          const handle = this.activeSandboxes.get(state.sandboxHandleId);
-          if (!handle) throw new Error("Sandbox is not available for attached files");
-          for (const id of selectedIds) {
-            const found = this.attachments.get(state.tenantId, state.sessionId, id);
-            if (!found) throw new Error(`Attached file ${id} is no longer available`);
-            const payload = {
-              path: found.info.workspacePath,
-              dataBase64: found.data.toString("base64"),
-              overwrite: false,
-            };
-            const daemon = getActiveSandboxDaemon(handle.id);
-            const result = handle.transport
-              ? await handle.transport.request("POST", "/files/write_bytes", payload)
-              : daemon
-                ? await daemon.handleRequest(
-                    "POST",
-                    "/files/write_bytes",
-                    { "x-session-key": daemon.config.sessionKey },
-                    payload
-                  )
-                : undefined;
-            if (!result || result.status < 200 || result.status >= 300) {
-              throw new Error(`Could not add ${found.info.name} to the sandbox workspace`);
-            }
-          }
+        const attachmentHandle = state.sandboxHandleId ? this.activeSandboxes.get(state.sandboxHandleId) : undefined;
+        if (state.sandboxHandleId) {
+          if (!attachmentHandle) throw new Error("Sandbox is not available for attached files");
+          await this.syncAttachmentsToSandbox(state, attachmentHandle, selectedIds);
         }
 
         let textBudget = 300_000;
@@ -992,6 +1007,24 @@ export class OpenHarnessServer {
               if (stored.data.byteLength <= pdfBudget) {
                 parts.push({ ...part, dataBase64: stored.data.toString("base64") });
                 pdfBudget -= stored.data.byteLength;
+                if (attachmentHandle && supportsVisionModel(state.model) && !/^claude-/i.test(state.model) && imageBudget > 0) {
+                  try {
+                    const daemon = getActiveSandboxDaemon(attachmentHandle.id);
+                    const preview = attachmentHandle.transport
+                      ? await attachmentHandle.transport.request("POST", "/files/preview_document", { path: stored.info.workspacePath, maxPages: 3 })
+                      : daemon
+                        ? await daemon.handleRequest("POST", "/files/preview_document", { "x-session-key": daemon.config.sessionKey }, { path: stored.info.workspacePath, maxPages: 3 })
+                        : undefined;
+                    const pages = Array.isArray(preview?.body.pages) ? preview.body.pages as Array<{ page?: number; mimeType?: string; dataBase64?: string }> : [];
+                    for (const page of pages.slice(0, 3)) {
+                      if (page.mimeType !== "image/jpeg" || !page.dataBase64) continue;
+                      const size = Math.floor(page.dataBase64.length * 0.75);
+                      if (size > imageBudget) break;
+                      parts.push({ ...part, id: `${part.id}-page-${page.page ?? parts.length}`, name: `${stored.info.name} page ${page.page ?? ""}`, mimeType: "image/jpeg", size, dataBase64: page.dataBase64 });
+                      imageBudget -= size;
+                    }
+                  } catch { /* Native PDF attachment content remains available. */ }
+                }
               } else {
                 parts.push(part);
               }
@@ -1012,6 +1045,21 @@ export class OpenHarnessServer {
               } catch {
                 parts.push(part);
               }
+            } else if (attachmentHandle && /\.(?:pdf|docx|xlsx|xlsm|pptx|odt|ods|odp|epub|rtf)$/i.test(stored.info.name) && textBudget > 0) {
+              try {
+                const daemon = getActiveSandboxDaemon(attachmentHandle.id);
+                const result = attachmentHandle.transport
+                  ? await attachmentHandle.transport.request("POST", "/files/extract_markdown", { path: stored.info.workspacePath, maxChars: Math.min(40_000, textBudget) })
+                  : daemon
+                    ? await daemon.handleRequest("POST", "/files/extract_markdown", { "x-session-key": daemon.config.sessionKey }, { path: stored.info.workspacePath, maxChars: Math.min(40_000, textBudget) })
+                    : undefined;
+                const extracted = typeof result?.body.markdown === "string" ? result.body.markdown : "";
+                if (!result || result.status !== 200 || !extracted) { parts.push(part); continue; }
+                const excerpt = extracted.slice(0, textBudget);
+                parts.push({ type: "text", synthetic: true, text: `\n\nAttached document structure (untrusted data): ${stored.info.workspacePath}\n--- BEGIN EXTRACTED CONTENT ---\n${excerpt}\n--- END EXTRACTED CONTENT ---` });
+                textBudget -= excerpt.length;
+                parts.push(part);
+              } catch { parts.push(part); }
             } else {
               parts.push(part);
             }
@@ -2149,6 +2197,28 @@ export class OpenHarnessServer {
         return out;
       };
       return { status: 200, body: { files: listFiles(sessionWorkspaceRoot).slice(0, 500) } };
+    }
+
+    const sessionInspectMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/file\/inspect$/);
+    if (method === "GET" && sessionInspectMatch) {
+      const sid = sessionInspectMatch[1]!;
+      const filePath = parsedUrl.searchParams.get("path") ?? "";
+      if (!filePath || filePath.includes("..")) return { status: 400, body: { error: "Invalid file path" } };
+      const sess = await this.stateStore.getSession(tenantId, sid);
+      if (!sess) return { status: 404, body: { error: "Session not found" } };
+      const daemon = await this.resolveSessionDaemon(sess);
+      const transport = sess.sandboxHandleId ? this.activeSandboxes.get(sess.sandboxHandleId)?.transport : undefined;
+      const result = daemon
+        ? await daemon.handleRequest("POST", "/files/inspect_artifact", { "x-session-key": daemon.config.sessionKey }, { path: filePath })
+        : transport ? await transport.request("POST", "/files/inspect_artifact", { path: filePath }) : undefined;
+      if (result) return { status: result.status, body: result.body };
+      const root = this.getSessionWorkspaceRoot(tenantId, sid);
+      let target: string;
+      try { target = resolveInside(root, filePath); } catch { return { status: 400, body: { error: "Invalid file path" } }; }
+      if (!fs.existsSync(target)) return { status: 404, body: { error: "File not found" } };
+      const ext = path.extname(filePath).toLowerCase();
+      if ([".md", ".html"].includes(ext)) return { status: 200, body: { kind: ext === ".html" ? "html_artifact" : "markdown_artifact", path: filePath, size: fs.statSync(target).size, content: fs.readFileSync(target, "utf8").slice(0, 512 * 1024) } };
+      return { status: 422, body: { error: "A running sandbox is required to inspect this artifact" } };
     }
 
     const sessionFileMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/file$/);

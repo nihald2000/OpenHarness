@@ -11,6 +11,7 @@ import type {
   VerifyPart,
 } from "@openharness/sdk";
 import { useCatalog } from "@/lib/hooks";
+import { client } from "@/lib/client";
 import { Markdown } from "./markdown";
 import { CompactionDivider } from "./parts/compaction";
 import { PlanCard } from "./parts/plan-card";
@@ -91,7 +92,7 @@ function SyntheticDisclosure({
   );
 }
 
-function UserMessageRow({ message }: { message: Message }) {
+function UserMessageRow({ message, sessionId }: { message: Message; sessionId?: string }) {
   const regularTexts: string[] = [];
   const syntheticTexts: string[] = [];
   const verifyParts: VerifyPart[] = [];
@@ -131,7 +132,7 @@ function UserMessageRow({ message }: { message: Message }) {
             const Icon = isImage ? ImageIcon : FileText;
             return (
               <div key={file.id} title={file.relativePath} className="flex min-w-0 max-w-64 items-center gap-2 rounded-xl border border-border bg-elev px-3 py-2 text-left">
-                <Icon className="size-4 shrink-0 text-accent" aria-hidden="true" />
+                {isImage && sessionId ? <a href={client.session.attachmentRawUrl(sessionId, file.id)} target="_blank" rel="noreferrer" className="shrink-0"><img src={client.session.attachmentRawUrl(sessionId, file.id)} alt={file.relativePath} className="size-14 rounded-lg object-cover" /></a> : <Icon className="size-4 shrink-0 text-accent" aria-hidden="true" />}
                 <div className="min-w-0">
                   <div className="truncate text-xs font-medium text-fg">{file.relativePath}</div>
                   <div className="text-[10px] text-muted">{file.mimeType} · {file.size < 1024 * 1024 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${(file.size / (1024 * 1024)).toFixed(1)} MB`}</div>
@@ -180,12 +181,14 @@ function isTaskTool(part: ToolPart): boolean {
 
 export function MessageList({
   messages,
+  sessionId,
   active = false,
   permissions = [],
   compact = false,
   depth = 0,
 }: {
   messages: Message[];
+  sessionId?: string;
   active?: boolean;
   permissions?: PermissionRequest[];
   compact?: boolean;
@@ -243,7 +246,7 @@ export function MessageList({
     <div className={`flex flex-col ${compact ? "gap-4" : "gap-6"}`}>
       {groups.map((group, gIdx) => {
         if (group.kind === "user") {
-          return <UserMessageRow key={group.message.info.id} message={group.message} />;
+          return <UserMessageRow key={group.message.info.id} message={group.message} sessionId={sessionId} />;
         }
 
         if (group.kind === "summary") {
@@ -313,6 +316,7 @@ export function MessageList({
                             <Markdown
                               key={pIdx}
                               streaming={isMsgStreaming && pIdx === lastTextIdx}
+                              sessionId={sessionId}
                             >
                               {part.text}
                             </Markdown>

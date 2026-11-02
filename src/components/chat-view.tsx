@@ -24,6 +24,7 @@ import { PlanDock } from "./plan-dock";
 import { Transcript } from "./transcript";
 import { Spinner } from "./ui";
 import { LiveBrowser, type BrowserDockState } from "./live-browser";
+import { StudioCanvas } from "./studio-canvas";
 
 const APPROVE_TEXT =
   "Approved. Execute the plan step by step, keeping the plan updated.";
@@ -80,6 +81,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   const [takeoverNote, setTakeoverNote] = useState("");
   const [takeoverBusy, setTakeoverBusy] = useState(false);
   const [browserDock, setBrowserDock] = useState<BrowserDockState>("closed");
+  const [studioOpen, setStudioOpen] = useState(false);
+  const [studioTargetPath, setStudioTargetPath] = useState<string | undefined>();
   const [browserVerification, setBrowserVerification] = useState<{ check: string; status: "running" | "passed" | "failed" } | null>(null);
   const [dockWidth, setDockWidth] = useState(() => {
     try { return Math.max(360, Math.min(1100, Number(localStorage.getItem("oh.dockWidth")) || window.innerWidth * 0.5)); }
@@ -114,6 +117,25 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
 
   const composerRef = useRef<ComposerHandle>(null);
   const pendingStateRevision = useRef(0);
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const prompt = (event as CustomEvent<{ prompt?: string }>).detail?.prompt;
+      if (prompt) { composerRef.current?.setText(prompt); composerRef.current?.focus(); }
+    };
+    window.addEventListener("oh:try-fix", listener);
+    return () => window.removeEventListener("oh:try-fix", listener);
+  }, []);
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const filePath = (event as CustomEvent<{ path?: string }>).detail?.path;
+      if (!filePath) return;
+      setStudioTargetPath(filePath);
+      setStudioOpen(true);
+      setBrowserDock("closed");
+    };
+    window.addEventListener("oh:open-artifact", listener);
+    return () => window.removeEventListener("oh:open-artifact", listener);
+  }, []);
 
   const handleStreamEvent = useCallback(
     (ev: OpenHarnessEvent) => {
@@ -202,6 +224,33 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     refreshSession,
     resetFix,
   } = useSession(sessionId, handleStreamEvent);
+  const artifactCountSeen = useRef(0);
+  const artifactSessionSeen = useRef(sessionId);
+  const artifactTrackingReady = useRef(false);
+  useEffect(() => {
+    const count = messages.reduce((total, message) => total + message.parts.reduce((sum, part) => {
+      if (part.type !== "tool") return sum;
+      const artifacts = part.metadata?.artifacts;
+      return sum + (Array.isArray(artifacts) ? artifacts.length : 0);
+    }, 0), 0);
+    if (artifactSessionSeen.current !== sessionId) {
+      artifactSessionSeen.current = sessionId;
+      artifactCountSeen.current = count;
+      artifactTrackingReady.current = true;
+      setStudioOpen(false);
+      return;
+    }
+    if (!artifactTrackingReady.current) {
+      artifactCountSeen.current = count;
+      artifactTrackingReady.current = true;
+      return;
+    }
+    if (count > artifactCountSeen.current && !takeover) {
+      setStudioOpen(true);
+      setBrowserDock("closed");
+    }
+    artifactCountSeen.current = count;
+  }, [messages, sessionId, takeover]);
 
   const permissions = usePermissions(sessionId);
 
@@ -719,7 +768,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   };
 
   return (
-    <div className="grid min-w-0 flex-1 overflow-hidden bg-bg" style={{ gridTemplateColumns: browserDock === "docked" && window.matchMedia("(min-width: 768px)").matches ? `minmax(360px, 1fr) 4px minmax(360px, ${dockWidth}px)` : "minmax(0, 1fr)" }}>
+    <div className="grid min-w-0 flex-1 overflow-hidden bg-bg" style={{ gridTemplateColumns: (browserDock === "docked" || studioOpen) && window.matchMedia("(min-width: 768px)").matches ? `minmax(360px, 1fr) 4px minmax(360px, ${dockWidth}px)` : "minmax(0, 1fr)" }}>
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <ChatHeader
           session={session}
@@ -738,7 +787,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
           compacting={compacting}
           fix={fix}
           readOnly={readOnly}
-          onOpenBrowser={() => setBrowserDock((current) => current === "closed" ? "docked" : "closed")}
+          onOpenBrowser={() => { setStudioOpen(false); setBrowserDock((current) => current === "closed" ? "docked" : "closed"); }}
+          onOpenStudio={() => { setBrowserDock("closed"); setStudioOpen((current) => !current); }}
         />
 
         {notFound ? (
@@ -784,6 +834,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         ) : (
           <Transcript
             messages={messages}
+            sessionId={sessionId ?? undefined}
             status={session?.status}
             phase={session?.phase}
             error={session?.error}
@@ -1061,6 +1112,14 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         )}
       </div>
 
+      {studioOpen && sessionId && <StudioCanvas
+        sessionId={sessionId}
+        files={changedFiles}
+        initialPath={studioTargetPath}
+        onClose={() => setStudioOpen(false)}
+        onCreate={(prompt) => void handleSend(prompt)}
+        onEdit={(prompt) => window.dispatchEvent(new CustomEvent("oh:try-fix", { detail: { prompt } }))}
+      />}
       <CapabilitiesPanel
         activeAgent={selectedAgent}
         sessionId={sessionId}
@@ -1068,7 +1127,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         refreshToken={`${session?.status ?? ""}:${messages.length}:${changedFiles.length}`}
         onOpenBrowserDock={() => setBrowserDock("docked")}
       />
-      {sessionId && <LiveBrowser
+      {sessionId && !studioOpen && <LiveBrowser
         sessionId={sessionId}
         runId={takeover?.runId ?? session?.activeRunId ?? session?.runId}
         previewUrl={previewUrl}

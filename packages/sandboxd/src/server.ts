@@ -1,11 +1,12 @@
 import { BrowserBridge } from "./browser-bridge.ts";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { resolveInside } from "../../core/src/util/safe-path.ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const MIME_BY_EXT: Record<string, string> = {
   ".pdf": "application/pdf",
@@ -390,6 +391,21 @@ export class SandboxDaemon {
     if (method === "POST" && pathname === "/files/read_bytes") {
       return this.readFileBytes(payload);
     }
+    if (method === "POST" && pathname === "/files/preview_document") {
+      return this.artifactOperation("preview", payload);
+    }
+    if (method === "POST" && pathname === "/files/extract_markdown") {
+      return this.artifactOperation("extract", payload);
+    }
+    if (method === "POST" && pathname === "/files/convert_document") {
+      return this.artifactOperation("convert", payload);
+    }
+    if (method === "POST" && pathname === "/files/inspect_artifact") {
+      return this.artifactOperation("inspect", payload);
+    }
+    if (method === "GET" && pathname === "/artifacts/scan") {
+      return { status: 200, body: { artifacts: this.scanDeliverableArtifacts() } };
+    }
     if (method === "POST" && pathname === "/files/str_replace") {
       return this.strReplaceFile(payload);
     }
@@ -468,7 +484,7 @@ export class SandboxDaemon {
       const browserPayload = action === "navigate"
         ? { ...payload, url: rewritePreviewToLocalUrl(String(payload.url ?? "")) }
         : payload;
-      const bridgeRes = await this.browserBridge.send(action, browserPayload);
+      const bridgeRes = await this.browserBridge.send(action, browserPayload, action === "run_flow" ? 45_000 : 20_000);
       if (bridgeRes.status !== 503) {
         return bridgeRes;
       }
@@ -594,12 +610,16 @@ export class SandboxDaemon {
         cwd: normalizeShellCwd(this.config.workspacePath),
         env: {
           HOME: this.config.workspacePath,
+          OUTPUT_DIR: path.join(this.config.workspacePath, "deliverables"),
         },
         partialOutput: "",
         status: "idle",
       };
       this.shellSessions.set(sid, session);
     }
+    const outputDir = path.join(this.config.workspacePath, "deliverables");
+    fs.mkdirSync(outputDir, { recursive: true });
+    session.env.OUTPUT_DIR = outputDir;
 
     const policyCheck = this.inspectShellCommandPolicy(command, session.cwd);
     if (!policyCheck.allowed) {
@@ -920,6 +940,8 @@ export class SandboxDaemon {
     }
 
     const id = `proc_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
+    const outputDir = path.join(this.config.workspacePath, "deliverables");
+    fs.mkdirSync(outputDir, { recursive: true });
     const child = spawnConfined(
       {
         srtSettingsPath: this.srtSettingsPath,
@@ -931,7 +953,7 @@ export class SandboxDaemon {
       },
       command,
       cwd,
-      { HOME: this.config.workspacePath }
+      { HOME: this.config.workspacePath, OUTPUT_DIR: outputDir }
     );
 
     const procState: BackgroundProcessState = {
@@ -1066,6 +1088,69 @@ export class SandboxDaemon {
       this.ports.delete(proc.port);
     }
     return { status: 200, body: { id, status: "stopped" } };
+  }
+
+  private scanDeliverableArtifacts(): Array<{ path: string; mimeType: string; size: number; kind: string; mtimeMs: number }> {
+    const extensions: Record<string, string> = {
+      ".pdf": "document", ".docx": "document", ".xlsx": "spreadsheet", ".xlsm": "spreadsheet",
+      ".pptx": "presentation", ".epub": "document", ".csv": "spreadsheet", ".png": "image",
+      ".jpg": "image", ".jpeg": "image", ".webp": "image", ".svg": "image", ".html": "html",
+    };
+    return walkWorkspaceFiles(this.config.workspacePath).filter((file) => {
+      const normalized = file.replace(/\\/g, "/");
+      return !/^(?:node_modules|\.git|\.openharness|attachments)\//.test(normalized) && Boolean(extensions[path.extname(file).toLowerCase()]);
+    }).slice(0, 500).flatMap((file) => {
+      try {
+        const stat = fs.statSync(path.join(this.config.workspacePath, file));
+        return [{ path: file, mimeType: inferWorkspaceMimeType(file), size: stat.size, kind: extensions[path.extname(file).toLowerCase()]!, mtimeMs: stat.mtimeMs }];
+      } catch { return []; }
+    });
+  }
+
+  private async runArtifactWorker(action: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+    const worker = [
+      path.resolve(moduleDir, "../artifact-worker.py"),
+      path.resolve(moduleDir, "packages/sandboxd/artifact-worker.py"),
+      path.resolve(process.cwd(), "packages/sandboxd/artifact-worker.py"),
+      "/opt/oh/packages/sandboxd/artifact-worker.py",
+    ].find((candidate) => fs.existsSync(candidate));
+    if (!worker) return { error: "Sandbox artifact worker is not installed" };
+    const encoded = Buffer.from(JSON.stringify(args)).toString("base64");
+    return new Promise((resolve) => {
+      execFile(pythonExecutable(), [worker, action, encoded], {
+        cwd: this.config.workspacePath, timeout: 55_000, maxBuffer: 32 * 1024 * 1024, windowsHide: true,
+        env: {
+          PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+          PYTHONUNBUFFERED: "1",
+          HOME: this.config.homePath ?? this.config.tmpPath,
+          TMPDIR: this.config.tmpPath,
+          LANG: process.env.LANG ?? "C.UTF-8",
+          ...(process.platform === "win32" && process.env.SYSTEMROOT ? { SYSTEMROOT: process.env.SYSTEMROOT } : {}),
+        },
+      }, (error, stdout, stderr) => {
+        if (error) { resolve({ error: (stderr || error.message).slice(-3000), stderr: stderr.slice(-1000) }); return; }
+        try { resolve(JSON.parse(String(stdout)) as Record<string, unknown>); }
+        catch { resolve({ error: "Artifact worker returned invalid JSON", stderr: String(stderr).slice(-1000) }); }
+      });
+    });
+  }
+
+  private async artifactOperation(action: "preview" | "extract" | "convert" | "inspect", payload: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+    const rawPath = String(payload.path ?? payload.inputPath ?? "");
+    const input = this.resolveSafePath(rawPath, "read");
+    if (!input.allowed) return { status: 403, body: { error: input.error } };
+    if (!fs.existsSync(input.resolvedPath) || !fs.statSync(input.resolvedPath).isFile()) return { status: 404, body: { error: "File not found" } };
+    const args: Record<string, unknown> = { ...payload, path: input.resolvedPath, rawPath };
+    if (action === "convert") {
+      const outputPath = String(payload.outputPath ?? "");
+      const output = this.resolveSafePath(outputPath, "write");
+      if (!output.allowed) return { status: 403, body: { error: output.error } };
+      args.output = output.resolvedPath;
+      fs.mkdirSync(path.dirname(output.resolvedPath), { recursive: true });
+    }
+    const result = await this.runArtifactWorker(action, args);
+    return result.error ? { status: 422, body: result } : { status: 200, body: result };
   }
 
   // --- File Operations with Policy Gate, Paging, Fuzzy Diff, Undo, and Linter Gate ---

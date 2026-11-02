@@ -17,6 +17,13 @@
 - [x] Add binary file previews/downloads and one-click skills catalog UI; document-studio regression tests and the full local suite pass.
 - [x] `npm run typecheck`, `npm test` (94 passed, 2 skipped), `npm run build:web`, and Modal sandbox image Python syntax check pass on this Windows host.
 
+## Browser IPC and Studio artifact reliability follow-up — in progress
+- [ ] Preserve the browser worker request envelope, selector shorthand handling, and bounded browser-flow timeout without replaying an identical timed-out flow.
+- [ ] Route structured document preview, extraction, conversion, and artifact inspection through the sandbox artifact worker with separated stdout/stderr and Python renderer fallbacks.
+- [ ] Synchronize session attachments after sandbox creation and expose tenant-scoped raw attachment bytes.
+- [ ] Capture deliverable metadata from sandbox writes and provide inline visual previews plus a session Studio dock.
+- [ ] Pass focused regressions, full typecheck, tests, build, and Python syntax checks before marking this phase complete.
+
 ## Modal E2E Harness & Muse Glimmer (Phases 1–8) — Implemented and locally verified
 - Hosted sessions use tenant/session-scoped roots, masked host workspace facts, and Modal sandbox daemon routing for workspace reads.
 - Modal startup uses verified credentials/image manifests, bounded boot waits, setup egress domains, public preview tunnels, and root-safe Playwright Chromium.

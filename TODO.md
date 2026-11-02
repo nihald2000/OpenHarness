@@ -12,6 +12,13 @@
 ## Document Studio
 - [x] Verify binary-safe file transport, image generation and document rendering, multimodal page inspection, persistent skills import, document MCP, document agent tools, and the UI with `npm run typecheck`, `npm test` (94 passed, 2 skipped), `npm run build:web`, and Modal sandbox image Python syntax check.
 
+## Browser IPC and Studio artifact reliability follow-up
+- [ ] Validate the browser worker envelope, selector shorthand, flow timeout, and no-identical-retry behavior.
+- [ ] Validate sandbox-native document preview/extraction/conversion/inspection and deterministic Python rendering fallbacks.
+- [ ] Validate attachment synchronization and raw attachment streaming for hosted sandboxes.
+- [ ] Validate automatic deliverable metadata and the StudioCanvas viewers/dock on session changes.
+- [ ] Close this work only after focused and full typecheck/test/build/Python checks pass.
+
 ## Modal E2E Harness & Muse Glimmer local verification
 - [x] Implement hosted workspace isolation, preview tunnel resolution, shadow-git baseline diffs, v2 permission/pause/resume routing, model profiles, vision screenshots, and Modal deployment assets.
 - [x] Run the full typecheck, test, build, and Modal Python syntax gates; all passed locally (63 tests passed, 1 credential-gated Modal integration test skipped).

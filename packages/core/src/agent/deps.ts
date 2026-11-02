@@ -217,6 +217,7 @@ export interface ToolExecutionContext {
   tenantId: string;
   workspaceRoot: string;
   sandboxHandleId?: string | null;
+  requestSandbox?: (method: string, path: string, body?: Record<string, unknown>) => Promise<{ status: number; body: Record<string, unknown> }>;
   signal?: AbortSignal;
   state: RunState;
 }
@@ -371,6 +372,7 @@ export interface EngineDeps {
   contextManager: ContextManager;
   workspaceRoot: string;
   resolveSessionWorkspace?: (tenantId: string, sessionId: string) => string;
+  requestSandbox?: (handleId: string, method: string, path: string, body?: Record<string, unknown>) => Promise<{ status: number; body: Record<string, unknown> }>;
   onTextDelta?: (
     tenantId: string,
     sessionId: string,

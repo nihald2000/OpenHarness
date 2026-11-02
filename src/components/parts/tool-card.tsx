@@ -86,6 +86,7 @@ export function ToolCard({
   const summary = getToolSummary(part);
 
   const meta = (part.metadata ?? {}) as Record<string, unknown>;
+  const artifacts = Array.isArray(meta.artifacts) ? meta.artifacts as Array<{ path: string; mimeType?: string; size?: number; kind?: string }> : [];
   const input = (part.input ?? {}) as Record<string, unknown>;
 
   const durationMs =
@@ -192,6 +193,10 @@ export function ToolCard({
       {part.state === "completed" && candidatePath && sessionId && (
         <div className="border-t border-border bg-bg/50 px-3 py-2"><a href={client.session.fileRawUrl(sessionId, candidatePath, { download: true })} download className="inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-code px-3 py-1.5 font-mono text-[11px] text-accent hover:bg-hover">Download {candidatePath.split(/[\\/]/).at(-1)}</a></div>
       )}
+
+      {part.state === "completed" && artifacts.length > 0 && sessionId && <div className="flex flex-wrap gap-2 border-t border-border bg-bg/50 p-3">{artifacts.map((artifact) => <a key={artifact.path} href={client.session.fileRawUrl(sessionId, artifact.path)} target="_blank" rel="noreferrer" className="flex max-w-64 items-center gap-2 rounded-lg border border-border bg-elev px-2 py-1.5 text-[11px] text-accent">{artifact.mimeType?.startsWith("image/") && <img src={client.session.fileRawUrl(sessionId, artifact.path)} alt="" className="size-10 rounded object-cover" />}<span className="truncate">{artifact.path}</span><span className="text-muted">Open</span></a>)}</div>}
+
+      {isError && <div className="border-t border-border bg-bg/50 px-3 py-2"><button type="button" onClick={() => window.dispatchEvent(new CustomEvent("oh:try-fix", { detail: { prompt: `The tool ${part.tool} failed. Diagnose and fix the underlying issue.\nError: ${part.error ?? "unknown error"}\nInput: ${stringify(part.input)}` } }))} className="rounded-md border border-border px-2.5 py-1.5 text-[11px] font-medium text-accent hover:bg-hover">Try fixing</button></div>}
 
       {previewPages.length > 0 && (
         <div className="flex gap-2 overflow-x-auto border-t border-border bg-bg/50 p-3">{previewPages.map((page, index) => typeof page.dataBase64 === "string" && typeof page.mimeType === "string" ? <img key={String(page.page ?? index)} src={`data:${page.mimeType};base64,${page.dataBase64}`} alt={`Document page ${page.page ?? index + 1}`} className="h-28 rounded border border-border object-contain" /> : null)}</div>

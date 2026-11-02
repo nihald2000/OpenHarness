@@ -465,6 +465,9 @@ export async function runStep(
               ? deps.resolveSessionWorkspace(state.tenantId, state.sessionId)
               : deps.workspaceRoot,
             sandboxHandleId: state.sandboxHandleId,
+            requestSandbox: state.sandboxHandleId && deps.requestSandbox
+              ? (method, route, body) => deps.requestSandbox!(state.sandboxHandleId!, method, route, body)
+              : undefined,
             signal,
             state,
           }
@@ -1178,6 +1181,9 @@ export async function runStep(
           ? deps.resolveSessionWorkspace(state.tenantId, state.sessionId)
           : deps.workspaceRoot,
         sandboxHandleId: state.sandboxHandleId,
+        requestSandbox: state.sandboxHandleId && deps.requestSandbox
+          ? (method, route, body) => deps.requestSandbox!(state.sandboxHandleId!, method, route, body)
+          : undefined,
         signal,
         state,
       });
@@ -1405,6 +1411,9 @@ export async function applyPermissionDecisionToState(
         ? deps.resolveSessionWorkspace(next.tenantId, next.sessionId)
         : deps.workspaceRoot,
       sandboxHandleId: next.sandboxHandleId,
+      requestSandbox: next.sandboxHandleId && deps.requestSandbox
+        ? (method, route, body) => deps.requestSandbox!(next.sandboxHandleId!, method, route, body)
+        : undefined,
       state: next,
     });
     next.inFlightToolCalls = [];

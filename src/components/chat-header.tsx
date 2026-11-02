@@ -7,6 +7,7 @@ import {
   PanelRight,
   Pencil,
   Globe,
+  Layers,
   Server,
   Wrench,
 } from "lucide-react";
@@ -37,6 +38,7 @@ export function ChatHeader({
   fix,
   readOnly,
   onOpenBrowser,
+  onOpenStudio,
 }: {
   session: Session | null;
   selectedAgent: string;
@@ -55,6 +57,7 @@ export function ChatHeader({
   fix: FixLoopState | null;
   readOnly: boolean;
   onOpenBrowser: () => void;
+  onOpenStudio: () => void;
 }) {
   const {
     setSidebarOpen,
@@ -323,6 +326,9 @@ export function ChatHeader({
 
         <IconButton label="Browser" active={false} onClick={onOpenBrowser} size="md">
           <Globe className="size-4" aria-hidden="true" />
+        </IconButton>
+        <IconButton label="Studio" active={false} onClick={onOpenStudio} size="md">
+          <Layers className="size-4" aria-hidden="true" />
         </IconButton>
 
         <IconButton

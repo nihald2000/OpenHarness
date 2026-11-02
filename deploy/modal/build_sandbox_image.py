@@ -38,6 +38,7 @@ def build_sandbox_image() -> modal.Image:
         )
         .run_commands(
             "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs",
+            "python3 -m pip install --no-cache-dir --break-system-packages pillow openpyxl python-docx python-pptx pypdf pypdfium2 reportlab",
             # Install the same OS-level process sandbox that the daemon requires
             # for enforcing its per-run filesystem and network policy.
             "npm install --global @anthropic-ai/sandbox-runtime && srt --version && setpriv --version",

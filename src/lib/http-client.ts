@@ -281,11 +281,24 @@ export class HttpOpenHarnessClient {
       );
     },
 
+    inspectFile: async (id: string, filePath: string): Promise<Record<string, unknown>> => {
+      return this.request<Record<string, unknown>>(
+        "GET",
+        `/v1/sessions/${encodeURIComponent(id)}/file/inspect?path=${encodeURIComponent(filePath)}`
+      );
+    },
+
     fileRawUrl: (id: string, filePath: string, opts?: { download?: boolean }): string => {
       const q = new URLSearchParams({ path: filePath });
       if (opts?.download) q.set("download", "1");
       if (this.accessKey) q.set("key", this.accessKey);
       return `${this.base}/v1/sessions/${encodeURIComponent(id)}/file/raw?${q.toString()}`;
+    },
+
+    attachmentRawUrl: (id: string, attachmentId: string): string => {
+      const q = new URLSearchParams();
+      if (this.accessKey) q.set("key", this.accessKey);
+      return `${this.base}/v1/sessions/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}/raw${q.size ? `?${q}` : ""}`;
     },
 
     diff: async (id: string): Promise<{ changed: string[]; diff: string }> => {

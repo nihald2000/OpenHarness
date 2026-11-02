@@ -175,6 +175,14 @@ async function snapshot() {
 }
 
 function flowLocator(target, targetPage = page) {
+  if (typeof target === "string") {
+    const value = target.trim();
+    if (!value) throw new Error("target selector cannot be empty");
+    if (/^(?:#|\.|\[)/.test(value)) return targetPage.locator(value);
+    const role = value.match(/^role=(\w+)(?:\[name=(.+)\])?$/i);
+    if (role) return targetPage.getByRole(role[1], { name: (role[2] || "").replace(/^['\"]|['\"]$/g, "") });
+    return targetPage.getByText(value, { exact: true });
+  }
   if (target?.css) return targetPage.locator(String(target.css));
   if (target?.label) return targetPage.getByLabel(String(target.label), { exact: target.exact === true });
   if (target?.text) return targetPage.getByText(String(target.text), { exact: target.exact === true });
@@ -356,7 +364,8 @@ async function handleCommand(command) {
       const steps = Array.isArray(payload.steps) ? payload.steps : [];
       if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 8080) return { id, status: 400, body: { error: "run_flow requires a valid preview port" } };
       if (steps.length < 1 || steps.length > 30) return { id, status: 400, body: { error: "run_flow supports 1 to 30 steps" } };
-      return await runFlow(payload);
+      const result = await runFlow(payload);
+      return { id, status: 200, body: result };
     }
     if (action === "input") {
       await ensurePage();
@@ -393,7 +402,6 @@ async function handleCommand(command) {
         .replace(/\s+/g, " ").trim().slice(0, 3_000);
       return { id, status: 200, body: { ...observed, text, screenshotJpegBase64: image?.toString("base64") ?? null } };
     }
-    if (action === "run_flow") return { id, status: 200, body: await runFlow(payload) };
     if (action === "click") {
       const ref = String(payload.ref ?? "");
       const handle = elementMap.get(ref);
@@ -442,8 +450,14 @@ const rl = readline.createInterface({ input: process.stdin, terminal: false });
 rl.on("line", async (line) => {
   if (!line.trim()) return;
   try {
-    const response = await handleCommand(JSON.parse(line));
-    if (response) process.stdout.write(`${JSON.stringify(response)}\n`);
+    const message = JSON.parse(line);
+    const response = await handleCommand(message);
+    if (response) {
+      const safeResponse = response && typeof response === "object" && response.id !== undefined && Number.isInteger(response.status) && response.body && typeof response.body === "object"
+        ? response
+        : { id: message.id, status: 200, body: response ?? {} };
+      process.stdout.write(`${JSON.stringify(safeResponse)}\n`);
+    }
   } catch (err) {
     process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
   }

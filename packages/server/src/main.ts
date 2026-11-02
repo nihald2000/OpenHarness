@@ -194,6 +194,22 @@ export function createHttpServer(
         });
         return res.end(file.buffer);
       }
+      const rawAttachmentMatch = url.pathname.match(/^\/v1\/sessions\/([^/]+)\/attachments\/([^/]+)\/raw$/);
+      if (req.method === "GET" && rawAttachmentMatch) {
+        const sessionId = decodeURIComponent(rawAttachmentMatch[1]!);
+        if (!(await app.stateStore.getSession(identity.tenantId, sessionId))) return send(res, 404, { error: "Session not found" });
+        const attachment = app.attachments.get(identity.tenantId, sessionId, decodeURIComponent(rawAttachmentMatch[2]!));
+        if (!attachment) return send(res, 404, { error: "Attachment not found" });
+        const safeName = attachment.info.name.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
+        res.writeHead(200, {
+          "content-type": attachment.info.mimeType,
+          "content-length": String(attachment.data.byteLength),
+          "content-disposition": `inline; filename="${safeName}"`,
+          "x-content-type-options": "nosniff",
+          "cache-control": "private, no-store",
+        });
+        return res.end(attachment.data);
+      }
       const attachmentRoute = url.pathname.match(/^\/v1\/sessions\/([^/]+)\/attachments$/);
       if (req.method === "POST" && attachmentRoute) {
         const rawBody = await readRawBody(req, MAX_ATTACHMENT_BYTES);
