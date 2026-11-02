@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -17,8 +18,14 @@ test("live browser tickets are signed, short-lived, and reject tampering", async
   assert.equal(decoded?.mode, "view");
   assert.equal(verifyLiveTicket(`${token.slice(0, -1)}x`, key), null);
   assert.equal(verifyLiveTicket(token, `${key}wrong`), null);
-  await new Promise((resolve) => setTimeout(resolve, 1_050));
-  assert.equal(verifyLiveTicket(token, key), null);
+  const expiredPayload = Buffer.from(JSON.stringify({
+    sbx: "session_123",
+    mode: "view",
+    exp: Date.now() - 1,
+    nonce: "0123456789abcdef0123456789abcdef",
+  })).toString("base64url");
+  const expiredMac = crypto.createHmac("sha256", `oh-live:${key}`).update(expiredPayload).digest("base64url");
+  assert.equal(verifyLiveTicket(`${expiredPayload}.${expiredMac}`, key), null);
 });
 
 test("live browser hub requires an exact origin and consumes ticket nonces once", async () => {

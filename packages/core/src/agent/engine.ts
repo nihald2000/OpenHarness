@@ -22,6 +22,7 @@ import {
   isWaitingPhase,
   mapPhaseToSessionStatus,
 } from "./phases.ts";
+import { supportsVisionModel } from "../provider/wire-messages.ts";
 
 export const MAX_STEPS_WRAPUP_PROMPT =
   "You have reached the execution budget limit for this run. Tools are now disabled. Summarize completed work, current file state, any remaining tasks, and recommended next steps concisely.";
@@ -137,6 +138,10 @@ export function createInitialRunState(params: {
     toolCalls: 0,
     inputTokensThisRun: 0,
     budgetPauseRequested: false,
+    browserChecks: [],
+    browserChecksHistory: [],
+    browserCheckAttempts: {},
+    browserCheckTampering: [],
   };
 }
 
@@ -303,7 +308,8 @@ async function addressMessage(
   deps: EngineDeps,
   state: RunState,
   events: OpenHarnessEvent[],
-  text: string
+  text: string,
+  extraParts: Part[] = []
 ): Promise<void> {
   const msg: Message = {
     info: {
@@ -312,7 +318,7 @@ async function addressMessage(
       summary: true,
     },
     createdAt: deps.clock.now(),
-    parts: [{ type: "text", text, synthetic: true }],
+    parts: [{ type: "text", text, synthetic: true }, ...extraParts],
   };
   await deps.stateStore.saveMessage(state.tenantId, state.sessionId, msg);
   state.transcriptCursor += 1;
@@ -639,20 +645,44 @@ export async function runStep(
       const maxFix = Number(process.env.OH_MAX_FIX_ATTEMPTS ?? 5);
       const noProgress = Boolean(prev && prev.signature && prev.signature === vResult.signature);
       const exhausted = state.verifyFailures.length >= maxFix || noProgress;
+      const failedChecks = vResult.results.filter((result) => !result.passed);
+      const checksFirst = failedChecks.length
+        ? `${failedChecks.map((result) => `${result.name}: ${result.output}`).join("\n\n")}\n\n${vResult.condensedError}`
+        : vResult.condensedError;
+      const browserAttempts = Math.max(0, ...Object.values(state.browserCheckAttempts ?? {}));
+      const maxInputFixed = Math.max(1, Number(process.env.OH_MAX_INPUT_FIXED_COUNT ?? 5));
+      const lastDefinitionAttempt = browserAttempts > maxInputFixed ? " This is the last browser check definition attempt; summarize after this attempt." : "";
+      const fixHint = "Reproduce with browser_check_run; fix the code (not the check), and finish your turn. Running a check is cheap; manual clicking is only for exploring.";
+      const screenshotResult = supportsVisionModel(state.model)
+        ? failedChecks.find((result) => typeof result.screenshotJpegBase64 === "string")
+        : undefined;
+      const screenshotParts: Part[] = screenshotResult?.screenshotJpegBase64 ? [{
+        type: "attachment",
+        id: `browser-check-${state.runId}-${state.iteration}`,
+        groupId: `browser-check-${state.runId}`,
+        name: "browser-check-failure.jpg",
+        relativePath: "browser-check-failure.jpg",
+        workspacePath: "",
+        mimeType: "image/jpeg",
+        size: Math.floor(screenshotResult.screenshotJpegBase64.length * 0.75),
+        dataBase64: screenshotResult.screenshotJpegBase64,
+      }] : [];
       if (exhausted) {
         state.toolsDisabled = true;
         await addressMessage(
           deps,
           state,
           events,
-          `Verification failed (${noProgress ? "identical error signature repeated" : `attempt ${state.verifyFailures.length}/${maxFix}`}):\n\n${vResult.condensedError}\n\nStop calling tools and clearly explain what is still failing and why.`
+          `Verification failed (${noProgress ? "identical error signature repeated" : `attempt ${state.verifyFailures.length}/${maxFix}`}):\n\n${checksFirst}\n\n${fixHint}${lastDefinitionAttempt}\nStop calling tools and clearly explain what is still failing and why.`,
+          screenshotParts
         );
       } else {
         await addressMessage(
           deps,
           state,
           events,
-          `Verification failed (attempt ${state.verifyFailures.length}/${maxFix}):\n\n${vResult.condensedError}\n\nFix the root cause and finish your turn so verification runs again.`
+          `Verification failed (attempt ${state.verifyFailures.length}/${maxFix}):\n\n${checksFirst}\n\n${fixHint}${lastDefinitionAttempt}`,
+          screenshotParts
         );
       }
       await transitionPhase(deps, state, "fixing", events);

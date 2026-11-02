@@ -103,6 +103,7 @@ export class SandboxDaemon {
     consoleLogs: [],
     networkErrors: [],
   };
+  private browserOwner: "agent" | "human" = "agent";
   private ipythonVars = new Map<string, unknown>();
   private shadowGitInitialized = false;
   private initialCheckpointSha?: string;
@@ -316,6 +317,21 @@ export class SandboxDaemon {
     }
 
     // --- Background Process Routes ---
+    if (method === "GET" && pathname === "/processes") {
+      return {
+        status: 200,
+        body: {
+          processes: Array.from(this.processes.values()).map((proc) => ({
+            id: proc.id,
+            name: proc.command.slice(0, 160),
+            command: proc.command,
+            port: proc.port,
+            status: proc.status,
+            startedAt: proc.startedAt,
+          })),
+        },
+      };
+    }
     if (method === "POST" && pathname === "/processes") {
       return this.startBackgroundProcess(payload);
     }
@@ -406,6 +422,15 @@ export class SandboxDaemon {
     }
 
     // --- Browser Routes ---
+    if (method === "POST" && pathname === "/browser/lock") {
+      if (payload.owner !== "agent" && payload.owner !== "human") return { status: 400, body: { error: "owner must be agent or human" } };
+      this.browserOwner = payload.owner;
+      return { status: 200, body: { owner: this.browserOwner } };
+    }
+    if (this.browserOwner === "human" && pathname.startsWith("/browser/") &&
+        !new Set(["/browser/observe", "/browser/console_logs", "/browser/network_errors"]).has(pathname)) {
+      return { status: 423, body: { error: "Browser is under human control" } };
+    }
     if (pathname.startsWith("/browser/")) {
       const action = pathname.slice("/browser/".length);
       const browserPayload = action === "navigate"

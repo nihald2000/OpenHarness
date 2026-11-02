@@ -1,6 +1,8 @@
 # OpenHarness Remediation & Long-Horizon Harness Checklist
 
 ## Live browser and full-stack sandbox follow-up
+- [ ] Finish local verification and deployment of the canvas BrowserDock, takeover fixes, and repeatable browser-check verification loop.
+- [ ] Confirm browser checks run in a separate page, preserve the agent's live page, and surface failure evidence without leaking screenshot payloads into tool text.
 - [x] Add regression coverage for live ticket expiry/replay, origin allowlisting, takeover pause, process readiness routing, and service startup tool routing.
 - [x] Pass `npm run typecheck`, `npm test` (80 passed, 2 skipped), `npm run build`, Modal Python syntax, browser-worker syntax, and `git diff --check`.
 - [ ] Build the Modal image and exercise PostgreSQL/Redis initialization plus live browser WebSocket/control in the deployed hub.

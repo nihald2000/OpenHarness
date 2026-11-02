@@ -127,6 +127,11 @@ export interface RunState {
   verificationPassed?: boolean;
   changedFiles?: string[];
   previewUrl?: string;
+  browserChecks?: BrowserCheck[];
+  browserChecksHistory?: BrowserCheck[];
+  browserCheckAttempts?: Record<string, number>;
+  browserCheckTampering?: string[];
+  takeoverPreviousPauseReason?: string;
   sandboxNotice?: string;
   initialPrompt?: string;
   webTools?: boolean;
@@ -139,6 +144,33 @@ export interface RunState {
   budgetPauseRequested?: boolean;
   takeoverRequested?: boolean;
   takeover?: { reason: string; instructions?: string; requestedBy: "agent" | "user"; requestedAt: number };
+}
+
+export type BrowserCheckTarget = {
+  role: string;
+  name: string;
+  label?: string;
+  text?: string;
+  css?: string;
+  exact?: boolean;
+};
+
+export type BrowserCheckStep =
+  | { goto: string }
+  | { click: BrowserCheckTarget }
+  | { fill: BrowserCheckTarget; value: string }
+  | { press: string }
+  | { expectText: BrowserCheckTarget; equals: string; contains?: string; matches?: string }
+  | { expectVisible: BrowserCheckTarget; timeoutMs?: number }
+  | { expectUrl: string }
+  | { wait: number };
+
+export interface BrowserCheck {
+  name: string;
+  port?: number;
+  steps: BrowserCheckStep[];
+  failOnConsoleErrors?: boolean;
+  createdAt: number;
 }
 
 export interface ProviderToolCall {
@@ -313,6 +345,7 @@ export interface VerificationCheckResult {
   exitCode: number;
   output: string;
   durationMs?: number;
+  screenshotJpegBase64?: string;
 }
 
 export interface VerificationResult {

@@ -8,6 +8,7 @@ export * from "./agent/delegate.ts";
 export * from "./agent/budget.ts";
 export * from "./agent/long-task.ts";
 export * from "./agent/reviewer.ts";
+export * from "./agent/verification.ts";
 export * from "./infra/index.ts";
 export * from "./provider/index.ts";
 export * from "./sandbox/index.ts";

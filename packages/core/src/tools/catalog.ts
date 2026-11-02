@@ -3,12 +3,15 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { FeatureItem, PlanData, TodoItem } from "@openharness/sdk";
 import type {
+  BrowserCheck,
+  BrowserCheckStep,
   RegisteredTool,
   RunState,
   ToolExecutionContext,
   ToolExecutionResult,
   ToolRouter,
 } from "../agent/deps.ts";
+import { formatBrowserEvidence } from "../agent/verification.ts";
 import { getActiveSandboxDaemon, LocalSandboxProvider } from "../sandbox/providers.ts";
 import { compileSandboxPolicy } from "../sandbox/policy.ts";
 import { enforceToolOutputLimit } from "./output-limit.ts";
@@ -20,7 +23,7 @@ const IGNORED_WORKSPACE_DIRS = new Set(["node_modules", ".git", "dist", ".openha
 
 const READ_TOOL_NAMES = ["read_file", "list", "glob", "search", "ask_user"] as const;
 const BUILD_TOOL_NAMES = ["write_file", "edit", "apply_patch", "bash", "verify", "delegate", "todo_write", "update_plan", "request_takeover", "service_start"] as const;
-const WEB_TOOL_NAMES = ["process_start", "process_logs", "process_stop", "preview_url", "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_screenshot", "browser_console"] as const;
+const WEB_TOOL_NAMES = ["process_start", "process_logs", "process_stop", "preview_url", "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_screenshot", "browser_console", "browser_check_def", "browser_check_run"] as const;
 const WEB_INTENT = /\b(web|ui|page|browser|frontend|react|vue|svelte|vite|next|html|css|preview|dev server|express|api server)\b/i;
 
 export function selectTools(state: RunState, all: RegisteredTool[]): RegisteredTool[] {
@@ -1219,6 +1222,120 @@ export class StandardToolRouter implements ToolRouter {
               networkErrors: errs.body.errors,
             },
           };
+        },
+      },
+
+      {
+        name: "browser_check_def",
+        description: "Define and immediately run a repeatable browser verification flow against this run's local preview. Once defined, do not weaken or replace it.",
+        readOnly: false,
+        idempotent: false,
+        requiresSandbox: true,
+        parameters: {
+          type: "object",
+          required: ["name", "steps"],
+          properties: {
+            name: { type: "string", minLength: 1, maxLength: 80 },
+            port: { type: "integer", minimum: 1024, maximum: 65535 },
+            steps: { type: "array", minItems: 1, maxItems: 30, items: { type: "object" } },
+            failOnConsoleErrors: { type: "boolean" },
+          },
+        },
+        execute: async (input, ctx) => {
+          const name = String(input.name ?? "").trim();
+          const steps = Array.isArray(input.steps) ? input.steps as BrowserCheckStep[] : [];
+          if (!name || name.length > 80) return { output: null, error: "Browser check name must contain 1 to 80 characters" };
+          if (!steps.length || steps.length > 30) return { output: null, error: "A browser check must contain 1 to 30 steps" };
+          const attempts = ctx.state.browserCheckAttempts ?? (ctx.state.browserCheckAttempts = {});
+          const totalAttempts = (attempts[name] ?? 0) + 1;
+          attempts[name] = totalAttempts;
+          const maxDefinitions = Math.max(1, Number(process.env.OH_MAX_INPUT_FIXED_COUNT ?? 5));
+          const check: BrowserCheck = {
+            name,
+            ...(Number.isInteger(input.port) ? { port: Number(input.port) } : {}),
+            steps,
+            failOnConsoleErrors: input.failOnConsoleErrors !== false,
+            createdAt: Date.now(),
+          };
+          for (const step of steps) {
+            if (!step || typeof step !== "object" || Array.isArray(step)) return { output: null, error: "Each browser check step must be an object" };
+            if ("wait" in step && (!Number.isFinite(Number(step.wait)) || Number(step.wait) < 0 || Number(step.wait) > 5_000)) {
+              return { output: null, error: "Browser check waits must be between 0 and 5000 ms" };
+            }
+            if ("goto" in step && typeof step.goto !== "string") return { output: null, error: "goto must be a URL or path" };
+            if ("expectText" in step && ![step.equals, step.contains, step.matches].some((value) => typeof value === "string")) {
+              return { output: null, error: "expectText requires equals, contains, or matches" };
+            }
+            if ("expectVisible" in step && step.timeoutMs !== undefined &&
+                (!Number.isFinite(step.timeoutMs) || step.timeoutMs < 1 || step.timeoutMs > 5_000)) {
+              return { output: null, error: "expectVisible timeoutMs must be between 1 and 5000" };
+            }
+            for (const key of ["click", "fill", "expectVisible", "expectText"] as const) {
+              if (key in step) {
+                const target = step[key as keyof typeof step] as Record<string, unknown>;
+                if (!target || typeof target !== "object" || !(
+                  (typeof target.role === "string" && typeof target.name === "string") ||
+                  typeof target.label === "string" || typeof target.text === "string" || typeof target.css === "string"
+                )) return { output: null, error: `${key} target needs role/name, label, text, or css` };
+              }
+            }
+          }
+          const existing = ctx.state.browserChecks ?? (ctx.state.browserChecks = []);
+          const sameName = existing.find((item) => item.name === name);
+          if (sameName) {
+            const normalize = (value: BrowserCheck) => JSON.stringify({ port: value.port, steps: value.steps, failOnConsoleErrors: value.failOnConsoleErrors });
+            if (normalize(sameName) !== normalize(check)) {
+              ctx.state.browserChecksHistory ??= [];
+              ctx.state.browserChecksHistory.push(structuredClone(sameName));
+              ctx.state.browserCheckTampering ??= [];
+              ctx.state.browserCheckTampering.push(name);
+              return { output: null, error: `Browser check "${name}" is immutable. The original definition was preserved and this change is flagged for review.` };
+            }
+          } else {
+            if (existing.length >= 10) return { output: null, error: "A run may define at most 10 browser checks" };
+            existing.push(check);
+          }
+          const selected = sameName ?? check;
+          const d = await this.getDaemonAndHeaders(ctx);
+          const ports = await d.daemon.handleRequest("GET", "/ports", d.headers);
+          const knownPorts = Array.isArray(ports.body.ports) ? (ports.body.ports as Array<{ port: number }>).map((entry) => entry.port) : [];
+          const port = selected.port ?? (ctx.state.previewUrl ? Number(new URL(ctx.state.previewUrl).port) : undefined) ?? knownPorts[knownPorts.length - 1];
+          if (!port || !knownPorts.includes(port)) return { output: null, error: "Browser check requires a port started by this run" };
+          const res = await d.daemon.handleRequest("POST", "/browser/run_flow", d.headers, { port, steps: selected.steps, failOnConsoleErrors: selected.failOnConsoleErrors });
+          const result = res.body as Record<string, any>;
+          const { screenshotJpegBase64: _screenshot, ...safeResult } = result;
+          return { output: { check: name, ...safeResult, evidence: formatBrowserEvidence(name, selected.steps.length, result, "") }, error: result.passed ? undefined : String(result.error ?? "Browser check failed") };
+        },
+      },
+
+      {
+        name: "browser_check_run",
+        description: "Run one named browser check or all checks defined for this run and return their visible evidence.",
+        readOnly: true,
+        idempotent: true,
+        requiresSandbox: true,
+        parameters: { type: "object", properties: { name: { type: "string" } } },
+        execute: async (input, ctx) => {
+          const checks = ctx.state.browserChecks ?? [];
+          const selected = input.name ? checks.filter((check) => check.name === String(input.name)) : checks;
+          if (!selected.length) return { output: null, error: input.name ? `Browser check "${String(input.name)}" not found` : "No browser checks are defined" };
+          const d = await this.getDaemonAndHeaders(ctx);
+          const portsRes = await d.daemon.handleRequest("GET", "/ports", d.headers);
+          const ports = Array.isArray(portsRes.body.ports) ? (portsRes.body.ports as Array<{ port: number }>).map((entry) => entry.port) : [];
+          const results: Array<Record<string, any>> = [];
+          for (const check of selected) {
+            const port = check.port ?? (ctx.state.previewUrl ? Number(new URL(ctx.state.previewUrl).port) : undefined) ?? ports[ports.length - 1];
+            if (!port || !ports.includes(port)) return { output: results, error: `Browser check "${check.name}" has no active preview port` };
+            let response = await d.daemon.handleRequest("POST", "/browser/run_flow", d.headers, { port, steps: check.steps, failOnConsoleErrors: check.failOnConsoleErrors });
+            let result = response.body as Record<string, any>;
+            if (!result.passed && /timeout|timed out/i.test(String(result.error ?? ""))) {
+              response = await d.daemon.handleRequest("POST", "/browser/run_flow", d.headers, { port, steps: check.steps, failOnConsoleErrors: check.failOnConsoleErrors });
+              result = response.body as Record<string, any>;
+            }
+            const { screenshotJpegBase64: _screenshot, ...safeResult } = result;
+            results.push({ check: check.name, ...safeResult, evidence: formatBrowserEvidence(check.name, check.steps.length, result, "") });
+          }
+          return { output: { results, evidence: results.map((result) => result.evidence).join("\n\n") }, error: results.some((result) => !result.passed) ? "One or more browser checks failed" : undefined };
         },
       },
 

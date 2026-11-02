@@ -363,10 +363,13 @@ export class OpenHarnessServer {
     const checkpoint = await this.stateStore.getStepCheckpoint(tenantId, runId);
     if (!checkpoint) throw new HttpError(409, "Run checkpoint is unavailable");
     const model = checkpoint.state.model;
+    const snapshot = String(body.snapshot ?? "").split(/\r?\n/)
+      .filter((line) => !/^\s*-\s*input\b.*\bvalue="[^\"]*"\s*$/i.test(line))
+      .join("\n");
     const parts: Message["parts"] = [{
       type: "text",
       synthetic: true,
-      text: `[Human takeover finished] Note from user: ${note.trim().slice(0, 4_000) || "none"}. The page may have changed and old element refs are invalid.\nCurrent page: ${String(body.url ?? "about:blank")} — ${String(body.title ?? "")}\n${String(body.snapshot ?? "")}`,
+      text: `[Human takeover finished] Note from user: ${note.trim().slice(0, 4_000) || "none"}. The page may have changed and old element refs are invalid. Continue from this exact page state; do not navigate away.\nCurrent page: ${String(body.url ?? "about:blank")} — ${String(body.title ?? "")}\nVisible page text: ${String(body.text ?? "").replace(/\s+/g, " ").trim().slice(0, 3_000)}\nBrowserSnapshot:\n${snapshot}`,
     }];
     const image = body.screenshotJpegBase64;
     if (supportsVisionModel(model) && typeof image === "string" && image.length > 200) {
@@ -389,13 +392,18 @@ export class OpenHarnessServer {
     });
     checkpoint.state.takeoverRequested = false;
     checkpoint.state.takeover = undefined;
-    checkpoint.state.pauseReason = undefined;
-    checkpoint.state.phase = "building";
+    const previousPauseReason = checkpoint.state.takeoverPreviousPauseReason;
+    checkpoint.state.takeoverPreviousPauseReason = undefined;
+    checkpoint.state.pauseReason = previousPauseReason;
+    checkpoint.state.phase = previousPauseReason ? "paused" : "building";
     await this.stateStore.saveStepCheckpoint(checkpoint);
+    if (previousPauseReason) await this.runStateMachine.updateRun(runId, { pauseReason: previousPauseReason, phase: "paused" });
     const timer = this.takeoverTimers.get(runId);
     if (timer) clearTimeout(timer);
     this.takeoverTimers.delete(runId);
-    const queued = this.scheduleRunResume(tenantId, runId, false, async () => { await this.runWorker.resumeRun(runId); });
+    const queued = previousPauseReason
+      ? false
+      : this.scheduleRunResume(tenantId, runId, false, async () => { await this.runWorker.resumeRun(runId); });
     const updated = await this.stateStore.getRun(tenantId, runId);
     return { queued, record: updated ?? run };
   }
@@ -2309,13 +2317,19 @@ export class OpenHarnessServer {
           const result = await this.returnBrowserControl(tenantId, runId, String(body?.note ?? ""));
           return { status: result.queued ? 202 : 200, body: { returned: true, queued: result.queued, run: result.record, message: result.queued ? "Waiting for a free slot" : undefined } };
         }
-        if (run.status !== "running") return { status: 409, body: { error: "Only a running agent can be taken over" } };
+        if (run.status !== "running" && run.status !== "awaiting_input") return { status: 409, body: { error: "Only a running or waiting agent can be taken over" } };
         const session = await this.stateStore.getSession(tenantId, run.sessionId);
         if (!session?.sandboxHandleId) return { status: 409, body: { error: "Run has no active browser sandbox" } };
         const checkpoint = await this.stateStore.getStepCheckpoint(tenantId, runId);
         if (!checkpoint) return { status: 409, body: { error: "Run checkpoint is unavailable" } };
         const reason = String(body?.reason ?? "User requested browser control").slice(0, 1_000);
         const instructions = typeof body?.instructions === "string" ? body.instructions.slice(0, 2_000) : undefined;
+        if (run.status === "awaiting_input" && run.pauseReason !== "takeover") {
+          checkpoint.state.takeoverPreviousPauseReason = checkpoint.state.pauseReason ?? run.pauseReason ?? (checkpoint.state.pendingQuestion ? "question" : "paused");
+          checkpoint.state.pauseReason = "takeover";
+          await this.runStateMachine.updateRun(runId, { pauseReason: "takeover" });
+          await this.setSessionBrowserOwner(session, "human");
+        }
         checkpoint.state.takeoverRequested = true;
         checkpoint.state.takeover = { reason, instructions, requestedBy: "user", requestedAt: Date.now() };
         await this.stateStore.saveStepCheckpoint(checkpoint);
@@ -2324,7 +2338,7 @@ export class OpenHarnessServer {
         });
         const timeoutMs = Math.max(60_000, Number(process.env.OH_TAKEOVER_TIMEOUT_MS ?? 900_000));
         this.scheduleTakeoverExpiry(tenantId, runId, timeoutMs);
-        return { status: 202, body: { takeoverRequested: true, runId, reason, instructions } };
+        return { status: 200, body: { control: "requested", takeoverRequested: true, runId, reason, instructions } };
       } catch (err) {
         const status = typeof (err as any)?.status === "number" ? (err as any).status : 400;
         return { status, body: { error: (err as Error).message } };

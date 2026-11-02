@@ -10,6 +10,7 @@ let page = null;
 let cdp = null;
 let casting = false;
 let lastFrame = null;
+let emittedFrameVersion = 0;
 const consoleLogs = [];
 const networkErrors = [];
 let elementMap = new Map();
@@ -99,6 +100,7 @@ async function startCast(quality = 60) {
   const session = await getCdp();
   session.on("Page.screencastFrame", async ({ data, metadata, sessionId }) => {
     lastFrame = { data, metadata };
+    emittedFrameVersion++;
     emit("frame", lastFrame);
     try { await session.send("Page.screencastFrameAck", { sessionId }); } catch {}
   });
@@ -110,6 +112,11 @@ async function startCast(quality = 60) {
     everyNthFrame: 1,
   });
   casting = true;
+  const initial = await session.send("Page.captureScreenshot", { format: "jpeg", quality: Math.max(20, Math.min(90, Number(quality) || 60)) }).catch(() => null);
+  if (initial?.data) {
+    lastFrame = { data: initial.data, metadata: { timestamp: Date.now() / 1000, deviceWidth: VIEWPORT.width, deviceHeight: VIEWPORT.height } };
+    emit("frame", lastFrame);
+  }
 }
 
 async function stopCast() {
@@ -150,6 +157,137 @@ async function snapshot() {
   return { url, title, snapshot: snapshotText, elements };
 }
 
+function flowLocator(target, targetPage = page) {
+  if (target?.css) return targetPage.locator(String(target.css));
+  if (target?.label) return targetPage.getByLabel(String(target.label), { exact: target.exact === true });
+  if (target?.text) return targetPage.getByText(String(target.text), { exact: target.exact === true });
+  if (target?.role) return targetPage.getByRole(String(target.role), {
+    name: String(target.name ?? ""),
+    exact: target.exact === true,
+  });
+  throw new Error("target requires role/name, label, text, or css");
+}
+
+function checkUrl(rawUrl, baseUrl) {
+  const url = new URL(String(rawUrl), baseUrl);
+  const base = new URL(baseUrl);
+  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || url.port !== base.port) {
+    throw new Error(`blocked url ${url.href}`);
+  }
+  return url.href;
+}
+
+async function runFlow(payload) {
+  const activePage = await ensurePage();
+  const steps = Array.isArray(payload.steps) ? payload.steps : [];
+  const port = Number(payload.port);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("run_flow requires a valid preview port");
+  if (steps.length < 1 || steps.length > 30) throw new Error("run_flow supports 1 to 30 steps");
+  const baseUrl = `http://127.0.0.1:${port}/`;
+  const checkPage = await activePage.context().newPage();
+  const errors = [];
+  const failedRequests = [];
+  const log = [];
+  const failOnConsoleErrors = payload.failOnConsoleErrors !== false;
+  await checkPage.route("**/*", async (route) => {
+    try {
+      checkUrl(route.request().url(), baseUrl);
+      await route.continue();
+    } catch {
+      failedRequests.push(`blocked ${route.request().method()} ${route.request().url()}`);
+      await route.abort("blockedbyclient").catch(() => {});
+    }
+  });
+  checkPage.on("console", (msg) => {
+    if (failOnConsoleErrors && msg.type() === "error") errors.push(`console.error: ${msg.text()}`);
+  });
+  checkPage.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  checkPage.on("requestfailed", (request) => {
+    const url = request.url();
+    if (!/\/favicon\.ico(?:\?|$)/i.test(url)) failedRequests.push(`${request.method()} ${url}: ${request.failure()?.errorText ?? "failed"}`);
+  });
+  checkPage.on("response", (response) => {
+    if (response.status() >= 500) failedRequests.push(`${response.request().method()} ${response.url()} -> ${response.status()}`);
+  });
+  const record = (index, step, result) => log.push({ step: index + 1, action: Object.keys(step)[0], result });
+  const evidenceText = async () => (await checkPage.locator("body").innerText().catch(() => ""))
+    .replace(/\s+/g, " ").trim().slice(0, 3_000);
+  let failedStep = -1;
+  let failedStepValue;
+  let error = "";
+  try {
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      failedStep = i;
+      failedStepValue = step;
+      if (!step || typeof step !== "object") throw new Error("invalid flow step");
+      if ("goto" in step) {
+        const url = checkUrl(step.goto, baseUrl);
+        const response = await checkPage.goto(url, { waitUntil: "load", timeout: 15_000 });
+        if (!response) throw new Error(`goto failed: ${url}`);
+        if (response.status() >= 500) failedRequests.push(`GET ${url} -> ${response.status()}`);
+        record(i, step, { url: checkPage.url(), status: response.status() });
+      } else if ("click" in step) {
+        await flowLocator(step.click, checkPage).first().click({ timeout: 5_000 });
+        record(i, step, "clicked");
+      } else if ("fill" in step) {
+        await flowLocator(step.fill, checkPage).first().fill(String(step.value ?? ""), { timeout: 5_000 });
+        record(i, step, "filled");
+      } else if ("press" in step) {
+        await checkPage.keyboard.press(String(step.press));
+        record(i, step, "pressed");
+      } else if ("expectVisible" in step) {
+        await flowLocator(step.expectVisible, checkPage).first().waitFor({ state: "visible", timeout: Math.min(5_000, Math.max(1, Number(step.timeoutMs) || 5_000)) });
+        record(i, step, "visible");
+      } else if ("expectUrl" in step) {
+        const expected = checkUrl(step.expectUrl, baseUrl);
+        await checkPage.waitForURL(expected, { timeout: 5_000 });
+        record(i, step, { url: checkPage.url() });
+      } else if ("expectText" in step) {
+        const deadline = Date.now() + 5_000;
+        let actual = "";
+        let matched = false;
+        do {
+          actual = (await flowLocator(step.expectText, checkPage).first().innerText({ timeout: 1_000 }).catch(() => "")).trim();
+          matched = (step.equals === undefined || actual === step.equals) &&
+            (step.contains === undefined || actual.includes(step.contains)) &&
+            (step.matches === undefined || new RegExp(step.matches).test(actual));
+          if (!matched) await checkPage.waitForTimeout(100);
+        } while (!matched && Date.now() < deadline);
+        if (!matched) throw new Error(`expected text did not match; got "${actual.slice(0, 120)}"`);
+        record(i, step, actual.slice(0, 300));
+      } else if ("wait" in step) {
+        const waitMs = Number(step.wait);
+        if (!Number.isFinite(waitMs) || waitMs < 0 || waitMs > 5_000) throw new Error("wait must be between 0 and 5000 ms");
+        await checkPage.waitForTimeout(waitMs);
+        record(i, step, `waited ${waitMs} ms`);
+      } else {
+        throw new Error("unsupported flow step");
+      }
+      if (failOnConsoleErrors && errors.length) throw new Error(`page errors: ${errors.slice(0, 3).join(" | ")}`);
+      if (failedRequests.length) throw new Error(`failed requests: ${failedRequests.slice(0, 3).join(" | ")}`);
+    }
+    return { passed: true, failedStep: -1, log, text: await evidenceText(), url: checkPage.url(), errors, failedRequests };
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+    const image = await checkPage.screenshot({ type: "jpeg", quality: 50 }).catch(() => null);
+    return {
+      passed: false,
+      failedStep,
+      step: failedStepValue,
+      error,
+      url: checkPage.url(),
+      text: await evidenceText(),
+      log: log.slice(-20),
+      errors: errors.slice(-20),
+      failedRequests: failedRequests.slice(-20),
+      screenshotJpegBase64: image?.toString("base64") ?? null,
+    };
+  } finally {
+    await checkPage.close().catch(() => {});
+  }
+}
+
 async function dispatchInput(event) {
   const session = await getCdp();
   if (event.kind === "mouse") {
@@ -167,7 +305,12 @@ async function dispatchInput(event) {
     return session.send("Input.dispatchMouseEvent", {
       type: "mouseWheel", x: Number(event.x) || 0, y: Number(event.y) || 0,
       deltaX: Number(event.deltaX) || 0, deltaY: Number(event.deltaY) || 0,
+      modifiers: Number(event.modifiers) || 0,
     });
+  }
+  if (event.kind === "scrollTo") {
+    await page.evaluate((y) => window.scrollTo({ top: Number(y) || 0, behavior: "instant" }), event.y);
+    return;
   }
   if (event.kind === "key") {
     return session.send("Input.dispatchKeyEvent", {
@@ -182,9 +325,30 @@ async function dispatchInput(event) {
 async function handleCommand(command) {
   const { id, action, payload = {} } = command;
   try {
+    if (action === "run_flow") {
+      const port = Number(payload.port);
+      const steps = Array.isArray(payload.steps) ? payload.steps : [];
+      if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 8080) return { id, status: 400, body: { error: "run_flow requires a valid preview port" } };
+      if (steps.length < 1 || steps.length > 30) return { id, status: 400, body: { error: "run_flow supports 1 to 30 steps" } };
+      return await runFlow(payload);
+    }
     if (action === "input") {
       await ensurePage();
+      const frameVersion = emittedFrameVersion;
       await dispatchInput(payload);
+      await dispatchInput({ kind: "scrollTo", y: 0 });
+      if (casting) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        if (frameVersion === emittedFrameVersion) {
+          const session = await getCdp();
+          const frame = await session.send("Page.captureScreenshot", { format: "jpeg", quality: 60 }).catch(() => null);
+          if (frame?.data) {
+            lastFrame = { data: frame.data, metadata: { timestamp: Date.now() / 1000, deviceWidth: VIEWPORT.width, deviceHeight: VIEWPORT.height } };
+            emittedFrameVersion++;
+            emit("frame", lastFrame);
+          }
+        }
+      }
       return id ? { id, status: 200, body: { ok: true } } : null;
     }
     const activePage = await ensurePage();
@@ -199,9 +363,12 @@ async function handleCommand(command) {
     if (action === "observe") {
       const observed = await snapshot();
       await maskSensitiveFields();
-      const image = await activePage.screenshot({ type: "jpeg", quality: 50, scale: "css" });
-      return { id, status: 200, body: { ...observed, screenshotJpegBase64: image.toString("base64") } };
+      const image = await activePage.screenshot({ type: "jpeg", quality: 50, scale: "css" }).catch(() => null);
+      const text = (await activePage.locator("body").innerText().catch(() => ""))
+        .replace(/\s+/g, " ").trim().slice(0, 3_000);
+      return { id, status: 200, body: { ...observed, text, screenshotJpegBase64: image?.toString("base64") ?? null } };
     }
+    if (action === "run_flow") return { id, status: 200, body: await runFlow(payload) };
     if (action === "click") {
       const ref = String(payload.ref ?? "");
       const handle = elementMap.get(ref);

@@ -227,6 +227,54 @@ test("request_takeover pauses the durable run at a tool boundary and persists th
   }
 });
 
+test("paused-budget runs enter browser takeover immediately and restore their previous pause reason", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oh-paused-takeover-"));
+  const server = new OpenHarnessServer({ dataDir: root, workspaceRoot: root, defaultModel: "mock/demo" });
+  const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+  registerSandboxTransport("takeover-sandbox", {
+    async request(method, route, body) {
+      calls.push({ method, path: route, body });
+      if (route === "/browser/lock") return { status: 200, body: { owner: (body as any)?.owner } };
+      if (route === "/browser/observe") return { status: 200, body: { url: "http://127.0.0.1:3000/", title: "App", text: "Welcome alice", snapshot: "- document [title=App]", screenshotJpegBase64: null } };
+      return { status: 200, body: {} };
+    },
+  });
+  try {
+    const created = await server.handleRequest("POST", "/v1/sessions", {}, { title: "Paused takeover", mode: "task" });
+    const sessionId = (created.body as { id: string }).id;
+    const session = await server.stateStore.getSession("default", sessionId);
+    assert.ok(session);
+    await server.stateStore.saveSession("default", { ...session!, sandboxHandleId: "takeover-sandbox", status: "awaiting_input", pauseReason: "paused_budget" });
+    const now = Date.now();
+    const { run } = await server.runStateMachine.createRun({ runId: "run_paused_takeover", sessionId, tenantId: "default", prompt: "continue", model: "mock/demo", mode: "task" });
+    await server.runStateMachine.transition(run.id, "queued", "running", { phase: "paused" });
+    await server.runStateMachine.transition(run.id, "running", "awaiting_input", { phase: "paused", pauseReason: "paused_budget" });
+    const state = createInitialRunState({ runId: run.id, sessionId, tenantId: "default", model: "mock/demo", mode: "task", phase: "paused" });
+    state.pauseReason = "paused_budget";
+    await server.stateStore.saveStepCheckpoint({ runId: run.id, sessionId, tenantId: "default", stepIndex: 0, state, transcriptCursor: 0, usage: state.usage, cost: 0, pendingApproval: null, sandboxHandleId: "takeover-sandbox", lastCheckpointSha: null, inFlightToolCalls: [], completedToolCallIds: [], savedAt: now });
+
+    const takeover = await server.handleRequest("POST", `/v1/runs/${run.id}/takeover`, {}, { reason: "Continue login" });
+    assert.equal(takeover.status, 200);
+    assert.equal((takeover.body as any).control, "requested");
+    assert.equal((await server.runWorker.getRun(run.id))?.pauseReason, "takeover");
+    assert.equal((await server.stateStore.getStepCheckpoint("default", run.id))?.state.takeoverPreviousPauseReason, "paused_budget");
+    assert.ok(calls.some((call) => call.path === "/browser/lock" && (call.body as any)?.owner === "human"));
+
+    const returned = await server.handleRequest("POST", `/v1/runs/${run.id}/takeover/return`, {}, { note: "Signed in" });
+    assert.equal(returned.status, 200);
+    assert.equal((await server.runWorker.getRun(run.id))?.status, "awaiting_input");
+    assert.equal((await server.runWorker.getRun(run.id))?.pauseReason, "paused_budget");
+    const checkpoint = await server.stateStore.getStepCheckpoint("default", run.id);
+    assert.equal(checkpoint?.state.pauseReason, "paused_budget");
+    assert.match((server as any).takeoverResumeMessages.get(run.id).parts[0].text, /Welcome alice/);
+    assert.ok(calls.some((call) => call.path === "/browser/lock" && (call.body as any)?.owner === "agent"));
+  } finally {
+    unregisterSandboxTransport("takeover-sandbox");
+    await server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Modal E2E fixes: delayed sandbox startup and streaming tool-call activity complete without first-activity timeout", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "oh-modal-activity-"));
   const server = new OpenHarnessServer({ dataDir: root, workspaceRoot: root, defaultModel: "gpt-4o", defaultRuntime: "modal" });

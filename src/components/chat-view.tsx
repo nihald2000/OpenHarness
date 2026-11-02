@@ -15,7 +15,7 @@ import {
   takePendingPrompt,
 } from "@/lib/pending-prompts";
 import { useSession } from "@/lib/use-session";
-import { CapabilitiesPanel, selectCapabilityTab } from "./capabilities-panel";
+import { CapabilitiesPanel } from "./capabilities-panel";
 import { ChatHeader } from "./chat-header";
 import { Composer, type ComposerHandle, type SelectedAttachment } from "./composer";
 import { EmptyState } from "./empty-state";
@@ -23,6 +23,7 @@ import { PermissionPrompt } from "./permission-prompt";
 import { PlanDock } from "./plan-dock";
 import { Transcript } from "./transcript";
 import { Spinner } from "./ui";
+import { LiveBrowser, type BrowserDockState } from "./live-browser";
 
 const APPROVE_TEXT =
   "Approved. Execute the plan step by step, keeping the plan updated.";
@@ -57,7 +58,6 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     ingestEvent,
     draft,
     setDraftField,
-    setCapabilitiesOpen,
   } = useApp();
 
   const {
@@ -79,6 +79,13 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   const [takeover, setTakeover] = useState<{ runId: string; reason: string; instructions?: string } | null>(null);
   const [takeoverNote, setTakeoverNote] = useState("");
   const [takeoverBusy, setTakeoverBusy] = useState(false);
+  const [browserDock, setBrowserDock] = useState<BrowserDockState>("closed");
+  const [browserVerification, setBrowserVerification] = useState<{ check: string; status: "running" | "passed" | "failed" } | null>(null);
+  const [dockWidth, setDockWidth] = useState(() => {
+    try { return Math.max(360, Math.min(1100, Number(localStorage.getItem("oh.dockWidth")) || window.innerWidth * 0.5)); }
+    catch { return Math.max(360, Math.min(1100, window.innerWidth * 0.5)); }
+  });
+  const browserAutoOpened = useRef(false);
   const [waitingForRunSlot, setWaitingForRunSlot] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [stickTrigger, setStickTrigger] = useState(0);
@@ -139,6 +146,14 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         setQuestionAnswer("");
       } else if (ev.type === "takeover.requested") {
         setTakeover({ runId: ev.runId, reason: ev.reason, instructions: ev.instructions });
+        setBrowserDock("expanded");
+      } else if (ev.type === "verify:browser_check") {
+        setBrowserVerification({ check: ev.check, status: ev.status });
+      } else if (ev.type === "part.updated" && ev.part.type === "tool" && ev.part.tool.startsWith("browser_")) {
+        if (!browserAutoOpened.current) {
+          browserAutoOpened.current = true;
+          setBrowserDock("docked");
+        }
       } else if (ev.type === "preview.ready") {
         pendingStateRevision.current += 1;
         setPreviewUrl(maskModalPreviewUrl(ev.url));
@@ -220,15 +235,19 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     setChangedFiles([]);
     setTakeover(null);
     setTakeoverNote("");
+    setBrowserDock("closed");
+    setBrowserVerification(null);
+    browserAutoOpened.current = false;
   }, [sessionId]);
 
   const requestTakeover = async () => {
     const runId = session?.activeRunId ?? session?.runId;
     if (!runId || takeoverBusy) return;
     setTakeoverBusy(true);
+    setBrowserDock("expanded");
     try {
       const result = await client.runs.takeover(runId, { reason: "User requested browser control" });
-      setTakeover({ runId: result.runId, reason: "You have browser control. Return control when finished." });
+      setTakeover({ runId: result.runId ?? runId, reason: "You have browser control. Return control when finished." });
     } catch (err) { notify("error", errorMessage(err)); }
     finally { setTakeoverBusy(false); }
   };
@@ -240,6 +259,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
       await client.runs.returnBrowserControl(takeover.runId, takeoverNote);
       setTakeover(null);
       setTakeoverNote("");
+      setBrowserDock("docked");
       await refreshSession();
     } catch (err) { notify("error", errorMessage(err)); }
     finally { setTakeoverBusy(false); }
@@ -677,7 +697,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   };
 
   return (
-    <div className="flex min-w-0 flex-1 overflow-hidden bg-bg">
+    <div className="grid min-w-0 flex-1 overflow-hidden bg-bg" style={{ gridTemplateColumns: browserDock === "docked" && window.matchMedia("(min-width: 768px)").matches ? `minmax(360px, 1fr) 4px minmax(360px, ${dockWidth}px)` : "minmax(0, 1fr)" }}>
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <ChatHeader
           session={session}
@@ -696,6 +716,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
           compacting={compacting}
           fix={fix}
           readOnly={readOnly}
+          onOpenBrowser={() => setBrowserDock((current) => current === "closed" ? "docked" : "closed")}
         />
 
         {notFound ? (
@@ -763,23 +784,11 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
               </div>
             )}
 
-            {takeover ? (
-              <div className="mx-auto mb-3 w-full max-w-[720px] px-4">
-                <div className="rounded-xl border border-accent/40 bg-elev p-4">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-accent">Browser control requested</div>
-                  <p className="mt-1 text-sm text-fg">{takeover.instructions || takeover.reason}</p>
-                  <div className="mt-3 flex gap-2">
-                    <input aria-label="Note for the agent" value={takeoverNote} onChange={(e) => setTakeoverNote(e.target.value)} placeholder="What did you change? (optional)" className="min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg" />
-                    <button type="button" disabled={takeoverBusy} onClick={() => void returnTakeover()} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg">{takeoverBusy ? "Returning…" : "Return control"}</button>
-                  </div>
-                  <button type="button" className="mt-2 text-xs font-medium text-accent hover:underline" onClick={() => { selectCapabilityTab("Preview"); setCapabilitiesOpen(true); }}>Open live browser controls</button>
-                </div>
-              </div>
-            ) : session?.status === "running" && session.sandboxHandleId ? (
+            {!takeover && (session?.status === "running" || session?.status === "awaiting_input") && session.sandboxHandleId && (
               <div className="mx-auto mb-3 w-full max-w-[720px] px-4 text-right">
                 <button type="button" disabled={takeoverBusy} onClick={() => void requestTakeover()} className="rounded-lg border border-border bg-elev px-3 py-1.5 text-xs font-medium text-fg hover:bg-hover">{takeoverBusy ? "Requesting…" : "Take control of browser"}</button>
               </div>
-            ) : null}
+            )}
 
             {pendingQuestion && (
               <div className="mx-auto mb-3 w-full max-w-[720px] px-4">
@@ -1035,9 +1044,24 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         sessionId={sessionId}
         previewUrl={previewUrl}
         refreshToken={`${session?.status ?? ""}:${messages.length}:${changedFiles.length}`}
-        liveControl={Boolean(takeover)}
-        onTakeControl={!takeover && session?.status === "running" && session.sandboxHandleId ? () => void requestTakeover() : undefined}
+        onOpenBrowserDock={() => setBrowserDock("docked")}
       />
+      {sessionId && <LiveBrowser
+        sessionId={sessionId}
+        runId={takeover?.runId ?? session?.activeRunId ?? session?.runId}
+        previewUrl={previewUrl}
+        state={browserDock}
+        setState={setBrowserDock}
+        control={Boolean(takeover)}
+        takeover={takeover}
+        takeoverNote={takeoverNote}
+        onTakeoverNote={setTakeoverNote}
+        takeoverBusy={takeoverBusy}
+        onTakeControl={!takeover && session?.sandboxHandleId && (session.status === "running" || session.status === "awaiting_input") ? () => void requestTakeover() : undefined}
+        onReturnControl={() => void returnTakeover()}
+        onDockWidthChange={setDockWidth}
+        verifyLabel={browserVerification?.status === "running" ? browserVerification.check : undefined}
+      />}
     </div>
   );
 }

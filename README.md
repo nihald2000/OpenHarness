@@ -7,6 +7,7 @@ OpenHarness is a model-agnostic, long-horizon AI agent harness and developer wor
 - Agentic coding loop with Meta Muse Spark 1.3 and Muse Glimmer 30B, including browser screenshot vision input.
 - Optional scale-to-zero self-hosted Muse Glimmer vLLM endpoint on Modal and isolated Modal sandboxes with HTTPS preview tunnels. The web deployment works with `MODEL_API_KEY` or any provider configured in Admin Settings without deploying a GPU service.
 - Live browser screencasting with one-use, short-lived HMAC tickets, allowlisted WebSocket origins, and explicit human takeover/return control.
+- Dockable canvas live view with takeover input, plus repeatable browser checks that run in an isolated page and feed failure evidence into the fix loop.
 - Standard deployment: `modal deploy deploy/modal/sandbox_server.py`; `modal deploy deploy/modal/web_server.py`; configure the `/v1/*` and `/health` Vercel rewrites; `vercel deploy --prod`. The Glimmer GPU server is optional; see [deploy/modal/README.md](deploy/modal/README.md) before deploying it.
 
 ## Architecture & Key Capabilities

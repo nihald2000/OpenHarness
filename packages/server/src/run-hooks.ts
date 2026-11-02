@@ -6,6 +6,7 @@ import {
   detectTestTamperingInDiff,
   getActiveSandboxDaemon,
   resolveVerificationRecipe,
+  supportsVisionModel,
   type EventBus,
   type ProviderAdapter,
   type RunState,
@@ -361,6 +362,7 @@ export function createRunHooks(ctx: RunHooksContext) {
       exitCode: number;
       output: string;
       durationMs: number;
+      screenshotJpegBase64?: string;
     }> = [];
 
     for (const check of checks) {
@@ -386,36 +388,82 @@ export function createRunHooks(ctx: RunHooksContext) {
     }
 
     if (reqFn) {
-      const portsRes = await reqFn("GET", "/ports").catch(() => null);
-      const openPorts = Array.isArray(portsRes?.body?.ports)
-        ? (portsRes!.body.ports as Array<{ port: number; previewUrl?: string }>)
+      const processesRes = await reqFn("GET", "/processes").catch(() => null);
+      const processes = Array.isArray(processesRes?.body?.processes)
+        ? processesRes.body.processes as Array<{ id: string; name?: string; command?: string; port?: number; status?: string }>
         : [];
-      if (openPorts.length > 0) {
-        const targetPort = openPorts[0]!.port;
+      const serverProcesses = processes.filter((process) => Number.isInteger(process.port));
+      for (const process of serverProcesses) {
         const t0 = Date.now();
-        const navRes = await reqFn("POST", "/browser/navigate", {
-          url: `http://127.0.0.1:${targetPort}`,
-        }).catch(() => null);
-        const screenshot = await reqFn("POST", "/browser/screenshot", {}).catch(() => null);
-        const screenshotBase64 = screenshot?.body?.dataBase64;
-        if (screenshot?.status === 200 && screenshot?.body?.mimeType === "image/png" &&
-            typeof screenshotBase64 === "string" && screenshotBase64.length > 200 && ctx.dataDir) {
-          const artifactDir = path.join(ctx.dataDir, "artifacts");
-          fs.mkdirSync(artifactDir, { recursive: true });
-          fs.writeFileSync(path.join(artifactDir, `verify_${state.runId}_${state.iteration}.png`), Buffer.from(screenshotBase64, "base64"));
+        const logsBefore = await reqFn("GET", `/processes/${encodeURIComponent(process.id)}/logs?since=0`).catch(() => null);
+        const logCursor = Number(logsBefore?.body?.nextCursor ?? 0);
+        if (process.status !== "running") {
+          const logs = String(logsBefore?.body?.logs ?? "").split(/\r?\n/).slice(-30).join("\n");
+          results.push({ name: `${process.name ?? process.id}:exited`, command: `process ${process.id}`, passed: false, exitCode: 1, output: logs || `Process status: ${process.status ?? "unknown"}`, durationMs: Date.now() - t0 });
+          continue;
         }
-        if (navRes && navRes.status === 200) {
-          const logsRes = await reqFn("GET", "/browser/console_logs").catch(() => null);
-          const logs = Array.isArray(logsRes?.body?.logs) ? (logsRes!.body.logs as string[]) : [];
-          const errLogs = logs.filter((l) => /^\[(?:error|pageerror)\]/i.test(l));
-          results.push({
-            name: "browser-check",
-            command: `browser_open http://127.0.0.1:${targetPort}`,
-            passed: errLogs.length === 0,
-            exitCode: errLogs.length === 0 ? 0 : 1,
-            output: errLogs.length > 0 ? errLogs.join("\n") : `Loaded ${String(navRes.body.title ?? "")}`,
-            durationMs: Date.now() - t0,
-          });
+        const ready = await reqFn("POST", `/processes/${encodeURIComponent(process.id)}/wait`, { port: process.port, timeoutSec: 3, path: "/" }).catch(() => null);
+        const passed = Boolean(ready && ready.status < 500 && ready.body.ready === true);
+        const tail = await reqFn("GET", `/processes/${encodeURIComponent(process.id)}/logs?since=${logCursor}`).catch(() => null);
+        results.push({ name: `app:${process.name ?? process.id}`, command: `GET http://127.0.0.1:${process.port}/`, passed, exitCode: passed ? 0 : 1, output: passed ? `HTTP ${String(ready?.body.status ?? "<500")} at http://127.0.0.1:${process.port}/` : `${String(ready?.body.error ?? "Application did not respond")}${tail?.body.logs ? `\nlast attempts:\n${String(tail.body.logs).split(/\r?\n/).slice(-30).join("\n")}` : ""}`, durationMs: Date.now() - t0 });
+      }
+
+      const portsRes = await reqFn("GET", "/ports").catch(() => null);
+      const openPorts = Array.isArray(portsRes?.body?.ports) ? portsRes.body.ports as Array<{ port: number; previewUrl?: string }> : [];
+      const browserChecks = [...(state.browserChecks ?? [])];
+      const touchedUi = (state.changedFiles ?? []).some((file) => /\.(?:html?|tsx?|jsx?|vue|svelte|css|scss|less)$/i.test(file));
+      if (browserChecks.length === 0 && touchedUi && openPorts.length > 0) {
+        const ownPort = state.previewUrl ? Number(new URL(state.previewUrl).port) : undefined;
+        const port = (ownPort && openPorts.some((entry) => entry.port === ownPort) ? ownPort : undefined) ?? openPorts[openPorts.length - 1]!.port;
+        browserChecks.push({ name: "smoke", port, steps: [{ goto: "/" }], createdAt: Date.now() });
+      }
+      const takeoverActive = state.takeoverRequested || state.takeover || state.pauseReason === "takeover";
+      if (!takeoverActive) {
+        for (const check of browserChecks) {
+          const port = check.port ?? (state.previewUrl ? Number(new URL(state.previewUrl).port) : undefined) ?? openPorts[openPorts.length - 1]?.port;
+          const t0 = Date.now();
+          const before = check.port ? await reqFn("GET", `/processes?port=${check.port}`).catch(() => null) : null;
+          const ownerProcess = serverProcesses.filter((process) => process.port === port).at(-1);
+          const beforeLogs = ownerProcess ? await reqFn("GET", `/processes/${encodeURIComponent(ownerProcess.id)}/logs?since=0`).catch(() => null) : before;
+          const beforeCursor = Number(beforeLogs?.body?.nextCursor ?? 0);
+          await ctx.emit(state.tenantId, state.sessionId, { type: "verify:browser_check", sessionId: state.sessionId, check: check.name, step: 0, status: "running" });
+          const runFlow = async () => reqFn("POST", "/browser/run_flow", { port, steps: check.steps, failOnConsoleErrors: check.failOnConsoleErrors });
+          let response = await runFlow().catch((error) => ({ status: 503, body: { passed: false, failedStep: 0, step: check.steps[0], error: String(error), url: `http://127.0.0.1:${port ?? 0}/`, text: "", errors: [], failedRequests: [] } }));
+          let result = response.body as Record<string, any>;
+          if (!result.passed && /timeout|timed out/i.test(String(result.error ?? ""))) {
+            response = await runFlow().catch((error) => ({ status: 503, body: { passed: false, failedStep: 0, step: check.steps[0], error: String(error), url: `http://127.0.0.1:${port ?? 0}/`, text: "", errors: [], failedRequests: [] } }));
+            result = response.body as Record<string, any>;
+          }
+          const afterLogs = ownerProcess ? await reqFn("GET", `/processes/${encodeURIComponent(ownerProcess.id)}/logs?since=${beforeCursor}`).catch(() => null) : null;
+          const backendLog = String(afterLogs?.body?.logs ?? "").split(/\r?\n/).filter(Boolean).slice(-20).join("\n");
+          const evidence = [
+            `Browser check "${check.name}" ${result.passed ? "passed" : `failed at step ${Number(result.failedStep ?? 0) + 1}/${check.steps.length}`}.`,
+            result.passed ? "" : `error: ${String(result.error ?? "failed")}`,
+            `url: ${String(result.url ?? "")}`,
+            `visible text: ${String(result.text || "(empty)")}`,
+            `console/page errors: ${Array.isArray(result.errors) ? result.errors.join(" | ") || "none" : "none"}`,
+            `page log: ${Array.isArray(result.log) ? JSON.stringify(result.log).slice(0, 1200) : "(empty)"}`,
+            `failed requests: ${Array.isArray(result.failedRequests) ? result.failedRequests.join(" | ") || "none" : "none"}`,
+            ownerProcess ? `backend: ${ownerProcess.name ?? ownerProcess.id} (log lines since check start)\n${backendLog || "(no new backend output)"}` : "",
+          ].filter(Boolean).join("\n");
+          const passed = response.status < 500 && result.passed === true;
+          let screenshotJpegBase64: string | undefined;
+          if (!passed && typeof result.screenshotJpegBase64 === "string" && result.screenshotJpegBase64.length > 200) {
+            if (ctx.dataDir) {
+              const artifacts = path.join(ctx.dataDir, "artifacts");
+              fs.mkdirSync(artifacts, { recursive: true });
+              fs.writeFileSync(path.join(artifacts, `verify_${state.runId}_${state.iteration}_${check.name.replace(/[^a-z0-9_-]/gi, "_")}.jpg`), Buffer.from(result.screenshotJpegBase64, "base64"));
+            }
+            if (supportsVisionModel(state.model)) screenshotJpegBase64 = result.screenshotJpegBase64;
+          }
+          const stepIndex = Math.max(0, Number(result.failedStep ?? check.steps.length - 1));
+          await ctx.emit(state.tenantId, state.sessionId, { type: "verify:browser_check", sessionId: state.sessionId, check: check.name, step: stepIndex, status: passed ? "passed" : "failed" });
+          results.push({ name: `browser:${check.name}`, command: `browser_check ${check.name}`, passed, exitCode: passed ? 0 : 1, output: evidence, durationMs: Date.now() - t0, ...(screenshotJpegBase64 ? { screenshotJpegBase64 } : {}) });
+          if (!passed && /log\s?in|signin|captcha|verify|otp/i.test(`${result.error ?? ""} ${result.text ?? ""}`)) {
+            state.takeoverRequested = true;
+            state.takeover = { reason: "Browser verification requires a human login or verification step", instructions: "Take control of the browser, complete the login/CAPTCHA/2FA step, then return control.", requestedBy: "agent", requestedAt: Date.now() };
+            break;
+          }
         }
       }
     }
@@ -427,7 +475,7 @@ export function createRunHooks(ctx: RunHooksContext) {
       sessionId: state.sessionId,
       runId: state.runId,
       passed,
-      results,
+      results: results.map(({ screenshotJpegBase64: _screenshot, ...result }) => result),
     });
     await ctx.emit(state.tenantId, state.sessionId, {
       type: "fix.status",
@@ -459,10 +507,11 @@ export function createRunHooks(ctx: RunHooksContext) {
       }
     }
     const tampering = detectTestTamperingInDiff(diffText);
+    const browserTampering = state.browserCheckTampering ?? [];
     return {
-      verdict: tampering.tamperingDetected ? ("fail" as const) : ("pass" as const),
-      issues: tampering.issues,
-      tamperingDetected: tampering.tamperingDetected,
+      verdict: tampering.tamperingDetected || browserTampering.length ? ("fail" as const) : ("pass" as const),
+      issues: [...tampering.issues, ...browserTampering.map((name) => `Browser check definition was changed: ${name}`)],
+      tamperingDetected: tampering.tamperingDetected || browserTampering.length > 0,
     };
   };
 

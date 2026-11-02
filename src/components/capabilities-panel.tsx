@@ -4,7 +4,6 @@ import { RefreshCw, X } from "lucide-react";
 import { useApp, useCatalog, useTools } from "@/lib/hooks";
 import { PluginsTab } from "./plugins-tab";
 import { Badge, IconButton, Spinner } from "./ui";
-import { LiveBrowser } from "./live-browser";
 
 export const CAPABILITY_TABS = [
   "Files",
@@ -41,15 +40,13 @@ export function CapabilitiesPanel({
   sessionId,
   previewUrl,
   refreshToken,
-  liveControl,
-  onTakeControl,
+  onOpenBrowserDock,
 }: {
   activeAgent: string;
   sessionId?: string;
   previewUrl?: string | null;
   refreshToken?: string | number;
-  liveControl?: boolean;
-  onTakeControl?: () => void;
+  onOpenBrowserDock?: () => void;
 }) {
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<{ path: string; content: string } | null>(null);
@@ -160,7 +157,7 @@ export function CapabilitiesPanel({
 
       <aside
         aria-label="Capabilities"
-        className="fixed inset-y-0 right-0 z-40 flex w-[min(32rem,100%)] shrink-0 flex-col border-l border-border bg-elev xl:static xl:w-84 animate-fade-in"
+        className="fixed inset-y-0 right-0 z-40 flex w-[min(32rem,100%)] shrink-0 flex-col border-l border-border bg-elev animate-fade-in"
       >
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold tracking-tight text-fg">
@@ -316,7 +313,9 @@ export function CapabilitiesPanel({
 
           {activeTab === "Preview" && (
             <div className="space-y-2">
-              <LiveBrowser sessionId={sessionId} control={liveControl} onTakeControl={onTakeControl} />
+              <button type="button" onClick={onOpenBrowserDock} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg hover:bg-hover">
+                Open live browser dock
+              </button>
               {previewUrl ? (
                 <>
                   <div className="flex items-center justify-between">

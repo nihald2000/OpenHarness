@@ -342,7 +342,10 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
         const send = (data: unknown) => {
           if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
         };
-        const onFrame = (frame: unknown) => send({ type: "frame", ...(frame as Record<string, unknown>) });
+        const onFrame = (frame: unknown) => {
+          if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > 1_000_000) return;
+          send({ type: "frame", ...(frame as Record<string, unknown>) });
+        };
         const onPage = (page: unknown) => send({ type: "page", ...(page as Record<string, unknown>) });
         daemon.browser.on("frame", onFrame);
         daemon.browser.on("page", onPage);

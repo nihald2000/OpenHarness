@@ -6,6 +6,7 @@ import {
   Menu,
   PanelRight,
   Pencil,
+  Globe,
   Server,
   Wrench,
 } from "lucide-react";
@@ -35,6 +36,7 @@ export function ChatHeader({
   compacting,
   fix,
   readOnly,
+  onOpenBrowser,
 }: {
   session: Session | null;
   selectedAgent: string;
@@ -52,6 +54,7 @@ export function ChatHeader({
   compacting: boolean;
   fix: FixLoopState | null;
   readOnly: boolean;
+  onOpenBrowser: () => void;
 }) {
   const {
     setSidebarOpen,
@@ -317,6 +320,10 @@ export function ChatHeader({
         )}
 
         <ConnectionIndicator status={globalStatus} hideLabelOnMobile />
+
+        <IconButton label="Browser" active={false} onClick={onOpenBrowser} size="md">
+          <Globe className="size-4" aria-hidden="true" />
+        </IconButton>
 
         <IconButton
           label="Capabilities"

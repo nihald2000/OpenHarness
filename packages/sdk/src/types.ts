@@ -515,6 +515,7 @@ export type OpenHarnessEvent =
   | FixStatusEvent
   | { type: "verification.started"; sessionId: string; command: string; iteration: number; maxIterations: number }
   | { type: "verification.completed"; sessionId: string; result: { command?: string; passed?: boolean; exitCode?: number | null; timedOut?: boolean; stdout?: string; stderr?: string; truncated?: boolean }; iteration: number; maxIterations: number }
+  | { type: "verify:browser_check"; sessionId: string; check: string; step: number; status: "running" | "passed" | "failed"; seq?: number }
   | { type: "permission.asked"; request: PermissionRequest }
   | { type: "permission.replied"; requestId: string; reply?: PermissionReply }
   | { type: "takeover.requested"; sessionId: string; runId: string; reason: string; instructions?: string; requestedBy: "agent" | "user"; seq?: number }

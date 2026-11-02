@@ -1,6 +1,8 @@
 # Backend & Long-Horizon Agent Harness Implementation Plan
 
 ## Live browser and full-stack sandbox follow-up
+- [ ] Add the docked/expanded canvas browser view, live frame backpressure, and takeover input fidelity; validate with browser UI checks before marking complete.
+- [ ] Add sandbox-isolated browser flow checks to the verify/fix loop with immutable definitions and actionable evidence.
 - [x] Implement and locally test short-lived live-browser tickets, origin checks, screencasting, and durable-run takeover pause/resume.
 - [x] Implement and test `process_start.waitFor`, session-local service tool routing, pinned-hub image dependencies, and the guest run cap configuration.
 - [x] Pass typecheck, the full test suite, production build, Python syntax, and worker syntax checks.
