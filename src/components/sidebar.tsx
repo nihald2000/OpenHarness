@@ -64,6 +64,10 @@ export function Sidebar() {
   const [dismissedWaiting, setDismissedWaiting] = useState<string[]>(() => {
     try { return JSON.parse(sessionStorage.getItem("oh.dismissedWaiting") ?? "[]") as string[]; } catch { return []; }
   });
+  // `now` is referenced by the waiting-session lookup below, so it must be
+  // declared before it: reading it inside the find callback during the same
+  // render otherwise hits the temporal dead zone and blanks the whole app.
+  const [now, setNow] = useState(() => Date.now());
   const waitingInAnotherChat = sessions.find((session) => {
     if (session.status !== "awaiting_input" && session.pauseReason !== "takeover") return false;
     if (dismissedWaiting.includes(session.id)) return false;
@@ -73,7 +77,6 @@ export function Sidebar() {
 
   const [query, setQuery] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
   const [workspaceOpen, setWorkspaceOpen] = useState<boolean>(() => {
     try {
       const saved = localStorage.getItem(WORKSPACE_OPEN_STORAGE_KEY);
