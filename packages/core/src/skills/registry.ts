@@ -389,6 +389,7 @@ export class SkillsRegistry {
     return [
       {
         name: "skill",
+        source: "skill",
         description:
           "Loads a specialized skill's instructions and workflow into the conversation by skill ID or name (`fullstack-web-app`, `webapp-testing`, `systematic-debugging`, `mcp-builder`, `frontend-design`, `python-data-science`, `git-workflow`, `skill-creator`). Example: {\"id\": \"fullstack-web-app\"}",
         readOnly: true,
@@ -431,6 +432,7 @@ export class SkillsRegistry {
       },
       {
         name: "list_skills",
+        source: "skill",
         description:
           "Lists all available built-in and workspace Agent Skills (`id`, `name`, `description`, `triggers`, `source`). Example: {}",
         readOnly: true,
@@ -449,6 +451,7 @@ export class SkillsRegistry {
       },
       {
         name: "import_skill",
+        source: "skill",
         description:
           "Creates a new Agent Skill (`SKILL.md`) in `.openharness/skills/<id>/SKILL.md` or imports one directly from a remote URL (such as a GitHub raw `SKILL.md` URL).",
         readOnly: false,

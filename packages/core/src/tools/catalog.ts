@@ -18,6 +18,28 @@ import { McpClientManager } from "../mcp/client.ts";
 
 const IGNORED_WORKSPACE_DIRS = new Set(["node_modules", ".git", "dist", ".openharness"]);
 
+const READ_TOOL_NAMES = ["read_file", "list", "glob", "search", "ask_user"] as const;
+const BUILD_TOOL_NAMES = ["write_file", "edit", "apply_patch", "bash", "verify", "delegate", "todo_write", "update_plan"] as const;
+const WEB_TOOL_NAMES = ["process_start", "process_logs", "process_stop", "preview_url", "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_screenshot", "browser_console"] as const;
+const WEB_INTENT = /\b(web|ui|page|browser|frontend|react|vue|svelte|vite|next|html|css|preview|dev server|express|api server)\b/i;
+
+export function selectTools(state: RunState, all: RegisteredTool[]): RegisteredTool[] {
+  if (state.mode === "ask" || state.mode === "chat") {
+    const allowed = new Set<string>(READ_TOOL_NAMES);
+    return all.filter((tool) => allowed.has(tool.name));
+  }
+  const web = state.webTools === true || WEB_INTENT.test(state.initialPrompt ?? "");
+  const allowed = new Set<string>([
+    ...READ_TOOL_NAMES,
+    ...BUILD_TOOL_NAMES,
+    ...(web ? WEB_TOOL_NAMES : []),
+    "load_tools",
+  ]);
+  return all.filter((tool) => allowed.has(tool.name)
+    || (state.loadedGroups?.includes("mcp") && tool.source === "mcp")
+    || (state.loadedGroups?.includes("skills") && tool.source === "skill"));
+}
+
 function walkWorkspaceFiles(root: string): string[] {
   const files: string[] = [];
   const visit = (directory: string, relativeDirectory: string): void => {
@@ -101,6 +123,7 @@ function htmlToReadableText(html: string): string {
 }
 
 export const HOST_TOOLS = new Set([
+  "load_tools",
   "update_plan",
   "todo_write",
   "todowrite",
@@ -186,10 +209,11 @@ export class StandardToolRouter implements ToolRouter {
 
   listTools(state: RunState): RegisteredTool[] {
     this.refreshMcpTools();
+    const selected = selectTools(state, Array.from(this.tools.values()));
     const isReadOnlyPhase = state.phase === "planning" || state.agent === "plan" || state.agent === "explore";
     const isAskMode = state.mode === "ask";
 
-    return Array.from(this.tools.values())
+    return selected
       .filter((t) => {
         if (isAskMode && !t.readOnly && t.name !== "ask_user") {
           return false;
@@ -198,6 +222,7 @@ export class StandardToolRouter implements ToolRouter {
       })
       .map((t) => ({
         ...t,
+        description: compactToolDescription(t.description),
         // Mask mutating tools in read-only planning phase rather than removing them mid-run ("mask, don't remove" §6)
         masked: isReadOnlyPhase && !t.readOnly ? true : false,
       }));
@@ -238,11 +263,22 @@ export class StandardToolRouter implements ToolRouter {
       }
     }
     const rawRes = await tool.execute(input, ctx);
-    if (typeof rawRes.output === "string") {
-      const bounded = enforceToolOutputLimit(rawRes.output, callId, ctx.workspaceRoot);
+    if (!rawRes.error && name === "process_start") ctx.state.webTools = true;
+    const outputField = name === "process_logs" ? "logs" : name === "browser_snapshot" ? "snapshot" : undefined;
+    const fieldValue = outputField && rawRes.output && typeof rawRes.output === "object"
+      ? (rawRes.output as Record<string, unknown>)[outputField]
+      : undefined;
+    if (typeof rawRes.output === "string" || typeof fieldValue === "string") {
+      const maxChars = name === "bash" ? 12_000 : name === "browser_snapshot" ? 8_000 : name === "process_logs" ? 6_000 : 16_000;
+      const bounded = enforceToolOutputLimit(typeof rawRes.output === "string" ? rawRes.output : fieldValue, callId, ctx.workspaceRoot, {
+        maxChars,
+        style: name === "process_logs" ? "tail" : "head-tail",
+      });
       return {
         ...rawRes,
-        output: bounded.output,
+        output: typeof rawRes.output === "string"
+          ? bounded.output
+          : { ...(rawRes.output as Record<string, unknown>), [outputField!]: bounded.output },
         truncated: bounded.truncated || rawRes.truncated,
         spillPath: bounded.spillPath,
       };
@@ -305,6 +341,27 @@ export class StandardToolRouter implements ToolRouter {
 
   private buildCatalog(): RegisteredTool[] {
     return [
+      {
+        name: "load_tools",
+        description: "Load an optional tool group: web, mcp, or skills.",
+        readOnly: true,
+        idempotent: true,
+        source: "builtin",
+        parameters: {
+          type: "object",
+          required: ["group"],
+          properties: { group: { type: "string", enum: ["web", "mcp", "skills"] } },
+        },
+        execute: async (input, ctx) => {
+          const group = String(input.group ?? "");
+          if (!["web", "mcp", "skills"].includes(group)) {
+            return { output: null, error: `Unknown tool group: ${group}` };
+          }
+          if (group === "web") ctx.state.webTools = true;
+          else ctx.state.loadedGroups = Array.from(new Set([...(ctx.state.loadedGroups ?? []), group]));
+          return { output: { loaded: group } };
+        },
+      },
       // 1. Legacy & baseline tools (preserved 100% compatible)
       {
         name: "word_count",
@@ -799,7 +856,9 @@ export class StandardToolRouter implements ToolRouter {
             output: externalUrl && port > 0
               ? { ...body, previewUrl: externalUrl, internalUrl: `http://127.0.0.1:${port}` }
               : body,
-            error: res.status !== 200 ? String(res.body.error) : undefined,
+            error: res.status !== 200
+              ? (typeof res.body.error === "string" ? res.body.error : `process_start failed with HTTP ${res.status}`)
+              : undefined,
           };
         },
       },
@@ -823,12 +882,17 @@ export class StandardToolRouter implements ToolRouter {
           const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "process_logs requires an active sandbox" };
           const since = Number(input.since ?? 0);
-          const res = await d.daemon.handleRequest(
-            "GET",
-            `/processes/${String(input.id)}/logs?since=${since}`,
-            d.headers
-          );
+          let res = await d.daemon.handleRequest("GET", `/processes/${String(input.id)}/logs?since=${since}`, d.headers);
+          const deadline = Date.now() + 3_000;
+          while (res.status === 200 && !String((res.body as Record<string, unknown>).logs ?? "").trim() && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            res = await d.daemon.handleRequest("GET", `/processes/${String(input.id)}/logs?since=${since}`, d.headers);
+          }
           const body = res.body as Record<string, unknown>;
+          if (res.status !== 200) {
+            const error = typeof body.error === "string" && body.error ? body.error : `process_logs failed with HTTP ${res.status}`;
+            return { output: { error }, error };
+          }
           const rawPreviewUrl = typeof body.previewUrl === "string" ? body.previewUrl : undefined;
           const portFromUrl = rawPreviewUrl?.match(/^https?:\/\/127\.0\.0\.1:(\d+)/)?.[1];
           const port = typeof body.port === "number" ? body.port : Number(portFromUrl);
@@ -839,7 +903,7 @@ export class StandardToolRouter implements ToolRouter {
             output: externalUrl && rawPreviewUrl
               ? { ...body, previewUrl: externalUrl, internalUrl: rawPreviewUrl }
               : body,
-            error: res.status !== 200 ? String(res.body.error) : undefined,
+            error: undefined,
           };
         },
       },
@@ -1485,7 +1549,7 @@ export class StandardToolRouter implements ToolRouter {
       {
         name: "delegate",
         description:
-          "Spawns an isolated subagent with its own context window and budget. Read-only explorers can run in parallel; write-capable subagents run only in separate git worktrees. Only the concise final report (<=2,000 tokens) returns to the parent. Example: {\"agent\": \"explore\", \"prompt\": \"Find all auth routes\", \"background\": false}",
+          "Runs a subagent in the same workspace with its own context and step budget. Read-only agents may run in parallel; write-capable agents run one at a time. Roles: explore, tester, reviewer, general.",
         readOnly: true,
         idempotent: false,
         parameters: {
@@ -1581,6 +1645,12 @@ export class StandardToolRouter implements ToolRouter {
       },
     ];
   }
+}
+
+function compactToolDescription(description?: string): string | undefined {
+  if (!description) return description;
+  const withoutExample = description.replace(/\s*Example:\s*[\s\S]*$/i, "").trim();
+  return withoutExample.length > 240 ? `${withoutExample.slice(0, 237).trimEnd()}…` : withoutExample;
 }
 
 export const SandboxToolRouter = StandardToolRouter;

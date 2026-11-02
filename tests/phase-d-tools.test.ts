@@ -38,9 +38,11 @@ test("Phase D Acceptance: in an in-process daemon sandbox, agent sets up a Node 
   const state = createInitialRunState({
     runId: "run_d_1",
     sessionId: "sess_d_1",
+    mode: "task",
     phase: "building",
     sandboxHandleId: handle.id,
   });
+  state.initialPrompt = "Build a Node and Python sample app and browser test it";
 
   // Verify stable tool list with policy masking ("mask, don't remove")
   const buildingTools = router.listTools(state);

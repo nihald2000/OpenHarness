@@ -8,23 +8,27 @@ import {
   type ToolRouter,
 } from "@openharness/core";
 
-export type SubagentRole = "explore" | "explorer" | "tester" | "verifier" | "reviewer";
+export type SubagentRole = "explore" | "tester" | "reviewer" | "general";
 
 const ROLE_PROMPTS: Record<string, string> = {
   explore:
     "You are an Explore subagent. Use read-only tools (`list`, `glob`, `search`, `read_file`) to investigate the codebase and return a concise, factual summary of findings with exact file paths.",
   tester:
-    "You are a Tester subagent. Run tests or inspect the running app in the browser (`bash`, `browser_open`, `browser_console`, `browser_screenshot`) and report what passed or failed.",
+    "You are a Tester subagent. Run tests or inspect the running app with `process_start`, `process_logs`, `process_stop`, and `browser_navigate` plus the other browser tools. Report what passed or failed.",
   reviewer:
     "You are a Reviewer subagent. Inspect changed files and tests for bugs, regressions, or test tampering, and return a concise review report.",
+  general:
+    "You are a General subagent. Complete the requested coding task in the shared workspace using read and build tools. Do not delegate or ask the user questions.",
 };
 
 const EXPLORE_TOOLS = new Set(["read_file", "list", "glob", "search", "word_count"]);
 const TESTER_TOOLS = new Set([
   ...EXPLORE_TOOLS,
   "bash",
-  "process",
-  "browser_open",
+  "process_start",
+  "process_logs",
+  "process_stop",
+  "browser_navigate",
   "browser_snapshot",
   "browser_click",
   "browser_type",
@@ -35,22 +39,28 @@ const TESTER_TOOLS = new Set([
   "verify",
 ]);
 const REVIEWER_TOOLS = new Set([...EXPLORE_TOOLS, "bash"]);
+const GENERAL_TOOLS = new Set([...EXPLORE_TOOLS, "write_file", "edit", "apply_patch", "bash", "verify", "todo_write", "update_plan"]);
+const VALID_ROLES = "explore, tester, reviewer, general";
+
+export function normalizeSubagentRole(role: string): "explore" | "tester" | "reviewer" | "general" {
+  const aliases: Record<string, "explore" | "tester" | "reviewer" | "general"> = {
+    explorer: "explore", verifier: "tester", coder: "general", worker: "general",
+  };
+  const normalized = aliases[role] ?? role;
+  if (normalized !== "explore" && normalized !== "tester" && normalized !== "reviewer" && normalized !== "general") {
+    throw new Error(`Unknown subagent role "${role}". Valid roles: ${VALID_ROLES}.`);
+  }
+  return normalized;
+}
 
 export function getAllowedToolsForSubagent(
   role: string,
   allTools: RegisteredTool[],
   requestedTools?: string[]
 ): RegisteredTool[] {
-  const norm =
-    role === "explorer"
-      ? "explore"
-      : role === "verifier"
-      ? "tester"
-      : role === "tester" || role === "reviewer"
-      ? role
-      : "explore";
+  const norm = normalizeSubagentRole(role);
   const allowSet =
-    norm === "tester" ? TESTER_TOOLS : norm === "reviewer" ? REVIEWER_TOOLS : EXPLORE_TOOLS;
+    norm === "tester" ? TESTER_TOOLS : norm === "reviewer" ? REVIEWER_TOOLS : norm === "general" ? GENERAL_TOOLS : EXPLORE_TOOLS;
   const reqSet =
     requestedTools && requestedTools.length > 0 ? new Set(requestedTools) : null;
 
@@ -71,9 +81,29 @@ export interface RunSubagentOptions {
   maxSteps?: number;
 }
 
+const writeQueues = new Map<string, Promise<void>>();
+
 export async function runSubagent(opts: RunSubagentOptions): Promise<ToolExecutionResult> {
+  const role = normalizeSubagentRole(String(opts.input.agent ?? opts.input.role ?? "explore"));
+  if (role === "explore" || role === "reviewer") return runSubagentUnlocked(opts, role);
+  const key = opts.ctx.workspaceRoot;
+  const previous = writeQueues.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.then(() => gate);
+  writeQueues.set(key, tail);
+  await previous;
+  try {
+    return await runSubagentUnlocked(opts, role);
+  } finally {
+    release();
+    if (writeQueues.get(key) === tail) writeQueues.delete(key);
+  }
+}
+
+async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: string): Promise<ToolExecutionResult> {
   const { input, ctx, provider, toolRouter, emit } = opts;
-  const role = String(input.agent ?? input.role ?? "explore");
+  const role = normalizedRole;
   const prompt = String(input.prompt ?? input.task ?? "");
   const requestedTools = Array.isArray(input.tools) ? input.tools.map(String) : undefined;
   const maxSteps = Math.min(25, Number(opts.maxSteps ?? (input.budget as any)?.maxIterations ?? 25));
@@ -100,12 +130,11 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<ToolExecuti
     ...ctx.state,
     phase: "building",
     mode: "task",
+    webTools: role === "tester" || ctx.state.webTools,
   });
   const allowedTools = getAllowedToolsForSubagent(role, allTools, requestedTools);
   const allowedMap = new Map(allowedTools.map((t) => [t.name, t]));
-  const systemPrompt =
-    ROLE_PROMPTS[role === "explorer" ? "explore" : role === "verifier" ? "tester" : role] ??
-    ROLE_PROMPTS.explore!;
+  const systemPrompt = ROLE_PROMPTS[role]!;
 
   const messages: Message[] = [
     {

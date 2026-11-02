@@ -300,21 +300,21 @@ export function evaluateNetworkAccess(
   resolvedIp?: string
 ): { allowed: boolean; kind?: "network"; reason?: string } {
   let host = urlOrHost.trim().toLowerCase();
+  let port: number | undefined;
   try {
-    if (host.includes("://")) {
-      const parsed = new URL(host);
-      host = parsed.hostname.toLowerCase();
-    } else if (host.includes("/")) {
-      host = host.split("/")[0]!.split(":")[0]!;
-    } else if (host.includes(":")) {
-      host = host.split(":")[0]!;
-    }
+    const parsed = new URL(host.includes("://") ? host : `http://${host}`);
+    host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    port = parsed.port ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80;
   } catch {
     return { allowed: false, kind: "network", reason: `Malformed network target "${urlOrHost}"` };
   }
 
   // 1. Always block cloud metadata and private/loopback IP literals regardless of mode (§5 C.4)
-  if (isDeniedIpOrHost(host) || (resolvedIp && isDeniedIpOrHost(resolvedIp))) {
+  const loopback = host === "localhost" || host === "::1" || host === "0:0:0:0:0:0:0:1" || /^127\./.test(host);
+  if (loopback && process.env.OH_VM_ISOLATED !== "1") {
+    return { allowed: false, kind: "network", reason: `Loopback access is restricted outside an isolated sandbox (target: ${host}:${port ?? "unknown"})` };
+  }
+  if ((!loopback && isDeniedIpOrHost(host)) || (resolvedIp && isDeniedIpOrHost(resolvedIp))) {
     return {
       allowed: false,
       kind: "network",
@@ -331,6 +331,12 @@ export function evaluateNetworkAccess(
     };
   }
 
+  if (loopback && process.env.OH_VM_ISOLATED === "1") {
+    if (port === undefined || port < 1024 || port > 65535 || port === 8080) {
+      return { allowed: false, kind: "network", reason: `Loopback access is only allowed on ports 1024-65535 excluding 8080 (target: ${host}:${port ?? "unknown"})` };
+    }
+  }
+
   // 3. Check HTTP method restriction
   const upperMethod = method.toUpperCase();
   if (
@@ -343,6 +349,8 @@ export function evaluateNetworkAccess(
       reason: `HTTP method "${upperMethod}" is not permitted by sandbox network policy (${policy.network.allowedMethods.join(", ")})`,
     };
   }
+
+  if (loopback) return { allowed: true };
 
   // 4. Check domain allowlist when in allowlist mode
   if (policy.network.mode === "allowlist") {
@@ -371,10 +379,7 @@ function isDeniedIpOrHost(hostOrIp: string): boolean {
   if (
     h === "169.254.169.254" ||
     h === "metadata.google.internal" ||
-    h === "localhost" ||
-    h === "::1" ||
     h.startsWith("169.254.") ||
-    h.startsWith("127.") ||
     h.startsWith("10.") ||
     h.startsWith("192.168.") ||
     h.startsWith("fe80:") ||

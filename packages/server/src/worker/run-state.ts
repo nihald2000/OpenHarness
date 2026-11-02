@@ -192,6 +192,7 @@ export class RunStateMachine {
         runId: updated.id,
         activeRunId: isTerminal ? null : updated.id,
         error: updated.error,
+        pauseReason: updated.pauseReason,
         usage: updated.usage,
         cost: updated.cost,
         updatedAt: now,

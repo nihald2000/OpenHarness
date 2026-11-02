@@ -128,6 +128,15 @@ export interface RunState {
   changedFiles?: string[];
   previewUrl?: string;
   sandboxNotice?: string;
+  initialPrompt?: string;
+  webTools?: boolean;
+  loadedGroups?: string[];
+  workspaceOutlinePending?: boolean;
+  lastInputTokens?: number;
+  modelCalls?: number;
+  toolCalls?: number;
+  inputTokensThisRun?: number;
+  budgetPauseRequested?: boolean;
 }
 
 export interface ProviderToolCall {

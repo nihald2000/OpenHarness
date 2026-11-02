@@ -100,6 +100,7 @@ export interface Session {
   tainted?: boolean;
   sandboxPolicy?: Record<string, unknown>;
   error?: string;
+  pauseReason?: string;
   usage?: TokenUsage;
   cost?: number;
   updatedAt: number | string;
@@ -334,6 +335,7 @@ export interface ServerInfo {
   defaultAgent?: string;
   defaultModel?: string;
   defaultRuntime?: string;
+  hostedIsolation?: boolean;
 }
 
 export interface AgentInfo {

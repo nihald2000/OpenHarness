@@ -28,6 +28,7 @@ export interface DurableRunWorkerOptions {
   activeSandboxes: Map<string, SandboxHandle>;
   heartbeatIntervalMs?: number; // default 5_000
   onTerminal?: (tenantId: string, runId: string) => void;
+  onWaiting?: (tenantId: string, runId: string) => void;
 }
 
 export class DurableRunWorker implements RunWorker {
@@ -37,6 +38,7 @@ export class DurableRunWorker implements RunWorker {
   readonly activeSandboxes: Map<string, SandboxHandle>;
   private readonly heartbeatIntervalMs: number;
   private readonly onTerminal?: (tenantId: string, runId: string) => void;
+  private readonly onWaiting?: (tenantId: string, runId: string) => void;
   private readonly activeControllers = new Map<string, AbortController>();
   private readonly loopGuards = new Map<string, ToolLoopGuard>();
   private launchRun: (runId: string) => void = (runId) => { void this.startRun(runId); };
@@ -52,6 +54,7 @@ export class DurableRunWorker implements RunWorker {
     this.activeSandboxes = opts.activeSandboxes;
     this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 5_000;
     this.onTerminal = opts.onTerminal;
+    this.onWaiting = opts.onWaiting;
   }
 
   async enqueueAndStart(
@@ -222,6 +225,7 @@ export class DurableRunWorker implements RunWorker {
     const tr = await this.stateMachine.transition(runId, ["running", "awaiting_input", "awaiting_permission", "queued"], "awaiting_input", { phase: "paused" });
     this.activeControllers.get(runId)?.abort(Object.assign(new Error("Run paused"), { code: "RUN_PAUSED" }));
     if (tr.ok && tr.run) {
+      this.onWaiting?.(run.tenantId ?? "default", runId);
       await this.emitter.emit(tr.run.tenantId ?? "default", tr.run.sessionId, {
         type: "run.status", sessionId: tr.run.sessionId, runId, status: "awaiting_input",
       });
@@ -234,10 +238,17 @@ export class DurableRunWorker implements RunWorker {
     if (!run) return null;
     if (run.status !== "awaiting_input" || run.phase !== "paused") return run;
     const checkpoint = await this.deps.stateStore.getStepCheckpoint(run.tenantId ?? "default", runId);
+    if (checkpoint?.state.pauseReason === "paused_budget") {
+      checkpoint.state.inputTokensThisRun = 0;
+      checkpoint.state.pauseReason = undefined;
+      checkpoint.state.phase = "building";
+      checkpoint.state.budgetPauseRequested = false;
+      await this.deps.stateStore.saveStepCheckpoint(checkpoint);
+    }
     const resumePhase = checkpoint?.state.phase && checkpoint.state.phase !== "paused"
       ? checkpoint.state.phase
       : "building";
-    const tr = await this.stateMachine.transition(runId, "awaiting_input", "running", { phase: resumePhase });
+    const tr = await this.stateMachine.transition(runId, "awaiting_input", "running", { phase: resumePhase, pauseReason: undefined });
     if (tr.ok) {
       await this.emitter.emit(tr.run?.tenantId ?? run.tenantId ?? "default", run.sessionId, {
         type: "run.status", sessionId: run.sessionId, runId, status: "running",
@@ -324,6 +335,7 @@ export class DurableRunWorker implements RunWorker {
             sandboxHandleId: run.sandboxHandleId ?? session?.sandboxHandleId ?? null,
             attachmentIds: run.attachmentIds,
           });
+      state.initialPrompt ??= run.prompt;
 
       const loopGuard =
         this.loopGuards.get(runId) ??
@@ -462,6 +474,22 @@ export class DurableRunWorker implements RunWorker {
               pendingQuestion: state.pendingQuestion ?? null,
               questionsAsked: state.questionsAsked ?? waiting.questionsAsked,
             });
+            this.onWaiting?.(tenantId, runId);
+          }
+        }
+
+        if (state.phase === "paused" && state.pauseReason === "paused_budget") {
+          const waiting = this.stateMachine.getRun(runId);
+          if (waiting?.status === "running") {
+            await this.stateMachine.transition(runId, "running", "awaiting_input", {
+              phase: "paused",
+              pauseReason: "paused_budget",
+              usage: state.usage,
+              cost: state.cost,
+              changedFiles: state.changedFiles ?? [],
+              previewUrl: state.previewUrl,
+            });
+            this.onWaiting?.(tenantId, runId);
           }
         }
 
@@ -495,7 +523,7 @@ export class DurableRunWorker implements RunWorker {
 
       const postLoopRun = this.stateMachine.getRun(runId);
       if (postLoopRun && !isTerminalRunStatus(postLoopRun.status)) {
-        if (state.phase === "completed" || state.phase === "paused") {
+        if (state.phase === "completed" || (state.phase === "paused" && state.pauseReason !== "paused_budget")) {
           await this.stateMachine.transition(runId, postLoopRun.status, "completed", {
             phase: "completed",
             changedFiles: state.changedFiles ?? [],

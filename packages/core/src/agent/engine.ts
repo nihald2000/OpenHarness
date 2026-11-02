@@ -128,6 +128,15 @@ export function createInitialRunState(params: {
     unattended: params.unattended ?? false,
     onConfirm: params.onConfirm ?? "deny",
     confirmationPolicy: params.confirmationPolicy,
+    initialPrompt: undefined,
+    webTools: false,
+    loadedGroups: [],
+    workspaceOutlinePending: true,
+    lastInputTokens: 0,
+    modelCalls: 0,
+    toolCalls: 0,
+    inputTokensThisRun: 0,
+    budgetPauseRequested: false,
   };
 }
 
@@ -190,6 +199,7 @@ async function transitionPhase(
       usage: state.usage,
       cost: state.cost,
       error: state.error,
+      pauseReason: state.pauseReason,
       updatedAt: state.updatedAt,
     };
     await deps.stateStore.saveSession(state.tenantId, updatedSession);
@@ -657,6 +667,8 @@ export async function runStep(
   }
 
   const availableTools = state.toolsDisabled ? [] : deps.toolRouter.listTools(state);
+  const inputBudget = Number(process.env.OH_MAX_INPUT_TOKENS_PER_RUN ?? 300_000);
+  const pauseForInputBudget = (state.inputTokensThisRun ?? 0) >= inputBudget;
   const assistantMsgId = `msg-a-${state.runId}-${state.iteration + 1}`;
   state.assistantMessageId = assistantMsgId;
   const assistantMsg: Message = {
@@ -677,16 +689,25 @@ export async function runStep(
     message: assistantMsg,
   });
 
-  const providerMessages = deps.prepareAttachments
+  const preparedMessages = deps.prepareAttachments
     ? await deps.prepareAttachments(state, ctxPrepared.messages)
     : ctxPrepared.messages;
+  const providerMessages = pauseForInputBudget
+    ? [...preparedMessages, {
+        info: { id: `msg-budget-${state.runId}-${state.iteration}`, role: "user" as const, summary: true },
+        createdAt: deps.clock.now(),
+        parts: [{ type: "text" as const, text: "The run reached its input-token budget. Summarize what has been completed, the current workspace state, and the next concrete steps. Do not call tools.", synthetic: true }],
+      }]
+    : preparedMessages;
   const turnResponse = await deps.provider.generateTurn({
     runId: state.runId,
     sessionId: state.sessionId,
     model: state.model,
-    systemPrompt: ctxPrepared.systemPrompt,
+    systemPrompt: pauseForInputBudget
+      ? "Summarize progress and concrete next steps for the user. No tools are available."
+      : ctxPrepared.systemPrompt,
     messages: providerMessages,
-    tools: availableTools.map((t) => ({
+    tools: (pauseForInputBudget ? [] : availableTools).map((t) => ({
       name: t.name,
       description: t.description ?? "",
       parameters: t.parameters,
@@ -712,6 +733,9 @@ export async function runStep(
 
   state.iteration += 1;
   state.taskIteration += 1;
+  state.modelCalls = (state.modelCalls ?? 0) + 1;
+  state.lastInputTokens = turnResponse.usage?.input ?? state.lastInputTokens ?? 0;
+  state.inputTokensThisRun = (state.inputTokensThisRun ?? 0) + (turnResponse.usage?.input ?? 0);
 
   if (turnResponse.usage) {
     state.usage.input += turnResponse.usage.input || 0;
@@ -749,6 +773,13 @@ export async function runStep(
     message: assistantMsg,
   });
 
+  if (pauseForInputBudget) {
+    state.toolsDisabled = false;
+    await transitionPhase(deps, state, "paused", events, { pauseReason: "paused_budget" });
+    await persistStepCheckpoint(deps, state);
+    return { state, events };
+  }
+
   // Checkpoint immediately after model response (§3 A.2)
   await persistStepCheckpoint(deps, state);
 
@@ -764,6 +795,7 @@ export async function runStep(
       if (state.completedToolCalls[callId]) {
         continue;
       }
+      state.toolCalls = (state.toolCalls ?? 0) + 1;
 
       const toolDef = deps.toolRouter.getTool(rawCall.name);
       const parsedInput =
@@ -1085,6 +1117,7 @@ export async function runStep(
             state.changedFiles = Array.from(
               new Set([...(state.changedFiles ?? []), ...paths])
             );
+            state.workspaceOutlinePending = true;
           }
         } else if (
           toolDef.name === "preview_url" ||
@@ -1109,6 +1142,8 @@ export async function runStep(
           }
         }
       }
+
+      if (!execResult.error && toolDef.name === "bash") state.workspaceOutlinePending = true;
 
       if (execResult.untrusted) {
         state.tainted = true;
@@ -1289,6 +1324,10 @@ export async function applyPermissionDecisionToState(
       error: execResult.error,
       state: execResult.error ? "error" : "completed",
     };
+    if (!execResult.error && ["write_file", "edit", "apply_patch", "bash"].includes(toolDef.name)) {
+      next.workspaceOutlinePending = true;
+      next.toolCalls = (next.toolCalls ?? 0) + 1;
+    }
     if (lastAssistantMsg) {
       const part: ToolPart = {
         type: "tool",

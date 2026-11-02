@@ -265,10 +265,38 @@ export class OpenHarnessServer {
   };
   private defaultRuntime: string;
   private readonly runLimiter = new RunLimiter();
+  private readonly queuedRunResumes = new Map<string, { tenantId: string; admin: boolean; resume: () => Promise<unknown> }>();
   private knownRuntimes = new Set<string>(["local", "srt-local", "docker", "modal"]);
   private generatedAdminTokenPath?: string;
   private settingsPath: string;
   private fallbackWorkspaceRoot = "";
+  private releaseRunSlot(tenantId: string, runId: string): void {
+    this.runLimiter.release(tenantId, runId);
+    this.drainQueuedRunResumes();
+  }
+  private scheduleRunResume(tenantId: string, runId: string, admin: boolean, resume: () => Promise<unknown>): boolean {
+    const acquired = this.runLimiter.tryAcquire(tenantId, runId, admin, false);
+    if (!acquired.ok) {
+      this.queuedRunResumes.set(runId, { tenantId, admin, resume });
+      return true;
+    }
+    void resume().catch((err) => {
+      this.log.error({ err: err instanceof Error ? err.message : String(err), runId }, "Could not resume queued run");
+      this.releaseRunSlot(tenantId, runId);
+    });
+    return false;
+  }
+  private drainQueuedRunResumes(): void {
+    for (const [runId, item] of this.queuedRunResumes) {
+      const acquired = this.runLimiter.tryAcquire(item.tenantId, runId, item.admin, false);
+      if (!acquired.ok) break;
+      this.queuedRunResumes.delete(runId);
+      void item.resume().catch((err) => {
+        this.log.error({ err: err instanceof Error ? err.message : String(err), runId }, "Could not resume queued run");
+        this.releaseRunSlot(item.tenantId, runId);
+      });
+    }
+  }
   private readUserSettings(): Record<string, any> {
     try {
       if (fs.existsSync(this.settingsPath)) {
@@ -801,7 +829,7 @@ export class OpenHarnessServer {
     };
 
     this.worker = new DurableWorker(this.jobQueue, this.deps, {
-      onTerminal: (tenantId, runId) => this.runLimiter.release(tenantId, runId),
+      onTerminal: (tenantId, runId) => this.releaseRunSlot(tenantId, runId),
     });
     this.runStateMachine = new RunStateMachine({ dataDir, stateStore: this.stateStore });
     this.emitter = new RunEventEmitter({ stateStore: this.stateStore, eventBus: this.eventBus });
@@ -810,7 +838,8 @@ export class OpenHarnessServer {
       emitter: this.emitter,
       deps: this.deps,
       activeSandboxes: this.activeSandboxes,
-      onTerminal: (tenantId, runId) => this.runLimiter.release(tenantId, runId),
+      onTerminal: (tenantId, runId) => this.releaseRunSlot(tenantId, runId),
+      onWaiting: (tenantId, runId) => this.releaseRunSlot(tenantId, runId),
     });
     const keepalive = createKeepalive(() => this.config.port ?? Number(process.env.OPENHARNESS_PORT ?? 4096));
     this.runWorker.setRunLauncher((runId) => {
@@ -1300,6 +1329,7 @@ export class OpenHarnessServer {
           defaultAgent: this.config.defaultAgent ?? "assistant",
           defaultModel: this.getDefaultModel(),
           defaultRuntime: this.defaultRuntime,
+          hostedIsolation: this.hostedIsolation,
         },
       };
     }
@@ -1622,11 +1652,13 @@ export class OpenHarnessServer {
         for (const provider of Object.values(providerSettings as Record<string, any>)) {
           const configuredWindow = provider?.models?.[modelId]?.contextWindow;
           if (typeof configuredWindow === "number" && Number.isFinite(configuredWindow) && configuredWindow > 0) {
-            contextWindow = configuredWindow;
+          contextWindow = configuredWindow;
             break;
           }
         }
       }
+      const contextBudget = Number(process.env.OH_CONTEXT_BUDGET_TOKENS ?? 40_000);
+      contextWindow = Math.min(contextWindow, Number.isFinite(contextBudget) && contextBudget > 0 ? contextBudget : 40_000);
       const compactions = transcript.messages.reduce((count, message) =>
         count + message.parts.filter((part) => part.type === "compaction").length, 0);
       return {
@@ -1634,7 +1666,7 @@ export class OpenHarnessServer {
         body: {
           contextUsage: {
             sessionId,
-            estimatedTokens: contextManager.estimateTranscriptTokens(systemPrompt, transcript.messages),
+            estimatedTokens: runState?.lastInputTokens ?? contextManager.estimateTranscriptTokens(systemPrompt, transcript.messages),
             contextWindow,
             triggerAt: contextManager.getTriggerTokens(contextWindow),
             messages: transcript.messages.length,
@@ -1690,10 +1722,9 @@ export class OpenHarnessServer {
     const messagesMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/messages$/);
     if (method === "GET" && messagesMatch) {
       const sid = messagesMatch[1]!;
-      const [data, sess] = await Promise.all([
-        this.stateStore.getMessages(tenantId, sid),
-        this.stateStore.getSession(tenantId, sid),
-      ]);
+      const sess = await this.stateStore.getSession(tenantId, sid);
+      if (!sess) return { status: 404, body: { error: "Session not found" } };
+      const data = await this.stateStore.getMessages(tenantId, sid);
       return {
         status: 200,
         body: {
@@ -1875,7 +1906,7 @@ export class OpenHarnessServer {
     const promptMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/prompt$/);
     if (method === "POST" && promptMatch) {
       const sessionId = promptMatch[1]!;
-      const session = await this.stateStore.getSession(tenantId, sessionId);
+      let session = await this.stateStore.getSession(tenantId, sessionId);
       if (!session) return { status: 404, body: { error: "Session not found" } };
 
       const payload = body ?? {};
@@ -1910,6 +1941,13 @@ export class OpenHarnessServer {
         ? `\n\nAttached files are available in the workspace at:\n${attachmentParts.map((part) => `- ${part.workspacePath} (${part.mimeType}, ${part.size} bytes)`).join("\n")}`
         : "";
       const promptText = `${text}${attachmentSummary}`.trim();
+      if (/^(new chat|untitled)$/i.test(session.title.trim())) {
+        const titleSource = text.trim() || "Attached files";
+        const title = titleSource.split(/\s+/).slice(0, 6).join(" ").slice(0, 80);
+        session = { ...session, title, updatedAt: Date.now() };
+        await this.stateStore.saveSession(tenantId, session);
+        await this.emitter.emit(tenantId, sessionId, { type: "session.updated", session });
+      }
       const isAsync = Boolean(payload.async) || attachmentParts.length > 0;
 
       const userMsgId = `msg_u_${Date.now()}`;
@@ -1958,7 +1996,7 @@ export class OpenHarnessServer {
             typeof payload.clientTurnId === "string" ? payload.clientTurnId : undefined,
         });
         if (deduplicated) {
-          this.runLimiter.release(tenantId, runId);
+          this.releaseRunSlot(tenantId, runId);
           return {
             status: 202,
             body: { messageId: userMsgId, runId: run.id },
@@ -2003,7 +2041,7 @@ export class OpenHarnessServer {
         body: { messageId: userMsgId, runId },
       };
       } catch (err) {
-        this.runLimiter.release(tenantId, runId);
+        this.releaseRunSlot(tenantId, runId);
         throw err;
       }
     }
@@ -2117,6 +2155,23 @@ export class OpenHarnessServer {
       try {
         const runId = runAnswerMatch[1]!;
         const answer = String(body?.answer ?? "");
+        const v2Run = await this.runWorker.getRun(runId);
+        if (v2Run) {
+          const runTenant = v2Run.tenantId ?? "default";
+          if (runTenant !== tenantId && !identity.admin) return { status: 404, body: { error: "Run not found" } };
+          const slot = this.runLimiter.tryAcquire(runTenant, runId, identity.admin === true, false);
+          if (!slot.ok) {
+            this.queuedRunResumes.set(runId, { tenantId: runTenant, admin: identity.admin === true, resume: async () => { await this.runWorker.answerQuestion(runId, answer); } });
+            return { status: 202, body: { queued: true, message: "Waiting for a free slot" } };
+          }
+          try {
+            const updated = await this.runWorker.answerQuestion(runId, answer);
+            return { status: 200, body: updated };
+          } catch (err) {
+            this.releaseRunSlot(runTenant, runId);
+            throw err;
+          }
+        }
         const v1 = await this.worker.answerQuestion(tenantId, runId, answer);
         if (v1.ok) return { status: 200, body: { answered: true } };
         const tenantJobs = await this.jobQueue.listJobs({ tenantId });
@@ -2176,7 +2231,7 @@ export class OpenHarnessServer {
         });
         return { status: 202, body: { runId: retried.id, run: retried } };
       } catch (err) {
-        if (acquiredTenant && acquiredRun) this.runLimiter.release(acquiredTenant, acquiredRun);
+        if (acquiredTenant && acquiredRun) this.releaseRunSlot(acquiredTenant, acquiredRun);
         const status = typeof (err as any)?.status === "number" ? (err as any).status : 400;
         return { status, body: { error: (err as Error).message } };
       }
@@ -2198,9 +2253,21 @@ export class OpenHarnessServer {
       }
       if (action === "resume") {
         const extend = Boolean(body?.extend);
-        if (await this.runWorker.getRun(runId)) {
+        const v2Run = await this.runWorker.getRun(runId);
+        if (v2Run) {
+          const runTenant = v2Run.tenantId ?? "default";
+          if (runTenant !== tenantId && !identity.admin) return { status: 404, body: { error: "Run not found" } };
+          if (v2Run.status !== "awaiting_input" || v2Run.phase !== "paused") return { status: 200, body: v2Run };
+          const slot = this.runLimiter.tryAcquire(runTenant, runId, identity.admin === true, false);
+          if (!slot.ok) {
+            this.queuedRunResumes.set(runId, { tenantId: runTenant, admin: identity.admin === true, resume: async () => { await this.runWorker.resumeRun(runId, { extend }); } });
+            return { status: 202, body: { queued: true, message: "Waiting for a free slot" } };
+          }
           const resumedV2 = await this.runWorker.resumeRun(runId, { extend });
-          if (!resumedV2) return { status: 404, body: { error: "Run not found" } };
+          if (!resumedV2) {
+            this.releaseRunSlot(runTenant, runId);
+            return { status: 404, body: { error: "Run not found" } };
+          }
           return { status: 200, body: resumedV2 };
         }
         const resumed = await this.worker.resumeRun(tenantId, runId, { extend });

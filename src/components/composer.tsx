@@ -54,7 +54,7 @@ export const Composer = forwardRef<
   }
 >(function Composer(
   {
-    agentName,
+    agentName: _agentName,
     isPlanMode = false,
     commands,
     active,
@@ -252,9 +252,7 @@ export const Composer = forwardRef<
     }
   };
 
-  const placeholder = isPlanMode
-    ? "Describe what to plan..."
-    : `Message ${agentName}... (/ for commands)`;
+  const placeholder = "Message…";
 
   const activeCmdId =
     slashOpen && matchingCommands[slashIndex]
@@ -263,7 +261,7 @@ export const Composer = forwardRef<
 
   return (
     <div
-      className="mx-auto w-full max-w-[720px] px-4 pb-4"
+      className="mx-auto w-full max-w-[720px] px-4 pb-4 max-[420px]:mx-0 max-[420px]:max-w-none max-[420px]:px-2"
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) e.preventDefault();
       }}
@@ -286,8 +284,8 @@ export const Composer = forwardRef<
             <p className="px-3 pb-2 pt-1 text-[11px] text-muted">Up to 100 files, 20 MB total. Code mode can work with any file type.</p>
           </div>
         )}
-        <input ref={fileInputRef} type="file" multiple className="sr-only" onChange={(e) => { if (e.currentTarget.files) addFiles(e.currentTarget.files); e.currentTarget.value = ""; }} />
-        <input ref={folderInputRef} type="file" multiple className="sr-only" onChange={(e) => { if (e.currentTarget.files) addFiles(e.currentTarget.files); e.currentTarget.value = ""; }} />
+        <input ref={fileInputRef} type="file" multiple className="sr-only" aria-hidden="true" tabIndex={-1} onChange={(e) => { if (e.currentTarget.files) addFiles(e.currentTarget.files); e.currentTarget.value = ""; }} />
+        <input ref={folderInputRef} type="file" multiple className="sr-only" aria-hidden="true" tabIndex={-1} onChange={(e) => { if (e.currentTarget.files) addFiles(e.currentTarget.files); e.currentTarget.value = ""; }} />
         {slashOpen && (
           <div
             id={slashListboxId}

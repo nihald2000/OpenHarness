@@ -18,7 +18,7 @@ import {
 import type { SettingsPreviewResponse } from "@openharness/sdk";
 import { client } from "@/lib/client";
 import { errorMessage, isStatus } from "@/lib/format";
-import { useApp } from "@/lib/hooks";
+import { useApp, useCatalog } from "@/lib/hooks";
 import { useAdmin } from "@/lib/use-admin";
 import { PluginsTab } from "../plugins-tab";
 import { Badge, IconButton } from "../ui";
@@ -62,7 +62,8 @@ function isValidSection(val: string): val is SectionId {
 }
 
 export function SettingsView() {
-  const { setSidebarOpen } = useApp();
+  const { setSidebarOpen, theme, toggleTheme } = useApp();
+  const { info, loading: catalogLoading } = useCatalog();
   const { admin, authDisabled, loading: adminLoading, expired, user, logout, markSignedOut } =
     useAdmin();
 
@@ -174,7 +175,27 @@ export function SettingsView() {
         {adminLoading ? (
           <Loading label="Checking admin session..." />
         ) : !admin ? (
-          <SignInCard expired={expired} />
+          catalogLoading && !info ? (
+            <Loading label="Loading guest preferences..." />
+          ) : info?.hostedIsolation || authDisabled ? (
+            <div className="mx-auto max-w-xl space-y-5 p-6">
+              <SectionHeading title="Guest preferences" description="These settings are saved in this browser." />
+              <Card>
+                <div className="flex items-center justify-between gap-4 p-4">
+                  <div><div className="text-sm font-medium text-fg">Theme</div><div className="text-xs text-muted">Choose the interface appearance.</div></div>
+                  <button type="button" onClick={toggleTheme} className={buttonSecondary}>{theme === "dark" ? "Dark" : "Light"} · Toggle</button>
+                </div>
+                <div className="flex items-center justify-between gap-4 border-t border-border p-4">
+                  <div><div className="text-sm font-medium text-fg">Default mode</div><div className="text-xs text-muted">Choose the mode used for new prompts.</div></div>
+                  <select aria-label="Default mode" className="rounded-lg border border-border bg-bg px-3 py-2 text-xs text-fg" defaultValue={(() => { try { return localStorage.getItem("oh-default-mode") ?? "task"; } catch { return "task"; } })()} onChange={(event) => { try { localStorage.setItem("oh-default-mode", event.target.value); } catch {} }}>
+                    <option value="task">Code</option><option value="ask">Ask</option>
+                  </select>
+                </div>
+              </Card>
+            </div>
+          ) : (
+            <SignInCard expired={expired} />
+          )
         ) : error ? (
           <div className="mx-auto max-w-xl p-6 space-y-3">
             <Callout tone="danger">Could not load settings: {error}</Callout>

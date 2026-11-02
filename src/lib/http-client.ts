@@ -337,8 +337,8 @@ export class HttpOpenHarnessClient {
     pause: async (id: string): Promise<RunRecord> => {
       return this.request<RunRecord>("POST", `/v1/runs/${encodeURIComponent(id)}/pause`, {});
     },
-    resume: async (id: string, opts?: { extend?: boolean }): Promise<RunRecord> => {
-      return this.request<RunRecord>(
+    resume: async (id: string, opts?: { extend?: boolean }): Promise<RunRecord & { queued?: boolean; message?: string }> => {
+      return this.request<RunRecord & { queued?: boolean; message?: string }>(
         "POST",
         `/v1/runs/${encodeURIComponent(id)}/resume`,
         opts ?? {}
@@ -347,8 +347,8 @@ export class HttpOpenHarnessClient {
     cancel: async (id: string): Promise<RunRecord> => {
       return this.request<RunRecord>("POST", `/v1/runs/${encodeURIComponent(id)}/cancel`, {});
     },
-    answer: async (id: string, answer: string): Promise<RunRecord> => {
-      return this.request<RunRecord>(
+    answer: async (id: string, answer: string): Promise<RunRecord & { queued?: boolean; message?: string }> => {
+      return this.request<RunRecord & { queued?: boolean; message?: string }>(
         "POST",
         `/v1/runs/${encodeURIComponent(id)}/answer`,
         { answer }

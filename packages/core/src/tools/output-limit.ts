@@ -21,10 +21,11 @@ export function enforceToolOutputLimit(
   rawOutput: unknown,
   callId: string,
   workspaceRoot: string,
-  limits?: { maxBytes?: number; maxLines?: number }
+  limits?: { maxBytes?: number; maxLines?: number; maxChars?: number; style?: "head-tail" | "tail" }
 ): TruncatedToolOutput {
   const maxBytes = limits?.maxBytes ?? DEFAULT_MAX_TOOL_OUTPUT_BYTES;
   const maxLines = limits?.maxLines ?? DEFAULT_MAX_TOOL_OUTPUT_LINES;
+  const maxChars = limits?.maxChars;
 
   const text =
     typeof rawOutput === "string"
@@ -35,7 +36,7 @@ export function enforceToolOutputLimit(
   const lines = text.split("\n");
   const originalLines = lines.length;
 
-  if (originalBytes <= maxBytes && originalLines <= maxLines) {
+  if (originalBytes <= maxBytes && originalLines <= maxLines && (maxChars === undefined || text.length <= maxChars)) {
     return {
       output: text,
       truncated: false,
@@ -51,24 +52,21 @@ export function enforceToolOutputLimit(
   fs.writeFileSync(spillPath, text, "utf8");
 
   const relSpillPath = `.openharness/outputs/${safeCallId}.txt`;
-  const headLinesCount = Math.min(200, Math.floor(maxLines / 4));
-  const tailLinesCount = Math.min(100, Math.floor(maxLines / 8));
+  const charLimit = maxChars ?? maxBytes;
+  const style = limits?.style ?? "head-tail";
+  const headChars = style === "tail" ? 0 : maxChars ? Math.min(3000, Math.floor(charLimit / 4)) : Math.floor(maxBytes * 0.45);
+  const tailChars = maxChars ? charLimit - headChars : Math.floor(maxBytes * 0.25);
+  const head = style === "tail" ? "" : text.slice(0, headChars);
+  const tail = text.slice(-tailChars);
 
-  const head = lines.slice(0, headLinesCount).join("\n").slice(0, Math.floor(maxBytes * 0.45));
-  const tail = lines.slice(-tailLinesCount).join("\n").slice(-Math.floor(maxBytes * 0.25));
-
-  const summary = [
-    head,
-    "",
-    `... [TRUNCATED: output was ${originalLines} lines / ${originalBytes} bytes, exceeding limit of ${maxLines} lines / ${maxBytes} bytes] ...`,
+  const notice = [
+    `[TRUNCATED: output was ${originalLines} lines / ${originalBytes} bytes, exceeding the tool output limit]`,
     `Full output saved to: ${relSpillPath}`,
-    `To inspect further, use \`read_file\` with {"path": "${relSpillPath}", "offset": ${headLinesCount + 1}, "limit": 200} or \`search\` (grep) on "${relSpillPath}".`,
-    "",
-    tail,
+    `Use read_file or search on ${relSpillPath} for more.`,
   ].join("\n");
 
   return {
-    output: summary,
+    output: style === "tail" ? `${notice}\n${tail}` : `${head}\n${notice}\n${tail}`,
     truncated: true,
     spillPath: relSpillPath,
     originalBytes,

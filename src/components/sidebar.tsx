@@ -61,6 +61,7 @@ export function Sidebar() {
     commands,
     loading: catalogLoading,
   } = useCatalog();
+  const waitingInAnotherChat = sessions.find((session) => session.id !== activeSessionId && session.status === "awaiting_input");
 
   const [query, setQuery] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -264,6 +265,12 @@ export function Sidebar() {
           </div>
         </div>
 
+        {waitingInAnotherChat && (
+          <Link href={`/c/${encodeURIComponent(waitingInAnotherChat.id)}`} className="mx-3 mb-2 block rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-fg">
+            A question is waiting in <span className="font-semibold">{waitingInAnotherChat.title || "Untitled chat"}</span>
+          </Link>
+        )}
+
         <div className="px-3 pt-1 pb-2 border-b border-border">
           <button
             type="button"
@@ -436,6 +443,7 @@ export function Sidebar() {
         </nav>
 
         <div className="border-t border-border p-3 space-y-1">
+          {!info?.hostedIsolation && (
           <Link
             href="/settings"
             aria-current={pathname === "/settings" ? "page" : undefined}
@@ -450,6 +458,7 @@ export function Sidebar() {
               <span>Settings</span>
             </span>
           </Link>
+          )}
 
           <div className="flex items-center justify-between px-3 py-1 text-xs text-muted">
             <div className="flex items-center gap-2 min-w-0">

@@ -75,10 +75,13 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number } | null>(null);
   const [stopping, setStopping] = useState(false);
   const [questionSubmitting, setQuestionSubmitting] = useState(false);
+  const [waitingForRunSlot, setWaitingForRunSlot] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [stickTrigger, setStickTrigger] = useState(0);
 
-  const [runMode, setRunMode] = useState<"task" | "ask">("task");
+  const [runMode, setRunMode] = useState<"task" | "ask">(() => {
+    try { return localStorage.getItem("oh-default-mode") === "ask" ? "ask" : "task"; } catch { return "task"; }
+  });
   const [pendingQuestion, setPendingQuestion] = useState<{
     runId: string;
     questionId: string;
@@ -104,6 +107,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   const handleStreamEvent = useCallback(
     (ev: OpenHarnessEvent) => {
       ingestEvent(ev);
+      if (ev.type === "run.status" && ev.status === "running") setWaitingForRunSlot(false);
       if (ev.type === "fix.status") {
         if (ev.phase === "succeeded") {
           notify(
@@ -538,11 +542,26 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     }
   };
 
+  const handleContinueBudgetRun = async () => {
+    if (!session?.runId) return;
+    try {
+      const result = await client.runs.resume(session.runId);
+      if (result.queued) setWaitingForRunSlot(true);
+      await refreshSession();
+    } catch (err) {
+      notify("error", `Could not continue run: ${errorMessage(err)}`);
+    }
+  };
+
   const handleQuestionAnswer = async (answer: string) => {
     if (!pendingQuestion || !answer.trim() || questionSubmitting) return;
     setQuestionSubmitting(true);
     try {
-      await client.runs.answer(pendingQuestion.runId, answer.trim());
+      const result = await client.runs.answer(pendingQuestion.runId, answer.trim());
+      if (result.queued) {
+        setWaitingForRunSlot(true);
+        notify("info", "Waiting for a free slot. This run will resume automatically.");
+      }
       setPendingQuestion(null);
       setQuestionAnswer("");
     } catch (err) {
@@ -597,14 +616,6 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     [messages]
   );
   const activeRun = isActive(session?.status) || compacting;
-  const showStopButton = !readOnly && !stopping && (
-    session?.status === "running" ||
-    session?.status === "verifying" ||
-    session?.phase === "planning" ||
-    session?.phase === "building" ||
-    session?.phase === "testing" ||
-    session?.phase === "fixing"
-  );
   const isActivePlan = Boolean(plan && !planStale && !optimisticPrompt);
   const prog = plan ? planProgress(plan) : null;
 
@@ -715,16 +726,9 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
               requests={permissions}
               onReply={replyPermission}
             />
-
-            {showStopButton && (
-              <div className="mx-auto mb-3 flex w-full max-w-[720px] justify-end px-4">
-                <button
-                  type="button"
-                  onClick={() => void handleStop()}
-                  className="inline-flex items-center gap-2 rounded-lg border border-danger/50 bg-danger/10 px-4 py-2 text-sm font-semibold text-danger shadow-sm transition-colors hover:bg-danger/20"
-                >
-                  Stop
-                </button>
+            {waitingForRunSlot && (
+              <div className="mx-auto mb-3 w-full max-w-[720px] rounded-xl border border-border bg-elev px-4 py-3 text-xs text-muted max-[420px]:mx-0 max-[420px]:max-w-none">
+                Waiting for a free slot. This run will resume automatically.
               </div>
             )}
 
@@ -859,7 +863,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
               <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-elev p-0.5">
                 <button
                   type="button"
-                  onClick={() => setRunMode("task")}
+                  onClick={() => { setRunMode("task"); try { localStorage.setItem("oh-default-mode", "task"); } catch {} }}
+                  aria-pressed={runMode === "task"}
                   className={`rounded-md px-2.5 py-1 font-medium ${
                     runMode === "task" ? "bg-accent text-accent-fg" : "text-muted hover:text-fg"
                   }`}
@@ -868,7 +873,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setRunMode("ask")}
+                  onClick={() => { setRunMode("ask"); try { localStorage.setItem("oh-default-mode", "ask"); } catch {} }}
+                  aria-pressed={runMode === "ask"}
                   className={`rounded-md px-2.5 py-1 font-medium ${
                     runMode === "ask" ? "bg-accent text-accent-fg" : "text-muted hover:text-fg"
                   }`}
@@ -948,6 +954,12 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                     <Link href="/settings" className="font-medium text-accent hover:underline">
                       Open runtime settings
                     </Link>
+                  </div>
+                )}
+                {session?.pauseReason === "paused_budget" && session.runId && (
+                  <div className="mx-auto mb-3 flex w-full max-w-[720px] items-center justify-between rounded-xl border border-accent/30 bg-elev px-4 py-3 text-xs text-muted max-[420px]:max-w-none max-[420px]:mx-0">
+                    <span>Paused at the run input-token budget. Continue to start a fresh budget window.</span>
+                    <button type="button" onClick={() => void handleContinueBudgetRun()} className="ml-3 rounded-lg bg-accent px-3 py-1.5 font-semibold text-accent-fg">Continue</button>
                   </div>
                 )}
                 <Composer

@@ -21,7 +21,7 @@ export class RunLimiter {
     this.perTenantDaily = positiveLimit(perTenantDaily, 20);
   }
 
-  tryAcquire(tenantId: string, runId: string, admin: boolean): LimitResult {
+  tryAcquire(tenantId: string, runId: string, admin: boolean, countDaily = true): LimitResult {
     const total = [...this.active.values()].reduce((count, runs) => count + runs.size, 0);
     if (total >= this.globalActive) {
       return { ok: false, status: 429, error: "Server is busy (too many active runs). Try again in a minute." };
@@ -30,13 +30,15 @@ export class RunLimiter {
       if ((this.active.get(tenantId)?.size ?? 0) >= this.perTenantActive) {
         return { ok: false, status: 429, error: "You already have a run in progress. Wait for it to finish or cancel it." };
       }
-      const day = new Date().toISOString().slice(0, 10);
-      const current = this.daily.get(tenantId);
-      const count = current?.day === day ? current.count : 0;
-      if (count >= this.perTenantDaily) {
-        return { ok: false, status: 429, error: "Daily run limit reached for this browser." };
+      if (countDaily) {
+        const day = new Date().toISOString().slice(0, 10);
+        const current = this.daily.get(tenantId);
+        const count = current?.day === day ? current.count : 0;
+        if (count >= this.perTenantDaily) {
+          return { ok: false, status: 429, error: "Daily run limit reached for this browser." };
+        }
+        this.daily.set(tenantId, { day, count: count + 1 });
       }
-      this.daily.set(tenantId, { day, count: count + 1 });
     }
     let runs = this.active.get(tenantId);
     if (!runs) this.active.set(tenantId, (runs = new Set()));

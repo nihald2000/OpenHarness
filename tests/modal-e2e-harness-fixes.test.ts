@@ -39,11 +39,16 @@ test("Modal E2E fixes: Muse profiles and the tool catalog retain the full harnes
   assert.equal(resolveModelProfile("meta-models/Muse-Spark-Open-1026").contextWindow, 256000);
   assert.equal(CONSERVATIVE_DEFAULT_PROFILE.maxTools, 64);
   const router = new StandardToolRouter({ workspaceRoot: process.cwd() });
-  const tools = router.listTools(createInitialRunState({ runId: "r", sessionId: "s", phase: "building" }));
-  assert.ok(tools.length > 38, `expected full catalog, got ${tools.length}`);
-  assert.ok(tools.some((tool) => tool.name === "ask_user"));
-  assert.ok(tools.some((tool) => tool.name === "skill"));
-  assert.ok(tools.some((tool) => tool.name.startsWith("mcp__")));
+  const state = createInitialRunState({ runId: "r", sessionId: "s", mode: "task", phase: "building" });
+  state.webTools = true;
+  state.loadedGroups = ["mcp", "skills"];
+  const tools = router.listTools(state);
+  const names = new Set(tools.map((tool) => tool.name));
+  assert.ok(names.has("ask_user"));
+  assert.ok(names.has("skill"));
+  assert.ok(names.has("mcp__filesystem__read_multiple_files"));
+  assert.ok(names.has("mcp__memory__search_nodes"));
+  assert.ok(names.has("mcp__web_fetch__web_search"));
 });
 
 test("Modal E2E fixes: vision wire attaches screenshot PNGs without base64 tool-result bloat", () => {

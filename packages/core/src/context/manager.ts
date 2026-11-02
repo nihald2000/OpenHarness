@@ -12,6 +12,7 @@ import type {
   ContextPrepareResult,
   RunState,
 } from "../agent/deps.ts";
+import { resolveModelProfile } from "../provider/profiles.ts";
 
 export const OVERFLOW_SHRINK_RATIOS: readonly number[] = [0.85, 0.7, 0.5, 0.35] as const;
 
@@ -120,11 +121,13 @@ export class LayeredContextManager implements ContextManager {
       }
     }
 
-    if (!skipHostWorkspaceScan && this.cfg.workspaceRoot && fs.existsSync(this.cfg.workspaceRoot)) {
+    const includeOutline = state.iteration === 0 || state.workspaceOutlinePending === true;
+    if (includeOutline && !skipHostWorkspaceScan && this.cfg.workspaceRoot && fs.existsSync(this.cfg.workspaceRoot)) {
       const outline = this.buildWorkspaceOutline(this.cfg.workspaceRoot, 80);
       if (outline.length > 0) {
         sections.push("## Workspace Outline\n" + outline.join("\n"));
       }
+      state.workspaceOutlinePending = false;
     }
 
     if (state.changedFiles && state.changedFiles.length > 0) {
@@ -219,6 +222,58 @@ export class LayeredContextManager implements ContextManager {
    * pending approvals, and errors from the last `keepErrorTurns` (default 3) turns.
    */
   clearOldToolResults(messages: Message[], workspaceRoot?: string): Message[] {
+    // Aggressively retain only recent, high-value stream outputs even before
+    // turn based pruning kicks in. This prevents screenshots and log tails from
+    // being sent repeatedly on every model request.
+    const keepLatest = new Map<string, number>();
+    const protectedToolCallIds = new Set<string>();
+    let bashSeen = 0;
+    for (let mi = messages.length - 1; mi >= 0; mi--) {
+      for (let pi = messages[mi]!.parts.length - 1; pi >= 0; pi--) {
+        const part = messages[mi]!.parts[pi]!;
+        if (part.type !== "tool" || part.state !== "completed") continue;
+        if (["browser_snapshot", "browser_screenshot", "process_logs"].includes(part.tool)) {
+          if (!keepLatest.has(part.tool)) {
+            keepLatest.set(part.tool, mi * 100000 + pi);
+            protectedToolCallIds.add(part.callId);
+          }
+        } else if (part.tool === "bash") {
+          bashSeen++;
+          if (bashSeen <= 3) {
+            keepLatest.set(`${part.tool}:${part.callId}`, mi * 100000 + pi);
+            protectedToolCallIds.add(part.callId);
+          }
+        }
+      }
+    }
+    const prunedInput = messages.map((msg, mi) => {
+      const cloned = structuredClone(msg);
+      cloned.parts = cloned.parts.map((part, pi) => {
+        if (part.type !== "tool" || part.state !== "completed") return part;
+        const critical = ["browser_snapshot", "browser_screenshot", "process_logs"].includes(part.tool) || part.tool === "bash";
+        if (!critical) return part;
+        const key = part.tool === "bash" ? `${part.tool}:${part.callId}` : part.tool;
+        if (keepLatest.get(key) === mi * 100000 + pi) return part;
+        const outStr = typeof part.output === "string" ? part.output : JSON.stringify(part.output ?? "");
+        if (outStr.startsWith("[cleared")) return part;
+        const safeCallId = part.callId.replace(/[^A-Za-z0-9_.-]/g, "_");
+        const spillRelPath = `.openharness/outputs/${safeCallId}.txt`;
+        if (workspaceRoot && outStr) {
+          const outDir = path.join(workspaceRoot, ".openharness", "outputs");
+          fs.mkdirSync(outDir, { recursive: true });
+          const fullPath = path.join(outDir, `${safeCallId}.txt`);
+          if (!fs.existsSync(fullPath)) fs.writeFileSync(fullPath, outStr, "utf8");
+        }
+        const objectCode = part.output && typeof part.output === "object" && "exitCode" in part.output
+          ? String((part.output as { exitCode?: unknown }).exitCode)
+          : undefined;
+        const errorCode = part.error?.match(/(?:exit|exited)\s+(?:with\s+)?(?:code\s+)?(-?\d+)/i)?.[1];
+        const code = objectCode ?? errorCode ?? "unknown";
+        return { ...part, output: `[cleared ${part.tool}: exit ${code}, ${outStr.split("\n").length} lines - full output at ${spillRelPath}]` };
+      });
+      return cloned;
+    });
+    messages = prunedInput;
     const clearAfterTurns = this.cfg.clearAfterTurns ?? 6;
     const keepErrorTurns = this.cfg.keepErrorTurns ?? 3;
     const assistantIndices = messages
@@ -265,6 +320,7 @@ export class LayeredContextManager implements ContextManager {
         // Pin pending approvals, feature_list, todo tools, and latest verification result
         if (
           part.state === "pending" ||
+          protectedToolCallIds.has(part.callId) ||
           part.tool === "feature_list" ||
           part.tool === "todo_write" ||
           part.tool === "todo_read" ||
@@ -283,7 +339,7 @@ export class LayeredContextManager implements ContextManager {
           typeof part.output === "string"
             ? part.output
             : JSON.stringify(part.output ?? "");
-        if (outStr.startsWith("[cleared:")) {
+        if (outStr.startsWith("[cleared")) {
           return part;
         }
 
@@ -591,10 +647,12 @@ export class LayeredContextManager implements ContextManager {
     rawMessages: Message[]
   ): Promise<ContextPrepareResult> {
     const events: OpenHarnessEvent[] = [];
-    const contextWindow = this.cfg.contextWindow ?? 32_000;
+    const profileWindow = this.cfg.contextWindow ?? resolveModelProfile(state.model).contextWindow;
+    const configuredBudget = Number(process.env.OH_CONTEXT_BUDGET_TOKENS ?? 40_000);
+    const contextWindow = Math.min(profileWindow, Number.isFinite(configuredBudget) && configuredBudget > 0 ? configuredBudget : 40_000);
     const triggerTokens = this.getTriggerTokens(contextWindow);
     const keepRecentTokens =
-      this.cfg.keepRecentTokens ?? Math.min(20_000, Math.floor(contextWindow * 0.35));
+      Math.min(12_000, Math.floor(contextWindow * 0.35));
 
     // Collect touched file paths from recent tool calls for lazy AGENTS.md loading
     const touchedPaths: string[] = [];
