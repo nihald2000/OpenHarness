@@ -266,6 +266,7 @@ export interface DelegatedTaskPart {
   background?: boolean;
   worktreeBranch?: string;
   summary?: string;
+  usage?: TokenUsage;
 }
 
 export interface PlanPart {
@@ -516,6 +517,7 @@ export type OpenHarnessEvent =
   | { type: "verification.completed"; sessionId: string; result: { command?: string; passed?: boolean; exitCode?: number | null; timedOut?: boolean; stdout?: string; stderr?: string; truncated?: boolean }; iteration: number; maxIterations: number }
   | { type: "permission.asked"; request: PermissionRequest }
   | { type: "permission.replied"; requestId: string; reply?: PermissionReply }
+  | { type: "takeover.requested"; sessionId: string; runId: string; reason: string; instructions?: string; requestedBy: "agent" | "user"; seq?: number }
   | { type: "message.updated"; sessionId: string; message: Message; seq?: number }
   | { type: "part.updated"; sessionId: string; messageId: string; part: Part; seq?: number }
   | {

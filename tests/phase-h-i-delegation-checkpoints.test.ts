@@ -197,6 +197,18 @@ test("Phase I Acceptance: automatic shadow-git checkpoints, POST /v1/sessions/:i
     automatic: true,
   });
 
+  // These synthetic checkpoint IDs test conversation rewind/fork metadata rather
+  // than daemon git restore. Keep this fixture as a local chat session so it
+  // does not ask the sandbox git adapter to restore a non-existent SHA.
+  const checkpointSession = await server.stateStore.getSession("default", sessionId);
+  assert.ok(checkpointSession);
+  checkpointSession.mode = "chat";
+  checkpointSession.runtime = null;
+  checkpointSession.runId = undefined;
+  checkpointSession.activeRunId = null;
+  checkpointSession.sandboxHandleId = undefined;
+  await server.stateStore.saveSession("default", checkpointSession);
+
   // 2. Test CLI `oh session checkpoints <sessionId>`
   const cliCpList = await runOhCli(["session", "checkpoints", sessionId, "--json"], server);
   assert.equal(cliCpList.exitCode, 0);

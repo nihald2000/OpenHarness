@@ -19,7 +19,7 @@ import { McpClientManager } from "../mcp/client.ts";
 const IGNORED_WORKSPACE_DIRS = new Set(["node_modules", ".git", "dist", ".openharness"]);
 
 const READ_TOOL_NAMES = ["read_file", "list", "glob", "search", "ask_user"] as const;
-const BUILD_TOOL_NAMES = ["write_file", "edit", "apply_patch", "bash", "verify", "delegate", "todo_write", "update_plan"] as const;
+const BUILD_TOOL_NAMES = ["write_file", "edit", "apply_patch", "bash", "verify", "delegate", "todo_write", "update_plan", "request_takeover", "service_start"] as const;
 const WEB_TOOL_NAMES = ["process_start", "process_logs", "process_stop", "preview_url", "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_screenshot", "browser_console"] as const;
 const WEB_INTENT = /\b(web|ui|page|browser|frontend|react|vue|svelte|vite|next|html|css|preview|dev server|express|api server)\b/i;
 
@@ -129,6 +129,7 @@ export const HOST_TOOLS = new Set([
   "todowrite",
   "plan",
   "ask_user",
+  "request_takeover",
   "delegate",
   "handoff",
   "word_count",
@@ -830,7 +831,7 @@ export class StandardToolRouter implements ToolRouter {
       {
         name: "process_start",
         description:
-          "Starts a long-lived background process (such as a dev server or watcher) inside the sandbox and detects listening ports. Example: {\"command\": \"npm run dev\", \"port\": 3000}",
+          "Starts a long-lived background process (such as a dev server or watcher) inside the sandbox and detects listening ports. Set waitFor to wait until its HTTP endpoint responds before continuing. Example: {\"command\": \"npm run dev -- --host 0.0.0.0\", \"port\": 3000, \"waitFor\": {\"path\": \"/\", \"timeoutSec\": 60}}",
         readOnly: false,
         idempotent: false,
         requiresSandbox: true,
@@ -841,13 +842,21 @@ export class StandardToolRouter implements ToolRouter {
             command: { type: "string" },
             cwd: { type: "string" },
             port: { type: "number" },
+            waitFor: { type: "object", properties: { port: { type: "number" }, path: { type: "string" }, timeoutSec: { type: "number" } } },
           },
         },
         execute: async (input, ctx) => {
           const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "process_start requires an active sandbox" };
-          const res = await d.daemon.handleRequest("POST", "/processes", d.headers, input);
-          const body = res.body as Record<string, unknown>;
+          const { waitFor, ...startInput } = input;
+          const res = await d.daemon.handleRequest("POST", "/processes", d.headers, startInput);
+          let body = res.body as Record<string, unknown>;
+          let readinessError: string | undefined;
+          if (res.status === 200 && typeof waitFor === "object" && waitFor !== null && typeof body.id === "string") {
+            const ready = await d.daemon.handleRequest("POST", `/processes/${encodeURIComponent(body.id)}/wait`, d.headers, waitFor as Record<string, unknown>);
+            body = { ...body, readiness: ready.body };
+            if (ready.status !== 200) readinessError = String((ready.body as Record<string, unknown>).error ?? `Server readiness check failed with HTTP ${ready.status}`);
+          }
           const port = typeof body.port === "number" ? body.port : Number(input.port);
           const externalUrl = Number.isFinite(port) && ctx.sandboxHandleId
             ? await this.opts.resolvePreviewUrl?.(ctx.sandboxHandleId, port)
@@ -858,7 +867,7 @@ export class StandardToolRouter implements ToolRouter {
               : body,
             error: res.status !== 200
               ? (typeof res.body.error === "string" ? res.body.error : `process_start failed with HTTP ${res.status}`)
-              : undefined,
+              : readinessError,
           };
         },
       },
@@ -931,6 +940,21 @@ export class StandardToolRouter implements ToolRouter {
             d.headers
           );
           return { output: res.body, error: res.status !== 200 ? String(res.body.error) : undefined };
+        },
+      },
+
+      {
+        name: "service_start",
+        description: "Start an isolated PostgreSQL, Redis, or SQLite service inside this sandbox and return local connection environment variables. Services bind to localhost and their data stays in the session workspace.",
+        readOnly: false,
+        idempotent: true,
+        requiresSandbox: true,
+        parameters: { type: "object", required: ["service"], properties: { service: { type: "string", enum: ["postgres", "redis", "sqlite"] } } },
+        execute: async (input, ctx) => {
+          const d = await this.getDaemonAndHeaders(ctx);
+          if (!d) return { output: null, error: "service_start requires an active sandbox" };
+          const res = await d.daemon.handleRequest("POST", "/services", d.headers, input);
+          return { output: res.body, error: res.status === 200 ? undefined : String((res.body as any).error ?? `service_start failed with HTTP ${res.status}`) };
         },
       },
 
@@ -1284,7 +1308,19 @@ export class StandardToolRouter implements ToolRouter {
           properties: {
             title: { type: "string" },
             explanation: { type: "string" },
-            steps: { type: "array" },
+            steps: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["title"],
+                properties: {
+                  id: { type: "string" },
+                  title: { type: "string" },
+                  status: { type: "string", enum: ["pending", "in_progress", "completed", "blocked"] },
+                  detail: { type: "string" },
+                },
+              },
+            },
             acceptance: { type: "array", items: { type: "string" } },
             verification: { type: "array", items: { type: "string" } },
           },
@@ -1294,7 +1330,7 @@ export class StandardToolRouter implements ToolRouter {
           const rawSteps = Array.isArray(input.steps) ? input.steps : [];
           const steps = rawSteps.map((s: Record<string, unknown>, idx: number) => ({
             id: String(s.id ?? idx + 1),
-            title: String(s.title ?? `Step ${idx + 1}`),
+            title: String(s.title ?? s.step ?? s.content ?? s.description ?? `Step ${idx + 1}`),
             status: isPlanMode
               ? ("pending" as const)
               : ((s.status as "pending" | "in_progress" | "completed" | "blocked") ?? "pending"),
@@ -1325,7 +1361,19 @@ export class StandardToolRouter implements ToolRouter {
           type: "object",
           required: ["todos"],
           properties: {
-            todos: { type: "array" },
+            todos: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  content: { type: "string" },
+                  title: { type: "string" },
+                  status: { type: "string", enum: ["pending", "in_progress", "completed", "cancelled"] },
+                  priority: { type: "string", enum: ["low", "medium", "high"] },
+                },
+              },
+            },
           },
         },
         execute: async (input, ctx) => {
@@ -1559,7 +1607,12 @@ export class StandardToolRouter implements ToolRouter {
             agent: { type: "string" },
             prompt: { type: "string" },
             tools: { type: "array", items: { type: "string" } },
-            budget: { type: "object" },
+            budget: {
+              type: "object",
+              properties: {
+                maxIterations: { type: "integer", minimum: 1, maximum: 25 },
+              },
+            },
             background: { type: "boolean" },
             worktree: { type: "boolean" },
           },
@@ -1600,6 +1653,26 @@ export class StandardToolRouter implements ToolRouter {
               answer: String(input.answer ?? "Proceed with default."),
             },
           };
+        },
+      },
+
+      {
+        name: "request_takeover",
+        description: "Pause and ask the user to take browser control for login, CAPTCHA, 2FA, payment, or another blocked page. The run resumes when the user returns control.",
+        readOnly: true,
+        idempotent: false,
+        source: "builtin",
+        parameters: {
+          type: "object",
+          required: ["reason"],
+          properties: { reason: { type: "string" }, instructions: { type: "string" } },
+        },
+        execute: async (input, ctx) => {
+          const reason = String(input.reason ?? "Human help needed").trim().slice(0, 1_000);
+          const instructions = typeof input.instructions === "string" ? input.instructions.slice(0, 2_000) : undefined;
+          ctx.state.takeoverRequested = true;
+          ctx.state.takeover = { reason, instructions, requestedBy: "agent", requestedAt: Date.now() };
+          return { output: { takeoverRequested: true, reason } };
         },
       },
 

@@ -4,6 +4,7 @@ import { resolveInside } from "../../core/src/util/safe-path.ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import path from "node:path";
 import {
   assertEnforcementAvailable,
@@ -94,7 +95,7 @@ export class SandboxDaemon {
   private processes = new Map<string, BackgroundProcessState>();
   private undoStack = new Map<string, string[]>();
   private ports = new Map<number, string>();
-  private browser: BrowserSessionState = {
+  private browserState: BrowserSessionState = {
     currentUrl: "about:blank",
     title: "Blank",
     html: "<html><body></body></html>",
@@ -110,7 +111,7 @@ export class SandboxDaemon {
   private osEnforced = false;
   private enforcementError?: string;
   private srtSettingsPath: string;
-  private browserBridge = new BrowserBridge();
+  private readonly browserBridge: BrowserBridge;
   private idempotencyCache = new Map<
     string,
     { expiresAt: number; promise: Promise<{ status: number; body: Record<string, unknown>; headers: Record<string, string> }> }
@@ -118,6 +119,11 @@ export class SandboxDaemon {
 
   constructor(config: SandboxDaemonConfig) {
     this.config = config;
+    this.browserBridge = new BrowserBridge({
+      runAs: config.runAs,
+      homePath: config.homePath,
+      tmpPath: config.tmpPath,
+    });
     fs.mkdirSync(this.config.workspacePath, { recursive: true });
     fs.mkdirSync(this.config.memoriesPath, { recursive: true });
     fs.mkdirSync(this.config.tmpPath, { recursive: true });
@@ -138,6 +144,10 @@ export class SandboxDaemon {
       this.osEnforced = false;
       this.enforcementError = (err as Error).message;
     }
+  }
+
+  get browser(): BrowserBridge {
+    return this.browserBridge;
   }
 
   /**
@@ -248,7 +258,7 @@ export class SandboxDaemon {
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const fileMutation = method === "POST" && /^\/files\/(?:create|write_bytes|str_replace|insert|undo_edit|apply_patch)$/.test(pathname);
     const shellMutation = method === "POST" && (
-      pathname === "/exec" || pathname === "/processes" ||
+      pathname === "/exec" || pathname === "/processes" || pathname === "/services" ||
       /^\/shell\/[^/]+\/exec$/.test(pathname)
     );
     const checkpointMutation = method === "POST" && /^\/checkpoints\/(?:create|diff|restore)$/.test(pathname);
@@ -258,6 +268,7 @@ export class SandboxDaemon {
       pathname === "/exec" ||
       /^\/shell\/[^/]+\/exec$/.test(pathname) ||
       pathname === "/processes" ||
+      pathname === "/services" ||
       pathname === "/ipython/exec";
     if (isExecRoute && this.config.requireSrt && !this.osEnforced) {
       return {
@@ -308,11 +319,14 @@ export class SandboxDaemon {
     if (method === "POST" && pathname === "/processes") {
       return this.startBackgroundProcess(payload);
     }
+    if (method === "POST" && pathname === "/services") return this.startService(payload);
     const procLogsMatch = pathname.match(/^\/processes\/([^/]+)\/logs$/);
     if (method === "GET" && procLogsMatch) {
       const since = Number.parseInt(parsedUrl.searchParams.get("since") ?? "0", 10);
       return this.getProcessLogs(procLogsMatch[1]!, since);
     }
+    const procWaitMatch = pathname.match(/^\/processes\/([^/]+)\/wait$/);
+    if (method === "POST" && procWaitMatch) return this.waitForProcess(procWaitMatch[1]!, payload);
     const procDelMatch = pathname.match(/^\/processes\/([^/]+)$/);
     if (method === "DELETE" && procDelMatch) {
       return this.stopBackgroundProcess(procDelMatch[1]!);
@@ -430,10 +444,10 @@ export class SandboxDaemon {
       return this.browserScreenshot();
     }
     if (method === "GET" && pathname === "/browser/console_logs") {
-      return { status: 200, body: { logs: this.browser.consoleLogs } };
+      return { status: 200, body: { logs: this.browserState.consoleLogs } };
     }
     if (method === "GET" && pathname === "/browser/network_errors") {
-      return { status: 200, body: { errors: this.browser.networkErrors } };
+      return { status: 200, body: { errors: this.browserState.networkErrors } };
     }
 
     // --- IPython Route ---
@@ -748,6 +762,94 @@ export class SandboxDaemon {
     };
   }
 
+  private async startService(payload: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+    const service = String(payload.service ?? "").toLowerCase();
+    if (!["postgres", "redis", "sqlite"].includes(service)) {
+      return { status: 400, body: { error: "service must be postgres, redis, or sqlite" } };
+    }
+    const serviceRoot = path.join(this.config.workspacePath, ".openharness", "services");
+    const serviceDir = path.join(serviceRoot, service);
+    fs.mkdirSync(serviceDir, { recursive: true });
+    fs.chmodSync(serviceDir, 0o700);
+    if (this.config.runAs && process.platform !== "win32" && process.getuid?.() === 0) {
+      fs.chownSync(serviceRoot, this.config.runAs.uid, this.config.runAs.gid);
+      fs.chownSync(serviceDir, this.config.runAs.uid, this.config.runAs.gid);
+    }
+    if (service === "sqlite") {
+      const dbPath = path.join(serviceDir, "app.sqlite");
+      if (!fs.existsSync(dbPath)) fs.writeFileSync(dbPath, "", { mode: 0o600 });
+      if (this.config.runAs && process.platform !== "win32" && process.getuid?.() === 0) fs.chownSync(dbPath, this.config.runAs.uid, this.config.runAs.gid);
+      return { status: 200, body: { service, ready: true, env: { DATABASE_URL: `file:${dbPath}`, SQLITE_PATH: dbPath } } };
+    }
+    const port = await new Promise<number>((resolve, reject) => {
+      const server = net.createServer();
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server.address();
+        const selected = typeof addr === "object" && addr ? addr.port : 0;
+        server.close((err) => err ? reject(err) : resolve(selected));
+      });
+    });
+    if (!port) return { status: 500, body: { error: "Could not allocate a service port" } };
+    const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+    let command: string;
+    let env: Record<string, string>;
+    if (service === "postgres") {
+      const versionsDir = "/usr/lib/postgresql";
+      const versions = fs.existsSync(versionsDir) ? fs.readdirSync(versionsDir).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })) : [];
+      const binDir = versions.map((version) => path.join(versionsDir, version, "bin")).find((dir) => fs.existsSync(path.join(dir, "initdb")) && fs.existsSync(path.join(dir, "postgres")));
+      if (!binDir) return { status: 503, body: { error: "PostgreSQL binaries are not installed in this sandbox image" } };
+      const dataDir = path.join(serviceDir, "data");
+      if (!fs.existsSync(path.join(dataDir, "PG_VERSION"))) {
+        fs.mkdirSync(dataDir, { recursive: true });
+        fs.chmodSync(dataDir, 0o700);
+        if (this.config.runAs && process.platform !== "win32" && process.getuid?.() === 0) fs.chownSync(dataDir, this.config.runAs.uid, this.config.runAs.gid);
+        const init = spawnConfined({ srtSettingsPath: this.srtSettingsPath, runAs: this.config.runAs, homePath: this.config.homePath, tmpPath: this.config.tmpPath, useSrt: this.osEnforced, srtProbe: this.config.srtProbe }, `${quote(path.join(binDir, "initdb"))} -D ${quote(dataDir)} -A trust --no-locale -U agent`, serviceDir, { HOME: this.config.homePath ?? serviceDir });
+        const result = await new Promise<{ code: number | null; output: string }>((resolve) => {
+          let output = "";
+          init.stdout?.on("data", (chunk: Buffer) => { output = (output + chunk.toString()).slice(-4000); });
+          init.stderr?.on("data", (chunk: Buffer) => { output = (output + chunk.toString()).slice(-4000); });
+          init.once("close", (code) => resolve({ code, output }));
+          init.once("error", (err) => resolve({ code: 1, output: err.message }));
+        });
+        if (result.code !== 0) return { status: 500, body: { error: "PostgreSQL initialization failed", details: this.redact(result.output) } };
+      }
+      command = `${quote(path.join(binDir, "postgres"))} -D ${quote(dataDir)} -h 127.0.0.1 -p ${port} -k ${quote(serviceDir)}`;
+      env = { PGHOST: "127.0.0.1", PGPORT: String(port), PGUSER: "agent", DATABASE_URL: `postgresql://agent@127.0.0.1:${port}/postgres` };
+    } else {
+      const redisBin = ["/usr/bin/redis-server", "/usr/local/bin/redis-server"].find((file) => fs.existsSync(file));
+      if (!redisBin) return { status: 503, body: { error: "Redis is not installed in this sandbox image" } };
+      command = `${quote(redisBin)} --bind 127.0.0.1 --port ${port} --save '' --appendonly no --dir ${quote(serviceDir)}`;
+      env = { REDIS_HOST: "127.0.0.1", REDIS_PORT: String(port), REDIS_URL: `redis://127.0.0.1:${port}` };
+    }
+    const started = await this.startBackgroundProcess({ command, cwd: ".", port });
+    if (started.status !== 200) return started;
+    const processId = String((started.body as Record<string, unknown>).id ?? "");
+    const deadline = Date.now() + 20_000;
+    let ready = false;
+    while (processId && Date.now() < deadline) {
+      const proc = this.processes.get(processId);
+      if (!proc || proc.status !== "running") break;
+      ready = await new Promise<boolean>((resolve) => {
+        const socket = net.createConnection({ host: "127.0.0.1", port });
+        const timer = setTimeout(() => { socket.destroy(); resolve(false); }, 300);
+        socket.once("connect", () => { clearTimeout(timer); socket.destroy(); resolve(true); });
+        socket.once("error", () => { clearTimeout(timer); resolve(false); });
+      });
+      if (ready) break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const proc = this.processes.get(processId);
+    if (!ready) {
+      if (proc?.status === "running") {
+        killConfinedProcessGroup(proc.child, "SIGKILL");
+        proc.status = "stopped";
+      }
+      return { status: 504, body: { service, ready: false, processId, logsTail: proc?.logs.join("").slice(-8_000), error: "Service did not accept local connections within 20 seconds" } };
+    }
+    return { status: 200, body: { service, ready: true, ...(started.body as Record<string, unknown>), env } };
+  }
+
   private async startBackgroundProcess(
     payload: Record<string, unknown>
   ): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -867,6 +969,33 @@ export class SandboxDaemon {
         nextCursor: proc.logs.length,
       },
     };
+  }
+
+  private async waitForProcess(id: string, payload: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+    const proc = this.processes.get(id);
+    if (!proc) return { status: 404, body: { error: `Process "${id}" not found` } };
+    const port = Number(payload.port ?? proc.port);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 8080) {
+      return { status: 400, body: { error: "waitFor requires a valid detected or configured port" } };
+    }
+    const rawPath = String(payload.path ?? "/");
+    if (!rawPath.startsWith("/") || rawPath.startsWith("//") || rawPath.includes("\\")) {
+      return { status: 400, body: { error: "waitFor.path must be a local URL path" } };
+    }
+    const timeoutSec = Math.max(1, Math.min(120, Number(payload.timeoutSec ?? 60) || 60));
+    const deadline = Date.now() + timeoutSec * 1000;
+    let lastStatus: number | undefined;
+    while (Date.now() < deadline) {
+      if (proc.status !== "running") break;
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}${rawPath}`, { signal: AbortSignal.timeout(1_500), redirect: "manual" });
+        lastStatus = response.status;
+        await response.body?.cancel().catch(() => {});
+        if (response.status < 500) return { status: 200, body: { ready: true, status: response.status, url: `http://127.0.0.1:${port}${rawPath}`, port, logsTail: proc.logs.join("").slice(-8_000) } };
+      } catch { /* The server may still be booting. */ }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    return { status: 504, body: { ready: false, status: lastStatus, port, logsTail: proc.logs.join("").slice(-8_000), error: proc.status === "running" ? `Server did not become ready within ${timeoutSec}s` : "Process exited before the server became ready" } };
   }
 
   private async stopBackgroundProcess(
@@ -1577,45 +1706,45 @@ export class SandboxDaemon {
       const netCheck = evaluateNetworkAccess(this.config.policy, url, "GET");
       if (!netCheck.allowed) {
         this.emitViolation("network", url, netCheck.reason);
-        this.browser.networkErrors.push(netCheck.reason ?? `Blocked: ${url}`);
+        this.browserState.networkErrors.push(netCheck.reason ?? `Blocked: ${url}`);
         return { status: 403, body: { error: netCheck.reason } };
       }
     }
 
-    this.browser.currentUrl = url;
+    this.browserState.currentUrl = url;
     if (typeof payload.html === "string") {
-      this.browser.html = payload.html;
+      this.browserState.html = payload.html;
     } else if (isLocalPreview) {
       // Try fetching local dev server page if reachable, or synthesize preview DOM
       try {
         const resp = await fetch(url);
-        this.browser.html = await resp.text();
+        this.browserState.html = await resp.text();
         if (resp.status === 200) this.ports.set(port, `http://127.0.0.1:${port}`);
       } catch {
-        this.browser.html = `<html><head><title>Preview ${url}</title></head><body><h1>Running at ${url}</h1><button id="app-btn">Action</button><input name="q" /></body></html>`;
+        this.browserState.html = `<html><head><title>Preview ${url}</title></head><body><h1>Running at ${url}</h1><button id="app-btn">Action</button><input name="q" /></body></html>`;
       }
     } else {
-      this.browser.html = `<html><head><title>${url}</title></head><body><h1>${url}</h1><a href="/">Home</a></body></html>`;
+      this.browserState.html = `<html><head><title>${url}</title></head><body><h1>${url}</h1><a href="/">Home</a></body></html>`;
     }
 
-    this.browser.title =
-      this.browser.html.match(/<title>([\s\S]*?)<\/title>/i)?.[1]?.trim() ?? url;
-    this.browser.elements = extractAccessibilityHandles(this.browser.html);
+    this.browserState.title =
+      this.browserState.html.match(/<title>([\s\S]*?)<\/title>/i)?.[1]?.trim() ?? url;
+    this.browserState.elements = extractAccessibilityHandles(this.browserState.html);
 
     return {
       status: 200,
       body: {
-        url: this.browser.currentUrl,
-        title: this.browser.title,
-        refsCount: this.browser.elements.length,
+        url: this.browserState.currentUrl,
+        title: this.browserState.title,
+        refsCount: this.browserState.elements.length,
       },
     };
   }
 
   private async browserSnapshot(): Promise<{ status: number; body: Record<string, unknown> }> {
     const treeLines = [
-      `- document [title="${this.browser.title}" url="${this.browser.currentUrl}"]`,
-      ...this.browser.elements.map(
+      `- document [title="${this.browserState.title}" url="${this.browserState.currentUrl}"]`,
+      ...this.browserState.elements.map(
         (el) =>
           `  - ${el.role} "${el.name}" [ref=${el.ref}]${el.value ? ` value="${el.value}"` : ""}`
       ),
@@ -1623,10 +1752,10 @@ export class SandboxDaemon {
     return {
       status: 200,
       body: {
-        url: this.browser.currentUrl,
-        title: this.browser.title,
+        url: this.browserState.currentUrl,
+        title: this.browserState.title,
         snapshot: treeLines.join("\n"),
-        elements: this.browser.elements,
+        elements: this.browserState.elements,
       },
     };
   }
@@ -1635,11 +1764,11 @@ export class SandboxDaemon {
     payload: Record<string, unknown>
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const ref = String(payload.ref ?? "");
-    const el = this.browser.elements.find((e) => e.ref === ref);
+    const el = this.browserState.elements.find((e) => e.ref === ref);
     if (!el) {
       return { status: 400, body: { error: `Element handle [ref=${ref}] not found in snapshot` } };
     }
-    this.browser.consoleLogs.push(`[browser] Clicked [${ref}] (${el.role} "${el.name}")`);
+    this.browserState.consoleLogs.push(`[browser] Clicked [${ref}] (${el.role} "${el.name}")`);
     return { status: 200, body: { clicked: ref, element: el } };
   }
 
@@ -1648,12 +1777,12 @@ export class SandboxDaemon {
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const ref = String(payload.ref ?? "");
     const text = String(payload.text ?? "");
-    const el = this.browser.elements.find((e) => e.ref === ref);
+    const el = this.browserState.elements.find((e) => e.ref === ref);
     if (!el) {
       return { status: 400, body: { error: `Element handle [ref=${ref}] not found in snapshot` } };
     }
     el.value = text;
-    this.browser.consoleLogs.push(`[browser] Typed into [${ref}]`);
+    this.browserState.consoleLogs.push(`[browser] Typed into [${ref}]`);
     return { status: 200, body: { typed: ref, value: text } };
   }
 
@@ -1661,7 +1790,7 @@ export class SandboxDaemon {
     payload: Record<string, unknown>
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const key = String(payload.key ?? "Enter");
-    this.browser.consoleLogs.push(`[browser] Pressed key "${key}"`);
+    this.browserState.consoleLogs.push(`[browser] Pressed key "${key}"`);
     return { status: 200, body: { pressed: key } };
   }
 
@@ -1673,8 +1802,8 @@ export class SandboxDaemon {
       status: 200,
       body: {
         mimeType: "image/png",
-        url: this.browser.currentUrl,
-        title: this.browser.title,
+        url: this.browserState.currentUrl,
+        title: this.browserState.title,
         dataBase64: pngBase64,
       },
     };

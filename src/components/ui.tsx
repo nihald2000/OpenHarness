@@ -93,16 +93,30 @@ export function ConnectionIndicator({
   status: ConnectionStatus;
   hideLabelOnMobile?: boolean;
 }) {
+  const [visibleStatus, setVisibleStatus] = React.useState(status);
+
+  React.useEffect(() => {
+    if (status !== "reconnecting") {
+      setVisibleStatus(status);
+      return;
+    }
+
+    // EventSource retries brief network interruptions automatically. Avoid
+    // flashing the connection badge when it reconnects before the next paint.
+    const timer = setTimeout(() => setVisibleStatus("reconnecting"), 1_200);
+    return () => clearTimeout(timer);
+  }, [status]);
+
   const map: Record<
     ConnectionStatus,
     { label: string; dot: string; pulse?: boolean }
   > = {
     open: { label: "Live", dot: "bg-success" },
     connecting: { label: "Connecting", dot: "bg-warning", pulse: true },
-    reconnecting: { label: "Reconnecting", dot: "bg-warning", pulse: true },
+    reconnecting: { label: "Reconnecting", dot: "bg-warning" },
     closed: { label: "Offline", dot: "bg-danger" },
   };
-  const info = map[status] ?? map.closed;
+  const info = map[visibleStatus] ?? map.closed;
   return (
     <span
       role="status"

@@ -116,6 +116,7 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
     role,
     task: prompt,
     status: "running",
+    usage: { input: 0, output: 0 },
   };
   if (emit) {
     await emit(ctx.tenantId, ctx.sessionId, {
@@ -145,6 +146,7 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
   ];
 
   let finalReport = "";
+  const usage = { input: 0, output: 0, reasoning: 0, cacheRead: 0 };
   try {
     for (let step = 0; step < maxSteps; step++) {
       const isLastStep = step === maxSteps - 1;
@@ -164,6 +166,18 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
         maxOutputTokens: ctx.state.budgets.maxOutputTokensPerCall,
         signal: ctx.signal,
       });
+
+      if (turn.usage) {
+        usage.input += turn.usage.input ?? 0;
+        usage.output += turn.usage.output ?? 0;
+        usage.reasoning += turn.usage.reasoning ?? 0;
+        usage.cacheRead += turn.usage.cacheRead ?? 0;
+        ctx.state.usage.input += turn.usage.input ?? 0;
+        ctx.state.usage.output += turn.usage.output ?? 0;
+        ctx.state.usage.reasoning = (ctx.state.usage.reasoning ?? 0) + (turn.usage.reasoning ?? 0);
+        ctx.state.usage.cacheRead = (ctx.state.usage.cacheRead ?? 0) + (turn.usage.cacheRead ?? 0);
+        ctx.state.inputTokensThisRun = (ctx.state.inputTokensThisRun ?? 0) + (turn.usage.input ?? 0);
+      }
 
       if (turn.text) {
         finalReport = turn.text;
@@ -234,6 +248,7 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
       task: prompt,
       status: "completed",
       summary,
+      usage,
     };
     if (emit) {
       await emit(ctx.tenantId, ctx.sessionId, {
@@ -249,6 +264,7 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
         agent: role,
         status: "completed",
         report: summary,
+        usage,
       },
     };
   } catch (err) {
@@ -260,6 +276,7 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
       task: prompt,
       status: "failed",
       summary: errMsg,
+      usage,
     };
     if (emit) {
       await emit(ctx.tenantId, ctx.sessionId, {

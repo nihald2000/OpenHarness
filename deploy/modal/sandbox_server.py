@@ -31,23 +31,25 @@ PLAYWRIGHT = "1.48.2"
 app = modal.App(APP_NAME)
 workspaces_vol = modal.Volume.from_name("openharness-workspaces", create_if_missing=True)
 
-smoke_test = """bash -lc 'set -e -o pipefail; setpriv --version >/dev/null; OH_MODAL_SANDBOX_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa OH_VM_ISOLATED=1 OH_DISABLE_SRT=1 node /opt/oh/oh-sandboxd-hub.mjs --host 127.0.0.1 --port 18080 --root /tmp/oh-smoke >/tmp/oh-hub-smoke.log 2>&1 & PID=$!; trap "kill $PID 2>/dev/null || true" EXIT; curl --retry 20 --retry-connrefused --retry-delay 1 -fsS http://127.0.0.1:18080/health | jq -e ".ok == true and .mode == \\\"pinned-hub\\\"" >/dev/null; curl -fsS -X POST http://127.0.0.1:18080/sessions/init -H "x-session-key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -H "x-oh-sandbox-id: smoke_session" -H "content-type: application/json" -d "{}" | jq -e ".ok == true" >/dev/null; curl -fsS -X POST http://127.0.0.1:18080/shell/main/exec -H "x-session-key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -H "x-oh-sandbox-id: smoke_session" -H "content-type: application/json" -d "{\\\"command\\\":\\\"python3 -c \\\\\\\"print(42)\\\\\\\"\\\",\\\"timeoutSec\\\":10}" | jq -e ".exitCode == 0 and (.output | contains(\\\"42\\\"))" >/dev/null; rm -rf /tmp/oh-smoke /tmp/oh/smoke_session /tmp/oh-hub-smoke.log'"""
+smoke_test = """bash -lc 'set -e -o pipefail; setpriv --version >/dev/null; OH_MODAL_SANDBOX_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa OH_VM_ISOLATED=1 OH_DISABLE_SRT=1 node /opt/oh/oh-sandboxd-hub.mjs --host 127.0.0.1 --port 18080 --root /tmp/oh-smoke & PID=$!; trap "kill $PID 2>/dev/null || true" EXIT; curl --retry 20 --retry-connrefused --retry-delay 1 -fsS http://127.0.0.1:18080/health | jq -e ".ok == true and .mode == \\\"pinned-hub\\\"" >/dev/null; curl -fsS -X POST http://127.0.0.1:18080/sessions/init -H "x-session-key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -H "x-oh-sandbox-id: smoke_session" -H "content-type: application/json" -d "{}" | jq -e ".ok == true" >/dev/null; curl -fsS -X POST http://127.0.0.1:18080/shell/main/exec -H "x-session-key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -H "x-oh-sandbox-id: smoke_session" -H "content-type: application/json" -d "{\\\"command\\\":\\\"python3 -c \\\\\\\"print(42)\\\\\\\"\\\",\\\"timeoutSec\\\":10}" | jq -e ".exitCode == 0 and (.output | contains(\\\"42\\\"))" >/dev/null; rm -rf /tmp/oh-smoke /tmp/oh/smoke_session'"""
 sandbox_image = (
     modal.Image.from_registry("node:22-bookworm-slim", add_python="3.11")
     .apt_install(
         "ca-certificates", "curl", "git", "jq", "ripgrep", "tar", "gzip", "unzip",
-        "build-essential", "procps", "util-linux", "findutils",
+        "build-essential", "procps", "util-linux", "findutils", "sqlite3", "postgresql", "redis-server", "chromium",
     )
     .env({"PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright", "NODE_PATH": "/opt/oh/node_modules"})
     .add_local_dir(str(ROOT / "packages"), remote_path="/opt/oh/packages", copy=True)
     .add_local_file(str(ROOT / "package.json"), remote_path="/opt/oh/package.json", copy=True)
     .run_commands(
-        f"cd /opt/oh && npm install --no-audit --no-fund --no-save esbuild tsx playwright@{PLAYWRIGHT}",
+        f"cd /opt/oh && npm install --no-audit --no-fund --no-save esbuild tsx playwright@{PLAYWRIGHT} @playwright/test@{PLAYWRIGHT}",
         "chmod -R a+rX /opt/oh",
         "find /opt/oh/packages -type f \\( -name '*.ts' -o -name '*.mjs' -o -name '*.js' -o -name '*.json' \\) -exec sed -i 's/\\r$//' {} +",
-        "cd /opt/oh && npx playwright install --with-deps chromium && chmod -R a+rX /ms-playwright",
-        "cd /opt/oh && npx esbuild packages/sandboxd/src/hub.ts --bundle --platform=node --target=node22 --format=esm --external:playwright --external:playwright-core --outfile=/opt/oh/oh-sandboxd-hub.mjs",
+        "chromium --version && chmod -R a+rX /opt/oh",
+        "cd /opt/oh && npx esbuild packages/sandboxd/src/hub.ts --bundle --platform=node --target=node22 --format=esm --external:ws --external:playwright --external:playwright-core --outfile=/opt/oh/oh-sandboxd-hub.mjs",
         f"{smoke_test}",
+        "node -e 'const fs=require(\"fs\"),path=require(\"path\"); for (const p of [\"playwright\",\"@playwright/test\"]) { const entry=require.resolve(p); const v=JSON.parse(fs.readFileSync(path.join(path.dirname(entry),\"package.json\"),\"utf8\")).version; if(v!==\"1.48.2\") throw new Error(p+\" version mismatch: \"+v) }' && sqlite3 --version && redis-server --version && pg_lsclusters",
+        "cd /opt/oh && node -e 'const {chromium}=require(\"playwright\"); (async()=>{const b=await chromium.launch({executablePath:\"/usr/bin/chromium\",headless:true,args:[\"--no-sandbox\",\"--disable-setuid-sandbox\",\"--disable-dev-shm-usage\"]}); const p=await b.newPage(); await p.goto(\"about:blank\"); await b.close()})().catch(e=>{console.error(e);process.exit(1)})'",
     )
 )
 
@@ -56,12 +58,12 @@ sandbox_image = (
     image=sandbox_image,
     volumes={"/workspaces": workspaces_vol},
     secrets=[modal.Secret.from_name("openharness-sandbox-key")],
-    cpu=0.25,
-    memory=1024,
+    cpu=1.0,
+    memory=3072,
     timeout=3600,
     max_containers=1,
-    min_containers=int(os.environ.get("OH_SANDBOX_MIN_CONTAINERS", "1")),
-    scaledown_window=900,
+    min_containers=int(os.environ.get("OH_SANDBOX_MIN_CONTAINERS", "0")),
+    scaledown_window=600,
 )
 @modal.concurrent(max_inputs=100)
 @modal.web_server(8080, startup_timeout=60)
@@ -80,6 +82,8 @@ def sandboxd():
         "OH_HUB_PER_SESSION_UID": "1",
         "NODE_PATH": "/opt/oh/node_modules",
         "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright",
+        "CHROMIUM_EXECUTABLE_PATH": "/usr/bin/chromium",
+        "OH_LIVE_ALLOWED_ORIGINS": os.environ.get("OH_LIVE_ALLOWED_ORIGINS", "https://openharness-web-six.vercel.app"),
     }
     subprocess.Popen(
         ["node", "/opt/oh/oh-sandboxd-hub.mjs", "--host", "0.0.0.0", "--port", "8080", "--root", "/workspaces"],

@@ -33,7 +33,7 @@ After updates, deploy `sandbox_server.py` before `web_server.py` when changing t
 
 Guest limits are controlled by `OH_MAX_ACTIVE_RUNS` (global concurrent runs, default 3), `OH_GUEST_MAX_ACTIVE_RUNS` (per-browser concurrent runs, default 1), and `OH_GUEST_MAX_RUNS_PER_DAY` (default 20). The values apply in the single Modal server container and reset when that process restarts.
 
-The hub defaults to 0.25 CPU, 1 GiB memory, and one warm container. This can consume roughly $10–15/month of a $30 monthly free credit while idle; set `OH_SANDBOX_MIN_CONTAINERS=0` to reduce idle cost at the expense of first-request cold starts.
+The hub defaults to 1 CPU, 3 GiB memory, zero warm containers, and a 10-minute scale-down window. The first sandbox request after idle has a cold-start delay. The API sets `OH_MAX_ACTIVE_RUNS=2` by default in `web_server.py`; the general run-limiter default remains 3 when running outside this Modal entrypoint.
 
 ## Security boundaries and known limits
 
@@ -45,7 +45,7 @@ The hub defaults to 0.25 CPU, 1 GiB memory, and one warm container. This can con
 
 ## Environment settings
 
-The deployment recognizes `OH_MODAL_IMAGE_ID` for per-session Modal Sandboxes and `OH_MODAL_SANDBOX_URL` to override hub URL discovery. `OH_MODAL_SANDBOX_RUNTIME` defaults to `gvisor`; set it to `vm` only when the selected image requires KVM. `OPENHARNESS_WEB_GUEST=1` enables signed guest cookies.
+The deployment recognizes `OH_MODAL_IMAGE_ID` for per-session Modal Sandboxes and `OH_MODAL_SANDBOX_URL` to override hub URL discovery. `OH_MODAL_SANDBOX_RUNTIME` defaults to `gvisor`; set it to `vm` only when the selected image requires KVM. `OPENHARNESS_WEB_GUEST=1` enables signed guest cookies. Live browser WebSockets accept only exact origins listed in `OH_LIVE_ALLOWED_ORIGINS` (defaults to `https://openharness-web-six.vercel.app`). The sandbox image includes Playwright, SQLite, PostgreSQL, and Redis; use `service_start` to start session-local services. The optional GPU service is not required for normal provider use.
 
 ## Local and legacy files
 

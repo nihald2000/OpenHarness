@@ -5,7 +5,9 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { WebSocket, WebSocketServer } from "ws";
 import { compileSandboxPolicy } from "../../core/src/sandbox/policy.ts";
+import { verifyLiveTicket } from "../../core/src/sandbox/live-ticket.ts";
 import { SandboxDaemon } from "./server.ts";
 
 const SANDBOX_ID = /^[A-Za-z0-9_-]{3,96}$/;
@@ -74,6 +76,7 @@ export interface SandboxHubOptions {
   port?: number;
   root?: string;
   sessionKey?: string;
+  liveAllowedOrigins?: string[];
 }
 
 export type SandboxHubServer = Server & {
@@ -176,6 +179,16 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
 
   const daemons = new Map<string, SandboxDaemon>();
   const owners = new Map<string, Owner>();
+  const browserOwners = new Map<string, "agent" | "human">();
+  const livePeers = new Map<string, Set<WebSocket>>();
+  const usedNonces = new Map<string, number>();
+  const liveTicketKey = requireKey(options.sessionKey ?? process.env.OH_MODAL_SANDBOX_KEY ?? process.env.OH_SESSION_KEY);
+  const liveAllowedOrigins = new Set(
+    (options.liveAllowedOrigins ?? (process.env.OH_LIVE_ALLOWED_ORIGINS ?? "").split(","))
+      .map((origin) => origin.trim())
+      .filter(Boolean)
+  );
+  const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 });
   const getOrCreateDaemon = (sandboxId: string): SandboxDaemon => {
     const existing = daemons.get(sandboxId);
     if (existing) return existing;
@@ -205,6 +218,7 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
       runAs: owner,
       policy: compileSandboxPolicy({ runId, phase: "agent", workspacePath, networkMode: "open" }),
     });
+    browserOwners.set(sandboxId, "agent");
     daemons.set(sandboxId, daemon);
     return daemon;
   };
@@ -264,11 +278,27 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
         await daemon.handleRequest("POST", "/processes/stop-all", { "x-session-key": sessionKey });
         await daemon.close();
         daemons.delete(sandboxId);
+        browserOwners.delete(sandboxId);
+        for (const peer of livePeers.get(sandboxId) ?? []) peer.close(1001, "Sandbox closed");
+        livePeers.delete(sandboxId);
       }
       return sendJson(res, 200, { ok: true }, { "x-oh-daemon": "1" });
     }
 
     const daemon = getOrCreateDaemon(sandboxId);
+    const routePath = new URL(url, "http://127.0.0.1").pathname;
+    if (req.method === "POST" && routePath === "/browser/lock") {
+      const owner = body.owner;
+      if (owner !== "agent" && owner !== "human") return sendJson(res, 400, { error: "owner must be agent or human" }, { "x-oh-daemon": "1" });
+      browserOwners.set(sandboxId, owner);
+      for (const peer of livePeers.get(sandboxId) ?? []) {
+        if (peer.readyState === WebSocket.OPEN) peer.send(JSON.stringify({ type: "owner", owner }));
+      }
+      return sendJson(res, 200, { owner }, { "x-oh-daemon": "1" });
+    }
+    if (browserOwners.get(sandboxId) === "human" && routePath.startsWith("/browser/") && !new Set(["/browser/observe", "/browser/console_logs", "/browser/network_errors"]).has(routePath)) {
+      return sendJson(res, 423, { error: "Browser is under human control" }, { "x-oh-daemon": "1" });
+    }
     try {
       const owner = owners.get(sandboxId);
       if (req.method !== "GET" && req.method !== "HEAD" && owner) {
@@ -286,6 +316,65 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
   });
 
   server.on("upgrade", (req, clientSocket, head) => {
+    const liveUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+    if (liveUrl.pathname === "/live") {
+      const origin = req.headers.origin;
+      if (typeof origin !== "string" || !liveAllowedOrigins.has(origin)) {
+        clientSocket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        clientSocket.destroy();
+        return;
+      }
+      const token = liveUrl.searchParams.get("ticket") ?? "";
+      const ticket = verifyLiveTicket(token, liveTicketKey);
+      const now = Date.now();
+      for (const [nonce, expiresAt] of usedNonces) if (expiresAt <= now) usedNonces.delete(nonce);
+      if (!ticket || usedNonces.has(ticket.nonce) || (ticket.mode === "control" && browserOwners.get(ticket.sbx) !== "human")) {
+        clientSocket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+        clientSocket.destroy();
+        return;
+      }
+      usedNonces.set(ticket.nonce, ticket.exp);
+      const daemon = getOrCreateDaemon(ticket.sbx);
+      webSocketServer.handleUpgrade(req, clientSocket, head, (socket) => {
+        const peers = livePeers.get(ticket.sbx) ?? new Set<WebSocket>();
+        peers.add(socket);
+        livePeers.set(ticket.sbx, peers);
+        const send = (data: unknown) => {
+          if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
+        };
+        const onFrame = (frame: unknown) => send({ type: "frame", ...(frame as Record<string, unknown>) });
+        const onPage = (page: unknown) => send({ type: "page", ...(page as Record<string, unknown>) });
+        daemon.browser.on("frame", onFrame);
+        daemon.browser.on("page", onPage);
+        send({ type: "owner", owner: browserOwners.get(ticket.sbx) ?? "agent" });
+        void daemon.browser.send("screencast_start", { quality: 60 });
+        socket.on("message", (raw) => {
+          if (ticket.mode !== "control" || browserOwners.get(ticket.sbx) !== "human") return;
+          try {
+            const msg = JSON.parse(String(raw)) as { type?: string; payload?: Record<string, unknown> };
+            if (msg.type === "input" && msg.payload && browserOwners.get(ticket.sbx) === "human") {
+              daemon.browser.post("input", msg.payload);
+            }
+          } catch {
+            socket.close(1003, "Invalid message");
+          }
+        });
+        socket.on("close", () => {
+          daemon.browser.off("frame", onFrame);
+          daemon.browser.off("page", onPage);
+          peers.delete(socket);
+          if (peers.size === 0) {
+            livePeers.delete(ticket.sbx);
+            void daemon.browser.send("screencast_stop");
+          }
+        });
+        socket.on("error", () => {
+          daemon.browser.off("frame", onFrame);
+          daemon.browser.off("page", onPage);
+        });
+      });
+      return;
+    }
     const target = previewTarget(req.url);
     if (!target) {
       clientSocket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
@@ -315,6 +404,9 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
   const hub = server as SandboxHubServer;
   hub.daemons = daemons;
   hub.closeHub = async () => {
+    for (const peers of livePeers.values()) for (const peer of peers) peer.close(1001, "Hub shutting down");
+    livePeers.clear();
+    webSocketServer.close();
     await Promise.all(Array.from(daemons.values(), (daemon) => daemon.close().catch(() => {})));
     daemons.clear();
     if (server.listening) await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
@@ -328,6 +420,7 @@ function parseArgs(args: string[]): Required<SandboxHubOptions> {
     port: 8080,
     root: process.env.OH_WORKSPACES_ROOT ?? "/workspaces",
     sessionKey: requireKey(process.env.OH_MODAL_SANDBOX_KEY ?? process.env.OH_SESSION_KEY),
+    liveAllowedOrigins: (process.env.OH_LIVE_ALLOWED_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean),
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];

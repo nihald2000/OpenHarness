@@ -15,7 +15,7 @@ import {
   takePendingPrompt,
 } from "@/lib/pending-prompts";
 import { useSession } from "@/lib/use-session";
-import { CapabilitiesPanel } from "./capabilities-panel";
+import { CapabilitiesPanel, selectCapabilityTab } from "./capabilities-panel";
 import { ChatHeader } from "./chat-header";
 import { Composer, type ComposerHandle, type SelectedAttachment } from "./composer";
 import { EmptyState } from "./empty-state";
@@ -57,6 +57,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     ingestEvent,
     draft,
     setDraftField,
+    setCapabilitiesOpen,
   } = useApp();
 
   const {
@@ -75,6 +76,9 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number } | null>(null);
   const [stopping, setStopping] = useState(false);
   const [questionSubmitting, setQuestionSubmitting] = useState(false);
+  const [takeover, setTakeover] = useState<{ runId: string; reason: string; instructions?: string } | null>(null);
+  const [takeoverNote, setTakeoverNote] = useState("");
+  const [takeoverBusy, setTakeoverBusy] = useState(false);
   const [waitingForRunSlot, setWaitingForRunSlot] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [stickTrigger, setStickTrigger] = useState(0);
@@ -133,6 +137,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         pendingStateRevision.current += 1;
         setPendingQuestion(null);
         setQuestionAnswer("");
+      } else if (ev.type === "takeover.requested") {
+        setTakeover({ runId: ev.runId, reason: ev.reason, instructions: ev.instructions });
       } else if (ev.type === "preview.ready") {
         pendingStateRevision.current += 1;
         setPreviewUrl(maskModalPreviewUrl(ev.url));
@@ -212,7 +218,32 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     setQuestionAnswer("");
     setPreviewUrl(null);
     setChangedFiles([]);
+    setTakeover(null);
+    setTakeoverNote("");
   }, [sessionId]);
+
+  const requestTakeover = async () => {
+    const runId = session?.activeRunId ?? session?.runId;
+    if (!runId || takeoverBusy) return;
+    setTakeoverBusy(true);
+    try {
+      const result = await client.runs.takeover(runId, { reason: "User requested browser control" });
+      setTakeover({ runId: result.runId, reason: "You have browser control. Return control when finished." });
+    } catch (err) { notify("error", errorMessage(err)); }
+    finally { setTakeoverBusy(false); }
+  };
+
+  const returnTakeover = async () => {
+    if (!takeover || takeoverBusy) return;
+    setTakeoverBusy(true);
+    try {
+      await client.runs.returnBrowserControl(takeover.runId, takeoverNote);
+      setTakeover(null);
+      setTakeoverNote("");
+      await refreshSession();
+    } catch (err) { notify("error", errorMessage(err)); }
+    finally { setTakeoverBusy(false); }
+  };
 
   useEffect(() => {
     if (!sessionId || loading || notFound) return;
@@ -732,6 +763,24 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
               </div>
             )}
 
+            {takeover ? (
+              <div className="mx-auto mb-3 w-full max-w-[720px] px-4">
+                <div className="rounded-xl border border-accent/40 bg-elev p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-accent">Browser control requested</div>
+                  <p className="mt-1 text-sm text-fg">{takeover.instructions || takeover.reason}</p>
+                  <div className="mt-3 flex gap-2">
+                    <input aria-label="Note for the agent" value={takeoverNote} onChange={(e) => setTakeoverNote(e.target.value)} placeholder="What did you change? (optional)" className="min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg" />
+                    <button type="button" disabled={takeoverBusy} onClick={() => void returnTakeover()} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg">{takeoverBusy ? "Returning…" : "Return control"}</button>
+                  </div>
+                  <button type="button" className="mt-2 text-xs font-medium text-accent hover:underline" onClick={() => { selectCapabilityTab("Preview"); setCapabilitiesOpen(true); }}>Open live browser controls</button>
+                </div>
+              </div>
+            ) : session?.status === "running" && session.sandboxHandleId ? (
+              <div className="mx-auto mb-3 w-full max-w-[720px] px-4 text-right">
+                <button type="button" disabled={takeoverBusy} onClick={() => void requestTakeover()} className="rounded-lg border border-border bg-elev px-3 py-1.5 text-xs font-medium text-fg hover:bg-hover">{takeoverBusy ? "Requesting…" : "Take control of browser"}</button>
+              </div>
+            ) : null}
+
             {pendingQuestion && (
               <div className="mx-auto mb-3 w-full max-w-[720px] px-4">
                 <div className="rounded-xl border border-accent/40 bg-elev p-4 shadow-sm">
@@ -986,6 +1035,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         sessionId={sessionId}
         previewUrl={previewUrl}
         refreshToken={`${session?.status ?? ""}:${messages.length}:${changedFiles.length}`}
+        liveControl={Boolean(takeover)}
+        onTakeControl={!takeover && session?.status === "running" && session.sandboxHandleId ? () => void requestTakeover() : undefined}
       />
     </div>
   );

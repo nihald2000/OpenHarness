@@ -4,6 +4,7 @@ import { RefreshCw, X } from "lucide-react";
 import { useApp, useCatalog, useTools } from "@/lib/hooks";
 import { PluginsTab } from "./plugins-tab";
 import { Badge, IconButton, Spinner } from "./ui";
+import { LiveBrowser } from "./live-browser";
 
 export const CAPABILITY_TABS = [
   "Files",
@@ -40,11 +41,15 @@ export function CapabilitiesPanel({
   sessionId,
   previewUrl,
   refreshToken,
+  liveControl,
+  onTakeControl,
 }: {
   activeAgent: string;
   sessionId?: string;
   previewUrl?: string | null;
   refreshToken?: string | number;
+  liveControl?: boolean;
+  onTakeControl?: () => void;
 }) {
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<{ path: string; content: string } | null>(null);
@@ -311,6 +316,7 @@ export function CapabilitiesPanel({
 
           {activeTab === "Preview" && (
             <div className="space-y-2">
+              <LiveBrowser sessionId={sessionId} control={liveControl} onTakeControl={onTakeControl} />
               {previewUrl ? (
                 <>
                   <div className="flex items-center justify-between">

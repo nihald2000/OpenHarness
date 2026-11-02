@@ -47,6 +47,8 @@ import {
   StandardToolRouter,
   validateOpenHarnessConfig,
   resolveInside,
+  signLiveTicket,
+  supportsVisionModel,
   type EngineDeps,
   type EventEnvelope,
   type HealthReport,
@@ -240,6 +242,9 @@ export class OpenHarnessServer {
   readonly launcher: InProcessLauncher;
   private sweepInterval?: NodeJS.Timeout;
   private readonly runAborts = new Map<string, AbortController>();
+  private readonly takeoverResumeMessages = new Map<string, Message>();
+  private readonly takeoverTimers = new Map<string, NodeJS.Timeout>();
+  private readonly liveTicketWindows = new Map<string, { startedAt: number; count: number }>();
   readonly secretStore: EncryptedSecretStore;
   readonly attachments: AttachmentStore;
   readonly checkpointManager: SessionCheckpointManager;
@@ -289,7 +294,10 @@ export class OpenHarnessServer {
   private drainQueuedRunResumes(): void {
     for (const [runId, item] of this.queuedRunResumes) {
       const acquired = this.runLimiter.tryAcquire(item.tenantId, runId, item.admin, false);
-      if (!acquired.ok) break;
+      if (!acquired.ok) {
+        if (acquired.error.startsWith("Server is busy")) break;
+        continue;
+      }
       this.queuedRunResumes.delete(runId);
       void item.resume().catch((err) => {
         this.log.error({ err: err instanceof Error ? err.message : String(err), runId }, "Could not resume queued run");
@@ -330,6 +338,97 @@ export class OpenHarnessServer {
       daemon = getActiveSandboxDaemon(handleId);
     }
     return daemon;
+  }
+  private async setSessionBrowserOwner(sess: Session, owner: "agent" | "human"): Promise<void> {
+    const daemon = await this.resolveSessionDaemon(sess);
+    if (!daemon) throw new HttpError(404, "Sandbox is no longer running");
+    const result = await daemon.handleRequest("POST", "/browser/lock", { "x-session-key": daemon.config.sessionKey }, { owner });
+    if (result.status !== 200) throw new HttpError(result.status, String(result.body.error ?? "Could not change browser control owner"));
+  }
+  private async sessionBrowserRequest(sess: Session, action: "observe" | "screenshot", payload: Record<string, unknown> = {}) {
+    const daemon = await this.resolveSessionDaemon(sess);
+    if (!daemon) throw new HttpError(404, "Sandbox is no longer running");
+    return daemon.handleRequest("POST", `/browser/${action}`, { "x-session-key": daemon.config.sessionKey }, payload);
+  }
+  private async returnBrowserControl(tenantId: string, runId: string, note: string): Promise<{ queued: boolean; record: RunRecord }> {
+    const run = await this.runWorker.getRun(runId);
+    if (!run || (run.tenantId ?? "default") !== tenantId) throw new HttpError(404, "Run not found");
+    if (run.status !== "awaiting_input" || run.pauseReason !== "takeover") throw new HttpError(409, "Run is not waiting for a browser takeover to finish");
+    const session = await this.stateStore.getSession(tenantId, run.sessionId);
+    if (!session) throw new HttpError(404, "Session not found");
+    await this.setSessionBrowserOwner(session, "agent");
+    const observed = await this.sessionBrowserRequest(session, "observe");
+    const body = observed.body as Record<string, unknown>;
+    if (observed.status !== 200) throw new HttpError(observed.status, String(body.error ?? "Could not inspect the page after takeover"));
+    const checkpoint = await this.stateStore.getStepCheckpoint(tenantId, runId);
+    if (!checkpoint) throw new HttpError(409, "Run checkpoint is unavailable");
+    const model = checkpoint.state.model;
+    const parts: Message["parts"] = [{
+      type: "text",
+      synthetic: true,
+      text: `[Human takeover finished] Note from user: ${note.trim().slice(0, 4_000) || "none"}. The page may have changed and old element refs are invalid.\nCurrent page: ${String(body.url ?? "about:blank")} — ${String(body.title ?? "")}\n${String(body.snapshot ?? "")}`,
+    }];
+    const image = body.screenshotJpegBase64;
+    if (supportsVisionModel(model) && typeof image === "string" && image.length > 200) {
+      parts.push({
+        type: "attachment",
+        id: `takeover_${runId}_${Date.now()}`,
+        groupId: `takeover_${runId}`,
+        name: "browser-takeover.jpg",
+        relativePath: "browser-takeover.jpg",
+        workspacePath: "",
+        mimeType: "image/jpeg",
+        size: Math.floor(image.length * 0.75),
+        dataBase64: image,
+      });
+    }
+    this.takeoverResumeMessages.set(runId, {
+      info: { id: `takeover_resume_${runId}_${Date.now()}`, role: "user" },
+      createdAt: Date.now(),
+      parts,
+    });
+    checkpoint.state.takeoverRequested = false;
+    checkpoint.state.takeover = undefined;
+    checkpoint.state.pauseReason = undefined;
+    checkpoint.state.phase = "building";
+    await this.stateStore.saveStepCheckpoint(checkpoint);
+    const timer = this.takeoverTimers.get(runId);
+    if (timer) clearTimeout(timer);
+    this.takeoverTimers.delete(runId);
+    const queued = this.scheduleRunResume(tenantId, runId, false, async () => { await this.runWorker.resumeRun(runId); });
+    const updated = await this.stateStore.getRun(tenantId, runId);
+    return { queued, record: updated ?? run };
+  }
+  private scheduleTakeoverExpiry(tenantId: string, runId: string, delayMs: number): void {
+    const previous = this.takeoverTimers.get(runId);
+    if (previous) clearTimeout(previous);
+    const poll = async () => {
+      if (!this.takeoverTimers.has(runId)) return;
+      const run = await this.runWorker.getRun(runId).catch(() => null);
+      if (run?.status === "awaiting_input" && run.pauseReason === "takeover") {
+        try { await this.returnBrowserControl(tenantId, runId, "Takeover timed out"); }
+        catch (err) { this.log.error({ err: err instanceof Error ? err.message : String(err), runId }, "Timed browser takeover could not return control"); }
+        return;
+      }
+      if (!run || ["completed", "failed", "cancelled"].includes(run.status)) {
+        const session = run ? await this.stateStore.getSession(tenantId, run.sessionId) : null;
+        if (session) await this.setSessionBrowserOwner(session, "agent").catch(() => {});
+        const checkpoint = await this.stateStore.getStepCheckpoint(tenantId, runId);
+        if (checkpoint) {
+          checkpoint.state.takeoverRequested = false;
+          checkpoint.state.takeover = undefined;
+          await this.stateStore.saveStepCheckpoint(checkpoint).catch(() => {});
+        }
+        this.takeoverTimers.delete(runId);
+        return;
+      }
+      const timer = setTimeout(() => { void poll(); }, 1_000);
+      timer.unref?.();
+      this.takeoverTimers.set(runId, timer);
+    };
+    const timer = setTimeout(() => { void poll(); }, delayMs);
+    timer.unref?.();
+    this.takeoverTimers.set(runId, timer);
   }
   private writeUserSettings(cfg: Record<string, any>): void {
     fs.mkdirSync(path.dirname(this.settingsPath), { recursive: true });
@@ -723,6 +822,20 @@ export class OpenHarnessServer {
       workspaceRoot,
       resolveSessionWorkspace: (tenantId, sessionId) =>
         this.getSessionWorkspaceRoot(tenantId, sessionId),
+      loadTakeoverRequest: async (state) => {
+        const checkpoint = await this.stateStore.getStepCheckpoint(state.tenantId, state.runId);
+        return checkpoint?.state.takeoverRequested ? checkpoint.state.takeover : undefined;
+      },
+      setBrowserOwner: async (state, owner) => {
+        const session = await this.stateStore.getSession(state.tenantId, state.sessionId);
+        if (!session) throw new HttpError(404, "Session not found");
+        await this.setSessionBrowserOwner(session, owner);
+      },
+      takeTakeoverResumeMessage: async (state) => {
+        const message = this.takeoverResumeMessages.get(state.runId);
+        if (message) this.takeoverResumeMessages.delete(state.runId);
+        return message;
+      },
       onTextDelta: (tenantId, sessionId, messageId, delta) =>
         this.emitter.emitDelta(tenantId, sessionId, delta, messageId, "text"),
       onReasoningDelta: (tenantId, sessionId, messageId, delta) =>
@@ -915,6 +1028,9 @@ export class OpenHarnessServer {
   }
 
   async stop(): Promise<void> {
+    for (const timer of this.takeoverTimers.values()) clearTimeout(timer);
+    this.takeoverTimers.clear();
+    this.takeoverResumeMessages.clear();
     if (this.sweepInterval) {
       clearInterval(this.sweepInterval);
       this.sweepInterval = undefined;
@@ -1264,6 +1380,38 @@ export class OpenHarnessServer {
       return { status: 204, body: {} };
     }
 
+    const liveTicketMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/browser\/live-ticket$/);
+    if (method === "POST" && liveTicketMatch) {
+      const sessionId = decodeURIComponent(liveTicketMatch[1]!);
+      const session = await this.stateStore.getSession(tenantId, sessionId);
+      if (!session) return { status: 404, body: { error: "Session not found" } };
+      const mode = body?.mode === "control" ? "control" : body?.mode === "view" ? "view" : undefined;
+      if (!mode) return { status: 400, body: { error: "mode must be view or control" } };
+      const window = this.liveTicketWindows.get(tenantId);
+      const now = Date.now();
+      const currentWindow = !window || now - window.startedAt >= 60_000 ? { startedAt: now, count: 0 } : window;
+      if (currentWindow.count >= 30) return { status: 429, body: { error: "Live browser ticket limit exceeded" } };
+      currentWindow.count++;
+      this.liveTicketWindows.set(tenantId, currentWindow);
+      const sandboxId = session.sandboxHandleId;
+      if (!sandboxId) return { status: 409, body: { error: "Session has no active browser sandbox" } };
+      if (mode === "control") {
+        const runId = session.activeRunId ?? session.runId;
+        const run = runId ? await this.stateStore.getRun(tenantId, runId) : null;
+        const checkpoint = runId ? await this.stateStore.getStepCheckpoint(tenantId, runId) : null;
+        const takeoverPending = run?.status === "running" && checkpoint?.state.takeoverRequested === true && checkpoint.state.phase === "paused";
+        if (!run || !(takeoverPending || (run.status === "awaiting_input" && run.pauseReason === "takeover"))) {
+          return { status: 409, body: { error: "Control tickets require an active human takeover" } };
+        }
+      }
+      const key = process.env.OH_MODAL_SANDBOX_KEY ?? "";
+      const endpoint = process.env.OH_MODAL_SANDBOX_URL ?? "";
+      if (key.length < 32 || !endpoint) return { status: 503, body: { error: "Live browser is not configured" } };
+      const wsBase = endpoint.replace(/^http/i, "ws").replace(/\/+$/, "");
+      const ticket = signLiveTicket(sandboxId, mode, key);
+      return { status: 200, body: { url: `${wsBase}/live?ticket=${encodeURIComponent(ticket)}` } };
+    }
+
     if (method === "GET" && pathname === "/v1/admin/session") {
       const hasAdminCfg = Boolean(this.config.adminToken ?? process.env.OPENHARNESS_ADMIN_TOKEN);
       const isOpenMode = (this.config.authMode ?? process.env.OH_AUTH_MODE) === "open";
@@ -1604,7 +1752,7 @@ export class OpenHarnessServer {
         model: selectedModel,
         runtime:
           typeof payload.runtime === "string" ? payload.runtime : this.defaultRuntime,
-        mode: (payload.mode as "chat" | "ask" | "task" | "long_task") ?? "chat",
+        mode: (payload.mode as "chat" | "ask" | "task" | "long_task") ?? "task",
         status: "idle",
         updatedAt: Date.now(),
         usage: { input: 0, output: 0 },
@@ -1911,7 +2059,7 @@ export class OpenHarnessServer {
 
       const payload = body ?? {};
       const text = String(payload.text ?? "").slice(0, 100_000);
-      const mode = (payload.mode as "chat" | "ask" | "task" | "long_task") ?? session.mode ?? "chat";
+      const mode = (payload.mode as "chat" | "ask" | "task" | "long_task") ?? session.mode ?? "task";
       const attachmentIds = Array.isArray(payload.attachments)
         ? Array.from(new Set(payload.attachments.filter((id): id is string => typeof id === "string")))
         : [];
@@ -2148,6 +2296,39 @@ export class OpenHarnessServer {
       const run = await this.stateStore.getRun(tenantId, runGetMatch[1]!);
       if (!run) return { status: 404, body: { error: "Run not found" } };
       return { status: 200, body: run };
+    }
+
+    const takeoverMatch = pathname.match(/^\/v1\/runs\/([^/]+)\/takeover(?:\/(return))?$/);
+    if (method === "POST" && takeoverMatch) {
+      const runId = takeoverMatch[1]!;
+      const isReturn = Boolean(takeoverMatch[2]);
+      try {
+        const run = await this.runWorker.getRun(runId);
+        if (!run || (run.tenantId ?? "default") !== tenantId) return { status: 404, body: { error: "Run not found" } };
+        if (isReturn) {
+          const result = await this.returnBrowserControl(tenantId, runId, String(body?.note ?? ""));
+          return { status: result.queued ? 202 : 200, body: { returned: true, queued: result.queued, run: result.record, message: result.queued ? "Waiting for a free slot" : undefined } };
+        }
+        if (run.status !== "running") return { status: 409, body: { error: "Only a running agent can be taken over" } };
+        const session = await this.stateStore.getSession(tenantId, run.sessionId);
+        if (!session?.sandboxHandleId) return { status: 409, body: { error: "Run has no active browser sandbox" } };
+        const checkpoint = await this.stateStore.getStepCheckpoint(tenantId, runId);
+        if (!checkpoint) return { status: 409, body: { error: "Run checkpoint is unavailable" } };
+        const reason = String(body?.reason ?? "User requested browser control").slice(0, 1_000);
+        const instructions = typeof body?.instructions === "string" ? body.instructions.slice(0, 2_000) : undefined;
+        checkpoint.state.takeoverRequested = true;
+        checkpoint.state.takeover = { reason, instructions, requestedBy: "user", requestedAt: Date.now() };
+        await this.stateStore.saveStepCheckpoint(checkpoint);
+        await this.emitter.emit(tenantId, run.sessionId, {
+          type: "takeover.requested", sessionId: run.sessionId, runId, reason, instructions, requestedBy: "user",
+        });
+        const timeoutMs = Math.max(60_000, Number(process.env.OH_TAKEOVER_TIMEOUT_MS ?? 900_000));
+        this.scheduleTakeoverExpiry(tenantId, runId, timeoutMs);
+        return { status: 202, body: { takeoverRequested: true, runId, reason, instructions } };
+      } catch (err) {
+        const status = typeof (err as any)?.status === "number" ? (err as any).status : 400;
+        return { status, body: { error: (err as Error).message } };
+      }
     }
 
     const runAnswerMatch = pathname.match(/^\/v1\/runs\/([^/]+)\/answer$/);

@@ -128,6 +128,7 @@ def server():
         "OPENHARNESS_HOST": "0.0.0.0",
         "OPENHARNESS_PORT": "4096",
         "OPENHARNESS_DATA_DIR": "/data",
+        "OH_MAX_ACTIVE_RUNS": os.environ.get("OH_MAX_ACTIVE_RUNS", "2"),
     }
     print(f"[openharness-server] active OH_MODAL_IMAGE_ID={image_id}", flush=True)
     print(f"[openharness-server] active OH_MODAL_SANDBOX_URL={sandbox_url}", flush=True)

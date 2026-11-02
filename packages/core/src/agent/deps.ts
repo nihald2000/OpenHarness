@@ -137,6 +137,8 @@ export interface RunState {
   toolCalls?: number;
   inputTokensThisRun?: number;
   budgetPauseRequested?: boolean;
+  takeoverRequested?: boolean;
+  takeover?: { reason: string; instructions?: string; requestedBy: "agent" | "user"; requestedAt: number };
 }
 
 export interface ProviderToolCall {
@@ -362,4 +364,7 @@ export interface EngineDeps {
     message: string,
     automatic: boolean
   ) => Promise<CheckpointInfo | null>;
+  loadTakeoverRequest?: (state: RunState) => Promise<RunState["takeover"] | undefined>;
+  setBrowserOwner?: (state: RunState, owner: "agent" | "human") => Promise<void>;
+  takeTakeoverResumeMessage?: (state: RunState) => Promise<Message | undefined>;
 }

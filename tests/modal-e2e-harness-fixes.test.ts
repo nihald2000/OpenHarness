@@ -149,6 +149,7 @@ test("Modal E2E fixes: process_start and preview_url return tunnel and in-sandbo
   registerSandboxTransport("modal-preview", {
     async request(_method, route) {
       if (route === "/processes") return { status: 200, body: { id: "p1", port: 3000, previewUrl: "http://127.0.0.1:3000" } };
+      if (route === "/processes/p1/wait") return { status: 200, body: { ready: true, status: 200, port: 3000, logsTail: "ready" } };
       if (route === "/ports") return { status: 200, body: { ports: [{ port: 3000, previewUrl: "http://127.0.0.1:3000" }] } };
       if (route === "/processes/p1/logs?since=0") return { status: 200, body: { port: 3000, previewUrl: "http://127.0.0.1:3000", logs: "ready" } };
       return { status: 404, body: {} };
@@ -157,9 +158,10 @@ test("Modal E2E fixes: process_start and preview_url return tunnel and in-sandbo
   const router = new StandardToolRouter({ workspaceRoot: workspace, resolvePreviewUrl: () => "https://preview-3000.modal.host" });
   const ctx = { runId: "r", sessionId: "s", tenantId: "t", workspaceRoot: workspace, sandboxHandleId: "modal-preview", state: createInitialRunState({ runId: "r", sessionId: "s", tenantId: "t" }) };
   try {
-    const started = await router.executeTool("c1", "process_start", { command: "npm run dev", port: 3000 }, ctx);
+    const started = await router.executeTool("c1", "process_start", { command: "npm run dev -- --host 0.0.0.0", port: 3000, waitFor: { path: "/", timeoutSec: 30 } }, ctx);
     assert.equal((started.output as any).previewUrl, "https://preview-3000.modal.host");
     assert.equal((started.output as any).internalUrl, "http://127.0.0.1:3000");
+    assert.equal((started.output as any).readiness.ready, true);
     const preview = await router.executeTool("c2", "preview_url", { port: 3000 }, ctx);
     assert.equal((preview.output as any).previewUrl, "https://preview-3000.modal.host");
     assert.equal((preview.output as any).internalUrl, "http://127.0.0.1:3000");
@@ -172,6 +174,56 @@ test("Modal E2E fixes: process_start and preview_url return tunnel and in-sandbo
   } finally {
     unregisterSandboxTransport("modal-preview");
     fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("full-stack service tool returns session-local connection environment", async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "oh-service-tool-"));
+  let request: { method: string; path: string; body?: Record<string, unknown> } | undefined;
+  registerSandboxTransport("service-sandbox", {
+    async request(method, path, body) {
+      request = { method, path, body: body as Record<string, unknown> | undefined };
+      return { status: 200, body: { service: "postgres", ready: true, env: { DATABASE_URL: "postgresql://agent@127.0.0.1:54321/postgres" } } };
+    },
+  });
+  const router = new StandardToolRouter({ workspaceRoot: workspace });
+  const state = createInitialRunState({ runId: "service-run", sessionId: "service-session", tenantId: "tenant", mode: "task", phase: "building" });
+  const ctx = { runId: state.runId, sessionId: state.sessionId, tenantId: state.tenantId, workspaceRoot: workspace, sandboxHandleId: "service-sandbox", state };
+  try {
+    assert.ok(router.listTools(state).some((tool) => tool.name === "service_start"));
+    const result = await router.executeTool("service-call", "service_start", { service: "postgres" }, ctx);
+    assert.deepEqual(request, { method: "POST", path: "/services", body: { service: "postgres" } });
+    assert.match(String((result.output as any).env.DATABASE_URL), /^postgresql:\/\//);
+  } finally {
+    unregisterSandboxTransport("service-sandbox");
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("request_takeover pauses the durable run at a tool boundary and persists the takeover reason", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oh-browser-takeover-"));
+  const server = new OpenHarnessServer({ dataDir: root, workspaceRoot: root, defaultModel: "mock/demo" });
+  server.deps.setBrowserOwner = async () => {};
+  server.deps.provider.generateTurn = async () => ({ text: "Requesting help with browser login.", toolCalls: [{ id: "takeover-1", name: "request_takeover", arguments: { reason: "Sign in", instructions: "Complete the sign-in flow" } }] });
+  try {
+    const created = await server.handleRequest("POST", "/v1/sessions", {}, { title: "Browser takeover", mode: "task" });
+    const sessionId = (created.body as { id: string }).id;
+    const prompt = await server.handleRequest("POST", `/v1/sessions/${sessionId}/prompt`, {}, { text: "Sign in to the app", mode: "task", async: true });
+    const runId = (prompt.body as { runId: string }).runId;
+    for (let i = 0; i < 150; i++) {
+      const run = await server.runWorker.getRun(runId);
+      if (run?.status === "awaiting_input" || run?.status === "failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+    const run = await server.runWorker.getRun(runId);
+    assert.equal(run?.status, "awaiting_input", JSON.stringify(run?.diagnostic));
+    assert.equal(run?.pauseReason, "takeover");
+    const checkpoint = await server.stateStore.getStepCheckpoint("default", runId);
+    assert.equal(checkpoint?.state.takeoverRequested, true);
+    assert.equal(checkpoint?.state.takeover?.reason, "Sign in");
+  } finally {
+    await server.stop();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

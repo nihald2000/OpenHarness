@@ -242,6 +242,37 @@ async function transitionPhase(
   }
 }
 
+async function pauseForBrowserTakeover(
+  deps: EngineDeps,
+  state: RunState,
+  events: OpenHarnessEvent[]
+): Promise<void> {
+  const takeover = state.takeover;
+  if (!takeover) return;
+  state.takeoverRequested = true;
+  await transitionPhase(deps, state, "paused", events, { pauseReason: "takeover" });
+  await persistStepCheckpoint(deps, state);
+  await deps.setBrowserOwner?.(state, "human");
+  if (takeover.requestedBy === "agent") {
+    await emitAndPersist(deps, state, events, {
+      type: "takeover.requested",
+      sessionId: state.sessionId,
+      runId: state.runId,
+      reason: takeover.reason,
+      instructions: takeover.instructions,
+      requestedBy: "agent",
+    });
+  }
+}
+
+async function loadRequestedTakeover(deps: EngineDeps, state: RunState): Promise<boolean> {
+  if (!state.takeover && deps.loadTakeoverRequest) {
+    state.takeover = await deps.loadTakeoverRequest(state);
+  }
+  if (state.takeover) state.takeoverRequested = true;
+  return Boolean(state.takeoverRequested && state.takeover);
+}
+
 export async function persistStepCheckpoint(
   deps: EngineDeps,
   state: RunState
@@ -377,6 +408,11 @@ export async function runStep(
       pauseReason: "cancelled",
     });
     await persistStepCheckpoint(deps, state);
+    return { state, events };
+  }
+
+  if (await loadRequestedTakeover(deps, state)) {
+    await pauseForBrowserTakeover(deps, state, events);
     return { state, events };
   }
 
@@ -553,6 +589,10 @@ export async function runStep(
   // 4. Testing phase execution (Phase F.2)
   if (state.phase === "testing" && deps.onRunVerification) {
     const vResult = await deps.onRunVerification(state);
+    if (await loadRequestedTakeover(deps, state)) {
+      await pauseForBrowserTakeover(deps, state, events);
+      return { state, events };
+    }
     for (const item of vResult.results) {
       await emitAndPersist(deps, state, events, {
         type: "verification.completed",
@@ -689,9 +729,13 @@ export async function runStep(
     message: assistantMsg,
   });
 
-  const preparedMessages = deps.prepareAttachments
+  const preparedMessagesBase = deps.prepareAttachments
     ? await deps.prepareAttachments(state, ctxPrepared.messages)
     : ctxPrepared.messages;
+  const takeoverMessage = await deps.takeTakeoverResumeMessage?.(state);
+  const preparedMessages = takeoverMessage
+    ? [...preparedMessagesBase, takeoverMessage]
+    : preparedMessagesBase;
   const providerMessages = pauseForInputBudget
     ? [...preparedMessages, {
         info: { id: `msg-budget-${state.runId}-${state.iteration}`, role: "user" as const, summary: true },
@@ -699,6 +743,11 @@ export async function runStep(
         parts: [{ type: "text" as const, text: "The run reached its input-token budget. Summarize what has been completed, the current workspace state, and the next concrete steps. Do not call tools.", synthetic: true }],
       }]
     : preparedMessages;
+  if (await loadRequestedTakeover(deps, state)) {
+    await pauseForBrowserTakeover(deps, state, events);
+    return { state, events };
+  }
+
   const turnResponse = await deps.provider.generateTurn({
     runId: state.runId,
     sessionId: state.sessionId,
@@ -1187,6 +1236,11 @@ export async function runStep(
 
       // Persist step checkpoint after every completed tool call (§3 A.2)
       await persistStepCheckpoint(deps, state);
+
+      if (await loadRequestedTakeover(deps, state)) {
+        await pauseForBrowserTakeover(deps, state, events);
+        return { state, events };
+      }
     }
 
     // If in planning phase and a plan was published, transition to building (or pause if approval required)
@@ -1217,6 +1271,11 @@ export async function runStep(
     sessionId: state.sessionId,
     message: assistantMsg,
   });
+
+  if (await loadRequestedTakeover(deps, state)) {
+    await pauseForBrowserTakeover(deps, state, events);
+    return { state, events };
+  }
 
   if (
     (state.phase === "building" || state.phase === "fixing") &&

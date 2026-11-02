@@ -61,7 +61,7 @@ export function Sidebar() {
     commands,
     loading: catalogLoading,
   } = useCatalog();
-  const waitingInAnotherChat = sessions.find((session) => session.id !== activeSessionId && session.status === "awaiting_input");
+  const waitingInAnotherChat = sessions.find((session) => session.id !== activeSessionId && (session.status === "awaiting_input" || session.pauseReason === "takeover"));
 
   const [query, setQuery] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -267,7 +267,7 @@ export function Sidebar() {
 
         {waitingInAnotherChat && (
           <Link href={`/c/${encodeURIComponent(waitingInAnotherChat.id)}`} className="mx-3 mb-2 block rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-fg">
-            A question is waiting in <span className="font-semibold">{waitingInAnotherChat.title || "Untitled chat"}</span>
+            {waitingInAnotherChat.pauseReason === "takeover" ? "Browser control is waiting in " : "A question is waiting in "}<span className="font-semibold">{waitingInAnotherChat.title || "Untitled chat"}</span>
           </Link>
         )}
 

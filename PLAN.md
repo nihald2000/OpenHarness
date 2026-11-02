@@ -1,5 +1,11 @@
 # Backend & Long-Horizon Agent Harness Implementation Plan
 
+## Live browser and full-stack sandbox follow-up
+- [x] Implement and locally test short-lived live-browser tickets, origin checks, screencasting, and durable-run takeover pause/resume.
+- [x] Implement and test `process_start.waitFor`, session-local service tool routing, pinned-hub image dependencies, and the guest run cap configuration.
+- [x] Pass typecheck, the full test suite, production build, Python syntax, and worker syntax checks.
+- [ ] Build the Modal image and verify live PostgreSQL/Redis readiness and browser WebSocket/takeover against the deployed hub before claiming deployment verification.
+
 ## Modal E2E Harness & Muse Glimmer (Phases 1–8) — Implemented and locally verified
 - Hosted sessions use tenant/session-scoped roots, masked host workspace facts, and Modal sandbox daemon routing for workspace reads.
 - Modal startup uses verified credentials/image manifests, bounded boot waits, setup egress domains, public preview tunnels, and root-safe Playwright Chromium.

@@ -361,6 +361,18 @@ export class HttpOpenHarnessClient {
         {}
       );
     },
+    takeover: async (id: string, input: { reason?: string; instructions?: string } = {}): Promise<{ takeoverRequested: boolean; runId: string }> => {
+      return this.request("POST", `/v1/runs/${encodeURIComponent(id)}/takeover`, input);
+    },
+    returnBrowserControl: async (id: string, note = ""): Promise<{ returned: boolean; queued?: boolean }> => {
+      return this.request("POST", `/v1/runs/${encodeURIComponent(id)}/takeover/return`, { note });
+    },
+  };
+
+  readonly browser = {
+    liveTicket: async (sessionId: string, mode: "view" | "control"): Promise<{ url: string }> => {
+      return this.request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/browser/live-ticket`, { mode });
+    },
   };
 
   readonly schedules = {

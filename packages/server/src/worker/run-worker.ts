@@ -245,6 +245,13 @@ export class DurableRunWorker implements RunWorker {
       checkpoint.state.budgetPauseRequested = false;
       await this.deps.stateStore.saveStepCheckpoint(checkpoint);
     }
+    if (checkpoint?.state.pauseReason === "takeover") {
+      checkpoint.state.takeoverRequested = false;
+      checkpoint.state.takeover = undefined;
+      checkpoint.state.pauseReason = undefined;
+      checkpoint.state.phase = "building";
+      await this.deps.stateStore.saveStepCheckpoint(checkpoint);
+    }
     const resumePhase = checkpoint?.state.phase && checkpoint.state.phase !== "paused"
       ? checkpoint.state.phase
       : "building";
@@ -493,6 +500,21 @@ export class DurableRunWorker implements RunWorker {
           }
         }
 
+        if (state.phase === "paused" && state.pauseReason === "takeover") {
+          const waiting = this.stateMachine.getRun(runId);
+          if (waiting?.status === "running") {
+            await this.stateMachine.transition(runId, "running", "awaiting_input", {
+              phase: "paused",
+              pauseReason: "takeover",
+              usage: state.usage,
+              cost: state.cost,
+              changedFiles: state.changedFiles ?? [],
+              previewUrl: state.previewUrl,
+            });
+            this.onWaiting?.(tenantId, runId);
+          }
+        }
+
         if (state.phase === "awaiting_permission") {
           const waiting = this.stateMachine.getRun(runId);
           if (waiting?.status === "running") {
@@ -523,7 +545,7 @@ export class DurableRunWorker implements RunWorker {
 
       const postLoopRun = this.stateMachine.getRun(runId);
       if (postLoopRun && !isTerminalRunStatus(postLoopRun.status)) {
-        if (state.phase === "completed" || (state.phase === "paused" && state.pauseReason !== "paused_budget")) {
+        if (state.phase === "completed" || (state.phase === "paused" && state.pauseReason !== "paused_budget" && state.pauseReason !== "takeover")) {
           await this.stateMachine.transition(runId, postLoopRun.status, "completed", {
             phase: "completed",
             changedFiles: state.changedFiles ?? [],
