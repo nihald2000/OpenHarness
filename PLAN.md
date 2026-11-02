@@ -1,6 +1,8 @@
 # Backend & Long-Horizon Agent Harness Implementation Plan
 
 ## Live browser and full-stack sandbox follow-up
+- [x] Validate and ship the letterbox-aware canvas coordinates, independent verification tabs, and resilient screencast reconnection changes.
+- [x] Complete model-scaled context settings, bounded screenshot token estimates, manual `/compact`, and full task-tool catalog coverage; the full regression gate passes.
 - [ ] Add the docked/expanded canvas browser view, live frame backpressure, and takeover input fidelity; validate with browser UI checks before marking complete.
 - [ ] Add sandbox-isolated browser flow checks to the verify/fix loop with immutable definitions and actionable evidence.
 - [x] Implement and locally test short-lived live-browser tickets, origin checks, screencasting, and durable-run takeover pause/resume.

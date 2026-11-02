@@ -1,6 +1,7 @@
 # OpenHarness Remediation & Long-Horizon Harness Checklist
 
 ## Live browser and full-stack sandbox follow-up
+- [x] Verify the browser input/streaming root-cause changes and context compaction/API wiring through the full regression suite.
 - [ ] Finish local verification and deployment of the canvas BrowserDock, takeover fixes, and repeatable browser-check verification loop.
 - [ ] Confirm browser checks run in a separate page, preserve the agent's live page, and surface failure evidence without leaking screenshot payloads into tool text.
 - [x] Add regression coverage for live ticket expiry/replay, origin allowlisting, takeover pause, process readiness routing, and service startup tool routing.

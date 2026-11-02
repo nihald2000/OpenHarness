@@ -17,14 +17,22 @@ import { resolveModelProfile } from "../provider/profiles.ts";
 export const OVERFLOW_SHRINK_RATIOS: readonly number[] = [0.85, 0.7, 0.5, 0.35] as const;
 
 export interface ContextEngineeringConfig {
-  contextWindow?: number; // default 32_000 or model profile window
+  contextWindow?: number;
   clearAfterTurns?: number; // default 6
   keepErrorTurns?: number; // default 3
   recitationEveryTurns?: number; // default 8
-  keepRecentTokens?: number; // default 20_000 (scaled to window if window <= 32K)
+  keepRecentTokens?: number;
   handoffAtRatio?: number; // default 0.6
   precomputeThresholdRatio?: number; // default 0.85
-  precomputeMinTokens?: number; // default 64_000 (or 50% of window if window < 64K)
+  precomputeMinTokens?: number;
+  enabled?: boolean;
+  triggerAt?: number;
+  triggerTokens?: number;
+  maxSessionContextTokens?: number;
+  maxMessages?: number;
+  keepFirst?: number;
+  keepLast?: number;
+  resolveDynamicConfig?: (state?: { model?: string }) => Partial<ContextEngineeringConfig>;
   includeRepositoryInstructions?: boolean;
   disableHostWorkspaceScan?: boolean;
   globalInstructionsPath?: string;
@@ -60,6 +68,22 @@ export class LayeredContextManager implements ContextManager {
     this.cfg = cfg ?? {};
   }
 
+  resolveEffectiveConfig(state?: { model?: string }): ContextEngineeringConfig {
+    const dynamic = this.cfg.resolveDynamicConfig?.(state) ?? {};
+    const defined = Object.fromEntries(Object.entries(dynamic).filter(([, value]) => value !== undefined));
+    return { ...this.cfg, ...defined };
+  }
+
+  resolveContextWindow(modelId: string, state?: { model?: string }): number {
+    const cfg = this.resolveEffectiveConfig(state ?? { model: modelId });
+    const profileWindow = cfg.contextWindow ?? resolveModelProfile(modelId).contextWindow;
+    const rawEnvCap = process.env.OH_CONTEXT_BUDGET_TOKENS;
+    const envCap = rawEnvCap?.trim() ? Number(rawEnvCap) : undefined;
+    const caps = [profileWindow, envCap, cfg.maxSessionContextTokens]
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+    return Math.max(4_000, Math.floor(Math.min(...caps)));
+  }
+
   getReserveTokens(contextWindow: number): number {
     return Math.min(
       Math.floor(contextWindow * 0.75),
@@ -67,25 +91,51 @@ export class LayeredContextManager implements ContextManager {
     );
   }
 
-  getTriggerTokens(contextWindow: number): number {
+  getTriggerTokens(contextWindow: number, effCfg: Partial<ContextEngineeringConfig> = this.cfg): number {
+    if (typeof effCfg.triggerTokens === "number" && Number.isFinite(effCfg.triggerTokens) && effCfg.triggerTokens >= 1_000) {
+      return Math.max(4_000, Math.min(contextWindow - 2_000, Math.floor(effCfg.triggerTokens)));
+    }
+    if (typeof effCfg.triggerAt === "number" && effCfg.triggerAt >= 0.5 && effCfg.triggerAt <= 0.95) {
+      return Math.max(4_000, Math.floor(contextWindow * effCfg.triggerAt));
+    }
     return Math.max(4_000, contextWindow - this.getReserveTokens(contextWindow));
   }
 
   estimateMessageTokens(msg: Message): number {
     let chars = 16;
+    const visionImageChars = 1_600 * 4;
     for (const part of msg.parts) {
       if (part.type === "text" || part.type === "reasoning") {
         chars += part.text.length;
       } else if (part.type === "compaction") {
         chars += (part.summary ?? "").length;
       } else if (part.type === "tool") {
-        chars +=
-          part.tool.length +
-          JSON.stringify(part.input ?? {}).length +
-          (typeof part.output === "string"
+        let outputChars = 0;
+        let visionImages = 0;
+        if (part.output && typeof part.output === "object" && !Array.isArray(part.output)) {
+          const output = part.output as Record<string, unknown>;
+          const safeOutput = { ...output };
+          for (const key of ["dataBase64", "screenshotJpegBase64"]) {
+            if (typeof safeOutput[key] === "string") {
+              delete safeOutput[key];
+              visionImages++;
+            }
+          }
+          outputChars = JSON.stringify(safeOutput).length + visionImages * visionImageChars;
+        } else {
+          outputChars = typeof part.output === "string"
             ? part.output.length
-            : JSON.stringify(part.output ?? "").length) +
-          (part.error?.length ?? 0);
+            : JSON.stringify(part.output ?? "").length;
+        }
+        chars += part.tool.length + JSON.stringify(part.input ?? {}).length + outputChars + (part.error?.length ?? 0);
+      } else if (part.type === "attachment") {
+        if (part.dataBase64 && part.mimeType.startsWith("image/")) {
+          chars += visionImageChars + (part.name?.length ?? 0) + (part.workspacePath?.length ?? 0);
+        } else if (part.dataBase64) {
+          chars += Math.min(part.dataBase64.length * 0.75, 32_000) + (part.name?.length ?? 0) + (part.workspacePath?.length ?? 0);
+        } else {
+          chars += JSON.stringify({ ...part, dataBase64: undefined }).length;
+        }
       } else {
         chars += JSON.stringify(part).length;
       }
@@ -228,11 +278,15 @@ export class LayeredContextManager implements ContextManager {
     const keepLatest = new Map<string, number>();
     const protectedToolCallIds = new Set<string>();
     let bashSeen = 0;
+    let snapshotSeen = 0;
     for (let mi = messages.length - 1; mi >= 0; mi--) {
       for (let pi = messages[mi]!.parts.length - 1; pi >= 0; pi--) {
         const part = messages[mi]!.parts[pi]!;
         if (part.type !== "tool" || part.state !== "completed") continue;
-        if (["browser_snapshot", "browser_screenshot", "process_logs"].includes(part.tool)) {
+        if (part.tool === "browser_snapshot") {
+          snapshotSeen++;
+          if (snapshotSeen <= 2) protectedToolCallIds.add(part.callId);
+        } else if (["browser_screenshot", "process_logs"].includes(part.tool)) {
           if (!keepLatest.has(part.tool)) {
             keepLatest.set(part.tool, mi * 100000 + pi);
             protectedToolCallIds.add(part.callId);
@@ -252,6 +306,7 @@ export class LayeredContextManager implements ContextManager {
         if (part.type !== "tool" || part.state !== "completed") return part;
         const critical = ["browser_snapshot", "browser_screenshot", "process_logs"].includes(part.tool) || part.tool === "bash";
         if (!critical) return part;
+        if (part.tool === "browser_snapshot" && protectedToolCallIds.has(part.callId)) return part;
         const key = part.tool === "bash" ? `${part.tool}:${part.callId}` : part.tool;
         if (keepLatest.get(key) === mi * 100000 + pi) return part;
         const outStr = typeof part.output === "string" ? part.output : JSON.stringify(part.output ?? "");
@@ -571,17 +626,25 @@ export class LayeredContextManager implements ContextManager {
    */
   splitHeadAndVerbatimTail(
     messages: Message[],
-    keepRecentTokens: number
-  ): { head: Message[]; tail: Message[] } {
+    keepRecentTokens: number,
+    opts: { keepFirst?: number; keepLast?: number } = {}
+  ): { head: Message[]; tail: Message[]; pinned: Message[] } {
     if (messages.length <= 2) {
-      return { head: [], tail: messages };
+      return { head: [], tail: messages, pinned: [] };
     }
+    const keepLast = Math.max(1, Math.floor(opts.keepLast ?? 1));
+    const keepFirst = Math.min(
+      Math.max(0, Math.floor(opts.keepFirst ?? 0)),
+      Math.max(0, messages.length - keepLast - 1)
+    );
+    const eligible = messages.slice(keepFirst);
     let tailTokens = 0;
-    let splitIdx = messages.length;
+    let splitIdx = eligible.length;
+    const minimumTailStart = Math.max(0, eligible.length - keepLast);
 
-    for (let i = messages.length - 1; i >= 1; i--) {
-      const mTokens = this.estimateMessageTokens(messages[i]!);
-      if (tailTokens + mTokens > keepRecentTokens && splitIdx < messages.length) {
+    for (let i = eligible.length - 1; i >= 1; i--) {
+      const mTokens = this.estimateMessageTokens(eligible[i]!);
+      if (tailTokens + mTokens > keepRecentTokens && splitIdx < eligible.length && i < minimumTailStart) {
         break;
       }
       tailTokens += mTokens;
@@ -589,13 +652,14 @@ export class LayeredContextManager implements ContextManager {
     }
 
     // Ensure at least the older half is compacted when compaction is triggered
-    if (splitIdx <= 1 && messages.length >= 4) {
-      splitIdx = Math.max(2, Math.floor(messages.length / 2));
+    if (splitIdx <= 1 && eligible.length >= 4) {
+      splitIdx = Math.max(2, Math.floor(eligible.length / 2));
     }
 
     return {
-      head: messages.slice(0, splitIdx),
-      tail: messages.slice(splitIdx),
+      head: eligible.slice(0, splitIdx),
+      tail: eligible.slice(splitIdx),
+      pinned: messages.slice(0, keepFirst),
     };
   }
 
@@ -647,12 +711,17 @@ export class LayeredContextManager implements ContextManager {
     rawMessages: Message[]
   ): Promise<ContextPrepareResult> {
     const events: OpenHarnessEvent[] = [];
-    const profileWindow = this.cfg.contextWindow ?? resolveModelProfile(state.model).contextWindow;
-    const configuredBudget = Number(process.env.OH_CONTEXT_BUDGET_TOKENS ?? 40_000);
-    const contextWindow = Math.min(profileWindow, Number.isFinite(configuredBudget) && configuredBudget > 0 ? configuredBudget : 40_000);
-    const triggerTokens = this.getTriggerTokens(contextWindow);
-    const keepRecentTokens =
-      Math.min(12_000, Math.floor(contextWindow * 0.35));
+    const effCfg = this.resolveEffectiveConfig(state);
+    const contextWindow = this.resolveContextWindow(state.model, state);
+    const triggerTokens = this.getTriggerTokens(contextWindow, effCfg);
+    const defaultKeepRecent = contextWindow <= 32_000
+      ? Math.min(12_000, Math.floor(contextWindow * 0.35))
+      : Math.min(48_000, Math.max(20_000, Math.floor(contextWindow * 0.2)));
+    const keepRecentTokens = Math.min(
+      Math.floor(contextWindow * 0.45),
+      effCfg.keepRecentTokens ?? defaultKeepRecent
+    );
+    const autoEnabled = effCfg.enabled !== false;
 
     // Collect touched file paths from recent tool calls for lazy AGENTS.md loading
     const touchedPaths: string[] = [];
@@ -671,10 +740,14 @@ export class LayeredContextManager implements ContextManager {
     let estimatedTokens = this.estimateTranscriptTokens(systemPrompt, workingMessages);
 
     // Background precomputation when usage passes 85% of trigger (§7 E.4)
-    const precomputeThreshold = Math.floor(
-      triggerTokens * (this.cfg.precomputeThresholdRatio ?? 0.85)
-    );
+    const rawPrecompute = Math.floor(triggerTokens * (effCfg.precomputeThresholdRatio ?? 0.85));
+    const precomputeThreshold = typeof effCfg.precomputeMinTokens === "number" && effCfg.precomputeMinTokens > 0
+      ? (Math.min(rawPrecompute, effCfg.precomputeMinTokens) === effCfg.precomputeMinTokens
+        ? Math.max(rawPrecompute, Math.min(effCfg.precomputeMinTokens, triggerTokens - 1_000))
+        : rawPrecompute)
+      : rawPrecompute;
     if (
+      autoEnabled &&
       estimatedTokens >= precomputeThreshold &&
       estimatedTokens < triggerTokens &&
       !this.precomputed &&
@@ -682,13 +755,13 @@ export class LayeredContextManager implements ContextManager {
       workingMessages.length >= 4
     ) {
       try {
-        const { head, tail } = this.splitHeadAndVerbatimTail(workingMessages, keepRecentTokens);
+        const { head, tail, pinned } = this.splitHeadAndVerbatimTail(workingMessages, keepRecentTokens, effCfg);
         if (head.length > 0) {
           const built = await this.buildStructuredCompaction(
             state,
             head,
             estimatedTokens,
-            tail.length
+            tail.length + pinned.length
           );
           this.precomputed = {
             cursorAtCompute: workingMessages.length,
@@ -703,15 +776,18 @@ export class LayeredContextManager implements ContextManager {
 
     // Layer 4: Compaction when estimated tokens exceed triggerTokens
     let compacted = false;
-    if (estimatedTokens >= triggerTokens && workingMessages.length >= 3) {
-      const { head, tail } = this.splitHeadAndVerbatimTail(workingMessages, keepRecentTokens);
+    if (autoEnabled && workingMessages.length >= 3 && (
+      estimatedTokens >= triggerTokens ||
+      (typeof effCfg.maxMessages === "number" && effCfg.maxMessages >= 4 && workingMessages.length > effCfg.maxMessages)
+    )) {
+      const { head, tail, pinned } = this.splitHeadAndVerbatimTail(workingMessages, keepRecentTokens, effCfg);
       if (head.length > 0) {
         let compactionPart: CompactionPart;
         if (this.precomputed) {
           compactionPart = {
             ...this.precomputed.part,
             tokensBefore: estimatedTokens,
-            keptMessages: tail.length,
+            keptMessages: tail.length + pinned.length,
           };
           this.precomputed = null;
         } else {
@@ -719,7 +795,7 @@ export class LayeredContextManager implements ContextManager {
             state,
             head,
             estimatedTokens,
-            tail.length
+            tail.length + pinned.length
           );
           compactionPart = built.part;
         }
@@ -734,7 +810,7 @@ export class LayeredContextManager implements ContextManager {
           parts: [compactionPart],
         };
 
-        workingMessages = [summaryMsg, ...tail];
+        workingMessages = [...pinned, summaryMsg, ...tail];
         compacted = true;
         state.compactionStreak += 1;
         estimatedTokens = this.estimateTranscriptTokens(systemPrompt, workingMessages);

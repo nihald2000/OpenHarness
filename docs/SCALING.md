@@ -14,6 +14,8 @@ Live browser WebSockets terminate at the pinned hub and require a one-use HMAC t
 
 The browser dock keeps only the newest decoded frame on a canvas and pauses streaming while hidden or closed. Browser verification flows execute in a fresh page in the sandbox browser context, so checks can share cookies without navigating the human or agent's live page. Definitions are retained in run state and changes are flagged for review; these checks run inside the current single sandbox and do not add distributed coordination.
 
+Context sizing uses the selected model profile, provider-specific model overrides, and explicit `OH_CONTEXT_BUDGET_TOKENS` / `limits.maxSessionContextTokens` caps. Automatic compaction settings are read dynamically so an admin update applies to subsequent turns. Screenshot base64 is excluded from text-token estimates and counted as a bounded vision payload; manual compaction persists the replacement transcript and publishes durable message/part events.
+
 OpenHarness separates the stateless HTTP/SSE API layer from durable worker execution and isolated sandbox runtimes (`oh-sandboxd`), while keeping zero-setup local development as the default.
 
 `McpClientManager` (`packages/core/src/mcp/client.ts`) supports in-process defaults and external HTTP/SSE/stdio MCP servers. Its active connections, discovered tools, and default memory graph are process-local; saved connection definitions do not make live sessions durable or shared across workers. MCP connection lifecycle and memory need tenant-scoped adapter contracts plus restart/replay coverage before they can be treated as distributed services.

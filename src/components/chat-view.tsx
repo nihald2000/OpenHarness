@@ -425,6 +425,27 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     selectedFiles: SelectedAttachment[] = [],
     overrideAgent?: string
   ) => {
+    if (selectedFiles.length === 0) {
+      const command = text.trim();
+      if (command === "/compact") {
+        if (!sessionId) {
+          notify("info", "Nothing to compact yet - the conversation is still short.");
+          return;
+        }
+        await handleCompact();
+        return;
+      }
+      if (command === "/plan" || command.startsWith("/plan ")) {
+        await handleSelectAgent("plan");
+        const remainingText = command.slice("/plan".length).trimStart();
+        if (!remainingText) {
+          notify("info", "Switched to plan mode.");
+          return;
+        }
+        await handleSend(remainingText, fixOpts, selectedFiles, "plan");
+        return;
+      }
+    }
     if (!selectedModelConfigured) {
       composerRef.current?.setText(text);
       if (selectedFiles.length) composerRef.current?.restoreAttachments(selectedFiles);
@@ -647,6 +668,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     setCompacting(true);
     try {
       await client.session.compact(sessionId);
+      await refreshSession();
       await fetchContextUsage();
     } catch (err) {
       if (errorMessage(err) === NOTHING_TO_COMPACT) {

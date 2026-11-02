@@ -9,6 +9,9 @@ let context = null;
 let page = null;
 let cdp = null;
 let casting = false;
+let desiredCast = { enabled: false, quality: 60 };
+let suppressPageSwitchCount = 0;
+const internalPages = new WeakSet();
 let lastFrame = null;
 let emittedFrameVersion = 0;
 const consoleLogs = [];
@@ -46,18 +49,20 @@ async function ensurePage() {
   const firstPage = await context.newPage();
   await switchPage(firstPage);
   context.on("page", (nextPage) => {
+    if (suppressPageSwitchCount > 0 || internalPages.has(nextPage)) {
+      internalPages.add(nextPage);
+      return;
+    }
     if (nextPage !== page) void switchPage(nextPage);
   });
   return page;
 }
 
 async function switchPage(nextPage) {
-  if (nextPage === page) return;
-  await stopCast();
-  if (cdp) {
-    try { await cdp.detach(); } catch {}
-    cdp = null;
-  }
+  if (nextPage === page || internalPages.has(nextPage)) return;
+  const resumeCast = desiredCast.enabled;
+  const resumeQuality = desiredCast.quality;
+  await stopCast({ preserveDesired: true });
   page = nextPage;
   lastFrame = null;
   elementMap = new Map();
@@ -70,7 +75,7 @@ async function switchPage(nextPage) {
   });
   page.on("close", () => {
     if (page !== nextPage || !context) return;
-    const remaining = context.pages();
+    const remaining = context.pages().filter((candidate) => !internalPages.has(candidate));
     const fallback = remaining[remaining.length - 1];
     if (fallback) void switchPage(fallback);
     else {
@@ -80,6 +85,7 @@ async function switchPage(nextPage) {
     }
   });
   emit("page", { url: page.url(), title: await page.title().catch(() => "") });
+  if (resumeCast) await startCast(resumeQuality);
 }
 
 async function getCdp() {
@@ -92,8 +98,18 @@ async function maskSensitiveFields() {
 }
 
 async function startCast(quality = 60) {
+  const clampedQuality = Math.max(20, Math.min(90, Number(quality) || 60));
+  desiredCast = { enabled: true, quality: clampedQuality };
+  if (page) emit("page", { url: page.url(), title: await page.title().catch(() => "") });
   if (casting) {
     if (lastFrame) emit("frame", lastFrame);
+    else {
+      const frame = await getCdp().then((session) => session.send("Page.captureScreenshot", { format: "jpeg", quality: clampedQuality })).catch(() => null);
+      if (frame?.data) {
+        lastFrame = { data: frame.data, metadata: { timestamp: Date.now() / 1000, deviceWidth: VIEWPORT.width, deviceHeight: VIEWPORT.height } };
+        emit("frame", lastFrame);
+      }
+    }
     return;
   }
   await maskSensitiveFields();
@@ -106,20 +122,21 @@ async function startCast(quality = 60) {
   });
   await session.send("Page.startScreencast", {
     format: "jpeg",
-    quality: Math.max(20, Math.min(90, Number(quality) || 60)),
+    quality: clampedQuality,
     maxWidth: VIEWPORT.width,
     maxHeight: VIEWPORT.height,
     everyNthFrame: 1,
   });
   casting = true;
-  const initial = await session.send("Page.captureScreenshot", { format: "jpeg", quality: Math.max(20, Math.min(90, Number(quality) || 60)) }).catch(() => null);
+  const initial = await session.send("Page.captureScreenshot", { format: "jpeg", quality: clampedQuality }).catch(() => null);
   if (initial?.data) {
     lastFrame = { data: initial.data, metadata: { timestamp: Date.now() / 1000, deviceWidth: VIEWPORT.width, deviceHeight: VIEWPORT.height } };
     emit("frame", lastFrame);
   }
 }
 
-async function stopCast() {
+async function stopCast({ preserveDesired = false } = {}) {
+  if (!preserveDesired) desiredCast = { enabled: false, quality: desiredCast.quality };
   if (!casting) return;
   casting = false;
   try { await cdp?.send("Page.stopScreencast"); } catch {}
@@ -184,7 +201,14 @@ async function runFlow(payload) {
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("run_flow requires a valid preview port");
   if (steps.length < 1 || steps.length > 30) throw new Error("run_flow supports 1 to 30 steps");
   const baseUrl = `http://127.0.0.1:${port}/`;
-  const checkPage = await activePage.context().newPage();
+  let checkPage;
+  suppressPageSwitchCount++;
+  try {
+    checkPage = await activePage.context().newPage();
+    internalPages.add(checkPage);
+  } finally {
+    suppressPageSwitchCount--;
+  }
   const errors = [];
   const failedRequests = [];
   const log = [];
@@ -290,11 +314,13 @@ async function runFlow(payload) {
 
 async function dispatchInput(event) {
   const session = await getCdp();
+  const clampX = (value) => Math.max(0, Math.min(VIEWPORT.width - 1, Math.round(Number(value) || 0)));
+  const clampY = (value) => Math.max(0, Math.min(VIEWPORT.height - 1, Math.round(Number(value) || 0)));
   if (event.kind === "mouse") {
     return session.send("Input.dispatchMouseEvent", {
       type: event.type,
-      x: Number(event.x) || 0,
-      y: Number(event.y) || 0,
+      x: clampX(event.x),
+      y: clampY(event.y),
       button: event.button ?? "none",
       buttons: Number(event.buttons) || 0,
       clickCount: Number(event.clickCount) || 0,
@@ -303,7 +329,7 @@ async function dispatchInput(event) {
   }
   if (event.kind === "wheel") {
     return session.send("Input.dispatchMouseEvent", {
-      type: "mouseWheel", x: Number(event.x) || 0, y: Number(event.y) || 0,
+      type: "mouseWheel", x: clampX(event.x), y: clampY(event.y),
       deltaX: Number(event.deltaX) || 0, deltaY: Number(event.deltaY) || 0,
       modifiers: Number(event.modifiers) || 0,
     });
@@ -336,7 +362,6 @@ async function handleCommand(command) {
       await ensurePage();
       const frameVersion = emittedFrameVersion;
       await dispatchInput(payload);
-      await dispatchInput({ kind: "scrollTo", y: 0 });
       if (casting) {
         await new Promise((resolve) => setTimeout(resolve, 150));
         if (frameVersion === emittedFrameVersion) {

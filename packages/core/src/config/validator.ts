@@ -62,6 +62,24 @@ const ALLOWED_NESTED_KEYS: Record<string, Set<string>> = {
   "sandbox.modal.pricing": new Set(["cpuCoreSecondUsd", "memoryMiBSecondUsd"]),
   "sandbox.filesystem": new Set(["extraAllowWrite", "extraDenyRead"]),
   "sandbox.network": new Set(["setupPresets", "agentPresets", "allowedDomains", "methods"]),
+  limits: new Set([
+    "chat", "task", "long_task", "maxIterations", "maxTokensPerRun", "maxCostPerRun",
+    "maxCostPerDay", "maxWallClockMs", "maxSessionContextTokens", "toolTimeoutMs",
+    "firstActivityTimeoutMs", "maxToolOutputBytes",
+  ]),
+  "limits.chat": new Set([
+    "maxIterations", "maxRunDurationSec", "maxOutputTokensPerCall", "maxCommandSec", "maxCostPerTask",
+  ]),
+  "limits.task": new Set([
+    "maxIterations", "maxRunDurationSec", "maxOutputTokensPerCall", "maxCommandSec", "maxCostPerTask",
+  ]),
+  "limits.long_task": new Set([
+    "maxIterations", "maxRunDurationSec", "maxOutputTokensPerCall", "maxCommandSec", "maxCostPerTask",
+  ]),
+  compaction: new Set([
+    "enabled", "triggerAt", "triggerTokens", "maxMessages", "keepFirst", "keepLast",
+    "keepRecentMessages", "keepRecentTokens",
+  ]),
   context: new Set([
     "clearAfterTurns",
     "recitationEveryTurns",

@@ -392,9 +392,16 @@ export function resolveModelProfile(
     modelId === "sam-3.1" ||
     modelId === "muse-image-1.0"
   ) {
-    // These IDs belong to Meta Model API; don't allow another provider's
-    // measured/configured profile to redirect them to a paid aggregator.
-    return { ...BUILT_IN_MODEL_PROFILES["meta-muse"]! };
+    // Keep the built-in endpoint and wire contract fixed while accepting an
+    // explicitly configured context limit for this exact model ID.
+    const baseMeta = BUILT_IN_MODEL_PROFILES["meta-muse"]!;
+    const customWindow = overrides?.[modelId]?.contextWindow;
+    return {
+      ...baseMeta,
+      ...(typeof customWindow === "number" && Number.isFinite(customWindow) && customWindow >= 4_096
+        ? { contextWindow: Math.floor(customWindow) }
+        : {}),
+    };
   }
   const normalizedModelId = modelId.toLowerCase();
   if (["muse-glimmer", "meta-models/muse-glimmer-30b", "muse-glimmer-30b", "redhatai/muse-glimmer-30b-fp8-block"].includes(normalizedModelId)) {

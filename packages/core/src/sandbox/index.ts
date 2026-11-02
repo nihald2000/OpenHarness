@@ -15,3 +15,4 @@ export * from "./modal-lifecycle.ts";
 export * from "./modal.ts";
 export * from "./pinned-modal.ts";
 export * from "./live-ticket.ts";
+export * from "./live-coordinates.ts";

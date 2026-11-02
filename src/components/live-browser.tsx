@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpRight, Maximize2, Minimize2, MousePointer2, X } from "lucide-react";
+import { mapFramePointToViewport } from "../../packages/core/src/sandbox/live-coordinates";
 import { client } from "@/lib/client";
 
 type DockState = "closed" | "docked" | "expanded";
@@ -179,13 +180,13 @@ export function LiveBrowser({
   const send = (payload: Record<string, unknown>) => {
     if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: "input", payload }));
   };
-  const coords = (event: React.MouseEvent<HTMLCanvasElement>) => {
+  const resolveViewportPoint = (event: { clientX: number; clientY: number; currentTarget: HTMLCanvasElement }) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const meta = frameMeta.current;
     const frame = canvasRef.current;
-    const scaleX = (meta?.deviceWidth ?? frame?.width ?? 1280) / 1280;
-    const scaleY = (meta?.deviceHeight ?? frame?.height ?? 800) / 800;
-    return { x: (event.clientX - rect.left) / (rect.width * scaleX), y: (event.clientY - rect.top) / (rect.height * scaleY) };
+    const targetW = meta?.deviceWidth && meta.deviceWidth > 0 ? meta.deviceWidth : frame?.width && frame.width > 0 ? frame.width : 1280;
+    const targetH = meta?.deviceHeight && meta.deviceHeight > 0 ? meta.deviceHeight : frame?.height && frame.height > 0 ? frame.height : 800;
+    return mapFramePointToViewport(event.clientX, event.clientY, rect, targetW, targetH);
   };
   const modifiers = (e: React.MouseEvent | React.KeyboardEvent) => MODIFIERS(e);
   const onResizeStart = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -211,11 +212,29 @@ export function LiveBrowser({
       const now = performance.now();
       if (now - lastMouse.current < 33) return;
       lastMouse.current = now;
-      send({ kind: "mouse", type: "mouseMoved", ...coords(e), buttons: e.buttons, modifiers: modifiers(e) });
+      const pt = resolveViewportPoint(e);
+      if (!pt) return;
+      send({ kind: "mouse", type: "mouseMoved", ...pt, buttons: e.buttons, modifiers: modifiers(e) });
     },
-    onMouseDown: (e: React.MouseEvent<HTMLCanvasElement>) => { if (control) send({ kind: "mouse", type: "mousePressed", ...coords(e), button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left", buttons: e.buttons, clickCount: e.detail, modifiers: modifiers(e) }); },
-    onMouseUp: (e: React.MouseEvent<HTMLCanvasElement>) => { if (control) send({ kind: "mouse", type: "mouseReleased", ...coords(e), button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left", buttons: e.buttons, clickCount: e.detail, modifiers: modifiers(e) }); },
-    onWheel: (e: React.WheelEvent<HTMLCanvasElement>) => { if (control) send({ kind: "wheel", ...coords(e), deltaX: e.deltaX, deltaY: e.deltaY, modifiers: modifiers(e) }); },
+    onMouseDown: (e: React.MouseEvent<HTMLCanvasElement>) => {
+      e.currentTarget.focus();
+      if (!control) return;
+      const pt = resolveViewportPoint(e);
+      if (!pt) return;
+      send({ kind: "mouse", type: "mousePressed", ...pt, button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left", buttons: e.buttons, clickCount: e.detail, modifiers: modifiers(e) });
+    },
+    onMouseUp: (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (!control) return;
+      const pt = resolveViewportPoint(e);
+      if (!pt) return;
+      send({ kind: "mouse", type: "mouseReleased", ...pt, button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left", buttons: e.buttons, clickCount: e.detail, modifiers: modifiers(e) });
+    },
+    onWheel: (e: React.WheelEvent<HTMLCanvasElement>) => {
+      if (!control) return;
+      const pt = resolveViewportPoint(e);
+      if (!pt) return;
+      send({ kind: "wheel", ...pt, deltaX: e.deltaX, deltaY: e.deltaY, modifiers: modifiers(e) });
+    },
     onContextMenu: (e: React.MouseEvent<HTMLCanvasElement>) => e.preventDefault(),
     onPaste: (e: React.ClipboardEvent<HTMLCanvasElement>) => { if (control) { e.preventDefault(); send({ kind: "text", text: e.clipboardData.getData("text") }); } },
     onKeyDown: (e: React.KeyboardEvent<HTMLCanvasElement>) => {

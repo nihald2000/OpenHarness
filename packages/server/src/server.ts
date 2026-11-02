@@ -22,6 +22,7 @@ import type {
 } from "@openharness/sdk";
 import {
   compileSandboxPolicy,
+  createInitialRunState,
   createJobQueue,
   DockerSandboxProvider,
   DurableWorker,
@@ -312,6 +313,42 @@ export class OpenHarnessServer {
       }
     } catch {}
     return {};
+  }
+  private resolveContextConfigForModel(modelId?: string): Partial<import("@openharness/core").ContextEngineeringConfig> {
+    const settings = this.readUserSettings();
+    const providers = settings.providers && typeof settings.providers === "object"
+      ? settings.providers as Record<string, any>
+      : {};
+    const modelOverrides: Record<string, Partial<ModelProfile>> = {};
+    if (modelId) {
+      for (const entry of Object.values(providers)) {
+        const modelConfig = (entry as any)?.models?.[modelId];
+        if (modelConfig && typeof modelConfig === "object") {
+          modelOverrides[modelId] = modelConfig as Partial<ModelProfile>;
+          break;
+        }
+      }
+    }
+    const configuredWindow = modelId ? resolveModelProfile(modelId, modelOverrides).contextWindow : undefined;
+    const compaction = settings.compaction && typeof settings.compaction === "object" ? settings.compaction : {};
+    const context = settings.context && typeof settings.context === "object" ? settings.context : {};
+    const limits = settings.limits && typeof settings.limits === "object" ? settings.limits : {};
+    return {
+      ...(configuredWindow ? { contextWindow: configuredWindow } : {}),
+      enabled: typeof compaction.enabled === "boolean" ? compaction.enabled : undefined,
+      triggerAt: typeof compaction.triggerAt === "number" ? compaction.triggerAt : undefined,
+      triggerTokens: typeof compaction.triggerTokens === "number" ? compaction.triggerTokens : undefined,
+      maxMessages: typeof compaction.maxMessages === "number" ? compaction.maxMessages : undefined,
+      keepFirst: typeof compaction.keepFirst === "number" ? compaction.keepFirst : undefined,
+      keepLast: typeof compaction.keepLast === "number" ? compaction.keepLast : undefined,
+      keepRecentTokens: typeof compaction.keepRecentTokens === "number"
+        ? compaction.keepRecentTokens
+        : typeof context.keepRecentTokens === "number" ? context.keepRecentTokens : undefined,
+      clearAfterTurns: typeof context.clearAfterTurns === "number" ? context.clearAfterTurns : undefined,
+      recitationEveryTurns: typeof context.recitationEveryTurns === "number" ? context.recitationEveryTurns : undefined,
+      handoffAtRatio: typeof context.handoffAtRatio === "number" ? context.handoffAtRatio : undefined,
+      maxSessionContextTokens: typeof limits.maxSessionContextTokens === "number" ? limits.maxSessionContextTokens : undefined,
+    };
   }
   private getSessionWorkspaceRoot(tenantId: string, sessionId: string): string {
     if (!this.hostedIsolation) return this.fallbackWorkspaceRoot;
@@ -642,6 +679,7 @@ export class OpenHarnessServer {
     const contextManager = new LayeredContextManager({
       workspaceRoot,
       disableHostWorkspaceScan: this.hostedIsolation,
+      resolveDynamicConfig: (state) => this.resolveContextConfigForModel(state?.model),
       summarizer: async (transcriptText, state) => {
         if (!providerRef || state.model.startsWith("mock/")) return "";
         const res = await providerRef.generateTurn({
@@ -1544,13 +1582,19 @@ export class OpenHarnessServer {
     }
 
     if (method === "GET" && pathname === "/v1/tools") {
+      const requestedAgent = parsedUrl.searchParams.get("agent") ?? "assistant";
+      const rawMode = parsedUrl.searchParams.get("mode");
+      const requestedMode: "chat" | "ask" | "task" | "long_task" =
+        rawMode === "chat" || rawMode === "ask" || rawMode === "task" || rawMode === "long_task"
+          ? rawMode
+          : "task";
       const tools = this.deps.toolRouter.listTools({
         runId: "catalog",
         sessionId: "catalog",
         tenantId,
-        agent: parsedUrl.searchParams.get("agent") ?? "assistant",
+        agent: requestedAgent,
         model: "",
-        mode: "chat",
+        mode: requestedMode,
         phase: "building",
         iteration: 0,
         taskIteration: 0,
@@ -1558,6 +1602,8 @@ export class OpenHarnessServer {
         budgets: { maxIterations: 25, maxRunDurationSec: 600, maxOutputTokensPerCall: 4096, maxCommandSec: 120, warnedResources: [], extensionsCount: 0 },
         usage: { input: 0, output: 0 },
         cost: 0,
+        webTools: requestedMode !== "chat" && requestedMode !== "ask",
+        loadedGroups: ["mcp", "skills"],
         plan: null,
         todos: [],
         features: [],
@@ -1787,6 +1833,7 @@ export class OpenHarnessServer {
       const contextManager = new LayeredContextManager({
         workspaceRoot: this.getSessionWorkspaceRoot(tenantId, sessionId),
         disableHostWorkspaceScan: this.hostedIsolation,
+        resolveDynamicConfig: (state) => this.resolveContextConfigForModel(state?.model ?? modelId),
       });
       const promptState = runState ?? ({
         agent: session.agent,
@@ -1802,32 +1849,149 @@ export class OpenHarnessServer {
           : []
       ));
       const systemPrompt = contextManager.buildStableSystemPrompt(promptState, touchedPaths);
-      let contextWindow = resolveModelProfile(modelId).contextWindow;
-      const providerSettings = this.readUserSettings().providers;
-      if (providerSettings && typeof providerSettings === "object") {
-        for (const provider of Object.values(providerSettings as Record<string, any>)) {
-          const configuredWindow = provider?.models?.[modelId]?.contextWindow;
-          if (typeof configuredWindow === "number" && Number.isFinite(configuredWindow) && configuredWindow > 0) {
-          contextWindow = configuredWindow;
-            break;
-          }
-        }
-      }
-      const contextBudget = Number(process.env.OH_CONTEXT_BUDGET_TOKENS ?? 40_000);
-      contextWindow = Math.min(contextWindow, Number.isFinite(contextBudget) && contextBudget > 0 ? contextBudget : 40_000);
-      const compactions = transcript.messages.reduce((count, message) =>
+      const effCfg = contextManager.resolveEffectiveConfig({ model: modelId });
+      const contextWindow = contextManager.resolveContextWindow(modelId, { model: modelId });
+      const triggerAt = contextManager.getTriggerTokens(contextWindow, effCfg);
+      const sessionWorkspaceRoot = this.getSessionWorkspaceRoot(tenantId, sessionId);
+      const prunedMessages = contextManager.clearOldToolResults(transcript.messages, sessionWorkspaceRoot);
+      const heuristicTokens = contextManager.estimateTranscriptTokens(systemPrompt, prunedMessages);
+      const deltaAfterRun = runState?.updatedAt
+        ? prunedMessages
+            .filter((message) => {
+              const createdAt = typeof message.createdAt === "number" ? message.createdAt : Date.parse(message.createdAt);
+              return Number.isFinite(createdAt) && createdAt > runState.updatedAt;
+            })
+            .reduce((sum, message) => sum + contextManager.estimateMessageTokens(message), 0)
+        : 0;
+      const estimatedTokens = runState?.lastInputTokens && runState.lastInputTokens > 0
+        ? Math.min(
+            contextWindow,
+            Math.max(
+              heuristicTokens > 0 ? Math.min(heuristicTokens, runState.lastInputTokens * 2) : 0,
+              runState.lastInputTokens + deltaAfterRun,
+            ),
+          )
+        : heuristicTokens;
+      const compactions = prunedMessages.reduce((count, message) =>
         count + message.parts.filter((part) => part.type === "compaction").length, 0);
       return {
         status: 200,
         body: {
           contextUsage: {
             sessionId,
-            estimatedTokens: runState?.lastInputTokens ?? contextManager.estimateTranscriptTokens(systemPrompt, transcript.messages),
+            estimatedTokens,
             contextWindow,
-            triggerAt: contextManager.getTriggerTokens(contextWindow),
-            messages: transcript.messages.length,
+            triggerAt,
+            messages: prunedMessages.length,
             compactions,
           },
+        },
+      };
+    }
+
+    const sessionCompactMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/compact$/);
+    if (method === "POST" && sessionCompactMatch) {
+      const sessionId = decodeURIComponent(sessionCompactMatch[1]!);
+      const session = await this.stateStore.getSession(tenantId, sessionId);
+      if (!session) return { status: 404, body: { error: "Session not found" } };
+      if (session.status === "running" || session.status === "queued") {
+        return { status: 409, body: { error: "Cannot compact context while a run is active" } };
+      }
+
+      const transcript = await this.stateStore.getMessages(tenantId, sessionId);
+      if (transcript.messages.length < 4) return { status: 400, body: { error: "Nothing to compact yet." } };
+
+      const activeRunId = session.activeRunId ?? session.runId;
+      const checkpoint = activeRunId ? await this.stateStore.getStepCheckpoint(tenantId, activeRunId) : null;
+      const modelId = checkpoint?.state.model ?? session.model ?? this.getDefaultModel();
+      const sessionWorkspaceRoot = this.getSessionWorkspaceRoot(tenantId, sessionId);
+      const manualManager = new LayeredContextManager({
+        workspaceRoot: sessionWorkspaceRoot,
+        disableHostWorkspaceScan: this.hostedIsolation,
+        resolveDynamicConfig: (state) => this.resolveContextConfigForModel(state?.model ?? modelId),
+        summarizer: async (transcriptText, state) => {
+          if (state.model.startsWith("mock/")) return "";
+          const result = await this.deps.provider.generateTurn({
+            runId: state.runId,
+            sessionId: state.sessionId,
+            model: state.model,
+            systemPrompt: "Summarize the transcript into concise bullet points preserving key decisions, modified files, errors, and next steps.",
+            messages: [{
+              info: { id: "msg_summarize_manual", role: "user", summary: true },
+              createdAt: Date.now(),
+              parts: [{ type: "text", text: transcriptText, synthetic: true }],
+            }],
+            tools: [],
+            maxOutputTokens: 2_000,
+          });
+          return result.text;
+        },
+      });
+      const synthState = checkpoint?.state ?? createInitialRunState({
+        runId: activeRunId ?? `manual_compact_${Date.now()}`,
+        sessionId,
+        tenantId,
+        agent: session.agent,
+        model: modelId,
+        runtime: session.runtime ?? undefined,
+        mode: session.mode ?? "task",
+      });
+      const effCfg = manualManager.resolveEffectiveConfig({ model: modelId });
+      const contextWindow = manualManager.resolveContextWindow(modelId, { model: modelId });
+      const systemPrompt = manualManager.buildStableSystemPrompt(synthState);
+      const cleared = manualManager.clearOldToolResults(transcript.messages, sessionWorkspaceRoot);
+      const tokensBefore = manualManager.estimateTranscriptTokens(systemPrompt, cleared);
+      const keepTailCount = Math.min(
+        Math.max(1, Math.floor(effCfg.keepLast ?? 2)),
+        Math.max(1, cleared.length - 2),
+      );
+      const keepFirstCount = Math.min(
+        Math.max(0, Math.floor(effCfg.keepFirst ?? 0)),
+        Math.max(0, cleared.length - keepTailCount - 1),
+      );
+      const pinnedHead = cleared.slice(0, keepFirstCount);
+      const headToCompact = cleared.slice(keepFirstCount, cleared.length - keepTailCount);
+      const verbatimTail = cleared.slice(cleared.length - keepTailCount);
+      if (!headToCompact.length) return { status: 400, body: { error: "Nothing to compact yet." } };
+
+      const built = await manualManager.buildStructuredCompaction(
+        synthState,
+        headToCompact,
+        tokensBefore,
+        pinnedHead.length + verbatimTail.length,
+      );
+      built.part.reason = "manual";
+      const summaryMsg: Message = {
+        info: { id: `msg-compact-manual-${Date.now()}`, role: "assistant", summary: true },
+        createdAt: Date.now(),
+        parts: [built.part],
+      };
+      const nextMessages = [...pinnedHead, summaryMsg, ...verbatimTail];
+      const tokensAfter = manualManager.estimateTranscriptTokens(systemPrompt, nextMessages);
+      built.part.tokensAfter = tokensAfter;
+      built.part.tokensSaved = Math.max(0, tokensBefore - tokensAfter);
+
+      await this.stateStore.replaceMessages(tenantId, sessionId, nextMessages);
+      if (checkpoint) {
+        checkpoint.state.lastInputTokens = 0;
+        await this.stateStore.saveStepCheckpoint(checkpoint);
+      }
+      await this.emitter.emit(tenantId, sessionId, { type: "message.updated", sessionId, message: summaryMsg });
+      await this.emitter.emit(tenantId, sessionId, {
+        type: "part.updated",
+        sessionId,
+        messageId: summaryMsg.info.id,
+        part: built.part,
+      });
+      return {
+        status: 200,
+        body: {
+          compacted: true,
+          compactedMessages: built.part.compactedMessages,
+          keptMessages: built.part.keptMessages,
+          contextWindow,
+          tokensBefore,
+          tokensAfter,
         },
       };
     }
