@@ -102,6 +102,11 @@ export class BrowserBridge extends EventEmitter {
     }
   }
 
+  async isAvailable(): Promise<boolean> {
+    const response = await this.send("health", {}, 5_000);
+    return response.status === 200;
+  }
+
   async send(action: string, payload: Record<string, unknown> = {}, timeoutMs = 20_000): Promise<{ status: number; body: Record<string, unknown> }> {
     const child = this.ensureWorker();
     if (!child) return { status: 503, body: { error: "browser-worker.mjs not found" } };

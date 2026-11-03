@@ -890,6 +890,10 @@ async function handleCommand(command) {
       };
     }
 
+    if (action === "health") {
+      return { id, status: 200, body: { ok: true } };
+    }
+
     if (action === "input") {
       const frameVersion = emittedFrameVersion;
       await dispatchInput(payload);

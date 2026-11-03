@@ -83,12 +83,12 @@ test("normalizeBrowserCheckSteps preserves CSS selectors, extracts text/value fo
   ]);
   assert.deepEqual(normalized, [
     { goto: "/" },
-    { click: { css: "input[value='express']" } },
+    { click: "input[value='express']" },
     { fill: { css: "#name" }, value: "Ada Lovelace" },
     { fill: "#email", value: "ada@example.com" },
     { fill: "#zip", value: "94107" },
     { expectText: { css: "#summary" }, contains: "$75.00" },
-    { expectText: { css: "body" }, contains: "Express" },
+    { expectText: "Express", contains: "Express" },
   ]);
 
   const fallbackRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oh-outputs-fallback-"));

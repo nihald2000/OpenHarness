@@ -1040,7 +1040,11 @@ export class OpenHarnessServer {
               entry?.type === "openai" && entry.models && Object.hasOwn(entry.models, model)
             );
             if (!hasCustomOverride) {
-              const glimmerKey = this.secretStore.getDecrypted("MUSE_GLIMMER_API_KEY") ?? process.env.MUSE_GLIMMER_API_KEY;
+              // The Modal-injected key is rotated with the Glimmer deployment.
+              // Prefer it over a persisted Settings value, which can be stale
+              // after a key rotation and otherwise causes repeated upstream 401s.
+              const glimmerKey = process.env.MUSE_GLIMMER_API_KEY?.trim()
+                || this.secretStore.getDecrypted("MUSE_GLIMMER_API_KEY")?.trim();
               if (!glimmerKey && !process.env.MUSE_GLIMMER_BASE_URL.startsWith("http://127.0.0.1") && !process.env.MUSE_GLIMMER_BASE_URL.startsWith("http://localhost")) {
                 throw new ProviderHttpError(401, "missing API key for Muse Glimmer endpoint (MUSE_GLIMMER_API_KEY)");
               }
@@ -2976,6 +2980,9 @@ export class OpenHarnessServer {
       const sandboxId = sbDelMatch[1]!;
       const record = await this.sandboxRecords.get(sandboxId).catch(() => null);
       const handle = this.activeSandboxes.get(sandboxId);
+      if (!record && !handle && !this.hostedIsolation && sandboxId === "sb_default") {
+        return { status: 200, body: { deleted: true, id: sandboxId } };
+      }
       const ownerTenant = record?.tenantId ?? (handle as { tenantId?: string } | undefined)?.tenantId;
       if (!identity.admin && (!ownerTenant || ownerTenant !== tenantId)) {
         return { status: 404, body: { error: "Sandbox not found" } };

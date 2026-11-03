@@ -150,7 +150,7 @@ export function normalizeBrowserCheckSteps(rawSteps: unknown[]): BrowserCheckSte
     } else if (["click", "check", "tap"].includes(action) || "click" in step || "check" in step) {
       const explicitCss = typeof step.css === "string" ? step.css : typeof step.selector === "string" ? step.selector : undefined;
       const target = explicitCss
-        ? normalizeBrowserTarget(explicitCss, { forceCss: true })
+        ? normalizeBrowserTarget(explicitCss)
         : normalizeBrowserTarget(step.click ?? step.check ?? step.target ?? step);
       if (!target) return undefined;
       normalized.push({ click: target });
@@ -220,7 +220,11 @@ export function normalizeBrowserCheckSteps(rawSteps: unknown[]): BrowserCheckSte
         ? normalizeBrowserTarget(explicitCss, { forceCss: true, ignoreText: Boolean(containsVal || equalsVal || matchesVal) })
         : normalizeBrowserTarget(step.expectText ?? step.expectVisible ?? step.target ?? step.text ?? step.value ?? step);
       if (textAssert && typeof step.expectText === "string" && !equalsVal && !containsVal && !matchesVal) {
-        normalized.push({ expectText: { css: "body" }, contains: step.expectText });
+        normalized.push({
+          ...(typeof step.selector === "string" ? { selector: step.selector } : {}),
+          expectText: step.expectText,
+          contains: step.expectText,
+        } as unknown as BrowserCheckStep);
         continue;
       }
       if (!target) return undefined;

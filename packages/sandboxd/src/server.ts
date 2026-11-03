@@ -532,6 +532,29 @@ export class SandboxDaemon {
           navPort <= 65535 &&
           navPort !== 8080 &&
           !this.servicePorts.has(navPort);
+        const hostname = parsedNav.hostname.toLowerCase();
+        const isRestrictedHost =
+          hostname === "169.254.169.254" ||
+          hostname === "127.0.0.1" ||
+          hostname === "localhost" ||
+          hostname.startsWith("10.") ||
+          hostname.startsWith("192.168.");
+        const networkMode = this.config.policy.network.mode;
+        if (!isLocalPreview && (networkMode === "none" || isRestrictedHost)) {
+          const netCheck = evaluateNetworkAccess(this.config.policy, navUrl, "GET");
+          const reason = netCheck.reason ?? "Navigation is blocked by sandbox network policy";
+          this.emitViolation("network", navUrl, reason);
+          this.browserState.networkErrors.push(reason);
+          return { status: 403, body: { error: reason } };
+        }
+        // In allowlist mode, report an unavailable browser before evaluating
+        // whether an external URL is on the allowlist. No navigation occurs.
+        if (!isLocalPreview && networkMode === "allowlist" && !(await this.browserBridge.isAvailable())) {
+          return {
+            status: 503,
+            body: { ok: false, error: "Playwright browser worker unavailable in this environment" },
+          };
+        }
         if (!isLocalPreview) {
           const netCheck = evaluateNetworkAccess(this.config.policy, navUrl, "GET");
           if (!netCheck.allowed) {
