@@ -9,11 +9,13 @@ export interface ScheduleHistoryEntry {
 }
 
 export interface ScheduleInfo extends ScheduleRecord {
+  tenantId?: string;
   history: ScheduleHistoryEntry[];
 }
 
 export interface EnqueuedScheduledRun {
   runId: string;
+  tenantId?: string;
   scheduleId?: string;
   mode: RunMode;
   agent: string;
@@ -40,8 +42,10 @@ export class ScheduleManager {
     this.onEnqueueRun = opts?.onEnqueueRun;
   }
 
-  list(): ScheduleInfo[] {
-    return Array.from(this.schedules.values()).map((s) => structuredClone(s));
+  list(tenantId?: string): ScheduleInfo[] {
+    return Array.from(this.schedules.values())
+      .filter((s) => !tenantId || (s.tenantId ?? "default") === tenantId)
+      .map((s) => structuredClone(s));
   }
 
   get(id: string): ScheduleInfo | null {
@@ -53,6 +57,7 @@ export class ScheduleManager {
     const id = input.id ?? `sched_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const record: ScheduleInfo = {
       id,
+      tenantId: input.tenantId ?? "default",
       name: input.name,
       cron: input.cron,
       webhookSecret: input.webhookSecret,
@@ -122,6 +127,7 @@ export class ScheduleManager {
     if (this.onEnqueueRun) {
       await this.onEnqueueRun({
         runId,
+        tenantId: sched.tenantId ?? "default",
         scheduleId: id,
         mode: sched.mode,
         agent: sched.agent,

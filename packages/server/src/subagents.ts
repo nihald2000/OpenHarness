@@ -1,6 +1,8 @@
 import type { DelegatedTaskPart, Message, OpenHarnessEvent, ToolPart } from "@openharness/sdk";
 import {
   capSubagentReportTokens,
+  RiskPolicyGate,
+  type PolicyGate,
   type ProviderAdapter,
   type RegisteredTool,
   type ToolExecutionContext,
@@ -69,6 +71,7 @@ export function getAllowedToolsForSubagent(
 
   return allTools.filter((t) => {
     if (t.name === "delegate" || t.name === "ask_user" || t.name === "handoff") return false;
+    if (t.masked) return false;
     if (!allowSet.has(t.name)) return false;
     if (reqSet && !reqSet.has(t.name)) return false;
     return true;
@@ -80,6 +83,7 @@ export interface RunSubagentOptions {
   ctx: ToolExecutionContext;
   provider: ProviderAdapter;
   toolRouter: ToolRouter;
+  policyGate?: PolicyGate;
   emit?: (tenantId: string, sessionId: string, ev: OpenHarnessEvent) => Promise<void>;
   maxSteps?: number;
   modelRouting?: { glimmerAvailable: boolean; metaApiAvailable: boolean };
@@ -88,7 +92,19 @@ export interface RunSubagentOptions {
 const writeQueues = new Map<string, Promise<void>>();
 
 export async function runSubagent(opts: RunSubagentOptions): Promise<ToolExecutionResult> {
-  const role = normalizeSubagentRole(String(opts.input.agent ?? opts.input.role ?? "explore"));
+  const requestedRole = normalizeSubagentRole(String(opts.input.agent ?? opts.input.role ?? "explore"));
+  const parentIsReadOnly =
+    opts.ctx.state.phase === "planning" ||
+    opts.ctx.state.agent === "plan" ||
+    opts.ctx.state.agent === "explore" ||
+    opts.ctx.state.mode === "ask";
+  if (parentIsReadOnly && requestedRole !== "explore") {
+    return {
+      output: null,
+      error: `Cannot delegate to "${requestedRole}" subagent while parent run is in read-only mode/phase ("${opts.ctx.state.mode}" / "${opts.ctx.state.phase}").`,
+    };
+  }
+  const role = requestedRole;
   if (role === "explore" || role === "reviewer") return runSubagentUnlocked(opts, role);
   const key = opts.ctx.workspaceRoot;
   const previous = writeQueues.get(key) ?? Promise.resolve();
@@ -124,12 +140,15 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
   const fallbackModel = model === "muse-glimmer" && opts.modelRouting?.metaApiAvailable
     ? "muse-spark-1.3-contributor"
     : parentModel;
-  const modelLabel = (id: string) => id === "muse-glimmer" ? "Muse Glimmer 30B · Modal"
-    : id === "muse-wonder-1.0" ? "Muse Wonder 1.0"
-      : id === "muse-spark-1.3-contributor" ? "Muse Spark 1.3 Contributor"
-        : id === "muse-spark-1.3" ? "Muse Spark 1.3" : id;
   const providerLabel = model === "muse-glimmer" ? "Meta Open-Weights · Modal" : model.startsWith("muse-") ? "Meta Model API" : undefined;
   const childSessionId = `sub_${ctx.runId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  const effectivePolicyGate: PolicyGate =
+    opts.policyGate ??
+    new RiskPolicyGate({
+      osEnforcedSandbox: Boolean(ctx.sandboxHandleId),
+      defaultConfirmationPolicy: ctx.state.confirmationPolicy ?? "risky",
+    });
 
   const parentMsgId = ctx.state.assistantMessageId ?? `msg-a-${ctx.runId}-${ctx.state.iteration}`;
   const runningPart: DelegatedTaskPart = {
@@ -151,13 +170,14 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
     });
   }
 
-  const allTools = toolRouter.listTools({
+  const subState = {
     ...ctx.state,
-    phase: "building",
-    mode: "task",
-    agent: role === "document" ? "document" : ctx.state.agent,
+    phase: ctx.state.phase,
+    mode: ctx.state.mode,
+    agent: role === "document" ? "document" : role === "explore" ? "explore" : ctx.state.agent,
     webTools: role === "tester" || ctx.state.webTools,
-  });
+  };
+  const allTools = toolRouter.listTools(subState);
   const allowedTools = getAllowedToolsForSubagent(role, allTools, requestedTools);
   const allowedMap = new Map(allowedTools.map((t) => [t.name, t]));
   const systemPrompt = ROLE_PROMPTS[role]!;
@@ -239,7 +259,7 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
               })()
             : (tc.arguments ?? {});
 
-        if (!toolDef) {
+        if (!toolDef || toolDef.masked) {
           toolParts.push({
             type: "tool",
             tool: tc.name,
@@ -251,7 +271,30 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
           continue;
         }
 
+        const decision = await effectivePolicyGate.evaluateToolCall(toolDef, args, ctx.state);
+        if (decision.action !== "allow") {
+          toolParts.push({
+            type: "tool",
+            tool: toolDef.name,
+            callId,
+            state: "denied",
+            input: args,
+            risk: decision.risk,
+            error:
+              decision.reason ??
+              `Tool "${toolDef.name}" requires confirmation (${decision.action}) under active policy and cannot execute unattended in subagent "${role}".`,
+          });
+          continue;
+        }
+
         const res = await toolRouter.executeTool(callId, toolDef.name, args, ctx);
+        if (res.untrusted) {
+          ctx.state.tainted = true;
+          const prov = res.provenance ?? `subagent:${role}:${toolDef.name}`;
+          if (!ctx.state.taintSources.includes(prov)) {
+            ctx.state.taintSources.push(prov);
+          }
+        }
         toolParts.push({
           type: "tool",
           tool: toolDef.name,

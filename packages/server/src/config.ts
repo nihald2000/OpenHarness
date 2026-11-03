@@ -6,7 +6,7 @@ export interface LoadedServerConfig {
   accessKey?: string;
   serverToken?: string;
   adminToken?: string;
-  oidc?: { issuer: string; audience: string; hs256Secret?: string };
+  oidc?: { issuer: string; audience: string; hs256Secret: string };
   serviceTenantId: string;
   maxBodyBytes: number;
   dataDir: string;
@@ -24,12 +24,17 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): LoadedSe
   const serverToken = env.OPENHARNESS_SERVER_TOKEN || undefined;
   const adminToken = env.OPENHARNESS_ADMIN_TOKEN || undefined;
   const hasMetaApiKey = Boolean(env.MODEL_API_KEY || env.META_API_KEY);
+  if ((env.OIDC_ISSUER || env.OIDC_AUDIENCE) && (!env.OIDC_HS256_SECRET || env.OIDC_HS256_SECRET.length < 32)) {
+    throw new Error(
+      "OIDC_HS256_SECRET (at least 32 characters) is required when OIDC_ISSUER or OIDC_AUDIENCE is configured."
+    );
+  }
   const oidc =
-    env.OIDC_ISSUER && env.OIDC_AUDIENCE
+    env.OIDC_ISSUER && env.OIDC_AUDIENCE && env.OIDC_HS256_SECRET
       ? {
           issuer: env.OIDC_ISSUER,
           audience: env.OIDC_AUDIENCE,
-          hs256Secret: env.OIDC_HS256_SECRET || undefined,
+          hs256Secret: env.OIDC_HS256_SECRET,
         }
       : undefined;
 

@@ -879,7 +879,28 @@ export async function runStep(
       }
       state.toolCalls = (state.toolCalls ?? 0) + 1;
 
-      const toolDef = deps.toolRouter.getTool(rawCall.name);
+      const advertisedTool = availableTools.find(
+        (t) =>
+          t.name === rawCall.name ||
+          (rawCall.name === "load_skill" && t.name === "skill") ||
+          (rawCall.name === "grep" && t.name === "search")
+      );
+      const rawTool = deps.toolRouter.getTool(rawCall.name);
+      const isReadOnlyContext =
+        state.phase === "planning" ||
+        state.agent === "plan" ||
+        state.agent === "explore" ||
+        state.mode === "ask";
+      const toolDef = advertisedTool
+        ? advertisedTool
+        : !isReadOnlyContext &&
+          rawCall.name !== "mcp_connect_server" &&
+          rawCall.name !== "shell" &&
+          rawTool
+        ? rawTool
+        : rawTool
+        ? { ...rawTool, masked: true }
+        : undefined;
       const parsedInput =
         typeof rawCall.arguments === "string"
           ? safeParseJsonObject(rawCall.arguments)

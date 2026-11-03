@@ -126,6 +126,9 @@ def server():
         "OPENHARNESS_PREVIEW_BASE_URL": os.environ.get(
             "OPENHARNESS_PREVIEW_BASE_URL", "https://openharness-web-six.vercel.app"
         ),
+        "OH_CORS_ORIGINS": os.environ.get(
+            "OH_CORS_ORIGINS", os.environ.get("OPENHARNESS_PREVIEW_BASE_URL", "https://openharness-web-six.vercel.app")
+        ),
         "OH_DEFAULT_RUNTIME": os.environ.get("OH_DEFAULT_RUNTIME", "modal"),
         "OH_MODAL_SANDBOX_RUNTIME": os.environ.get("OH_MODAL_SANDBOX_RUNTIME", "gvisor"),
         "OH_SANDBOX_IDLE_MS": os.environ.get("OH_SANDBOX_IDLE_MS", "180000"),

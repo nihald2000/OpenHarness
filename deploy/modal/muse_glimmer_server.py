@@ -14,7 +14,7 @@ hf_cache = modal.Volume.from_name("openharness-hf-cache", create_if_missing=True
 vllm_cache = modal.Volume.from_name("openharness-vllm-cache", create_if_missing=True)
 GPU_CONFIG = os.environ.get("MUSE_GPU", "H200:1")
 image = modal.Image.from_registry("vllm/vllm-openai:muse-glimmer", add_python="3.11").entrypoint([]).env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
-secrets = [modal.Secret.from_name("openharness-server")] if os.environ.get("USE_MODAL_SECRET") == "1" else []
+secrets = [modal.Secret.from_name("openharness-muse-glimmer")] if os.environ.get("USE_MODAL_SECRET") == "1" else []
 
 
 @app.function(
@@ -39,6 +39,11 @@ def serve() -> None:
         "--max-model-len", os.environ.get("MUSE_MAX_MODEL_LEN", "65536"),
         "--gpu-memory-utilization", os.environ.get("MUSE_GPU_UTIL", "0.90"),
     ]
+    api_key = os.environ.get("MUSE_GLIMMER_API_KEY", "").strip()
+    if not api_key and os.environ.get("ALLOW_UNAUTHENTICATED_VLLM") != "1":
+        raise RuntimeError("MUSE_GLIMMER_API_KEY must be set for openharness-muse-glimmer (or set ALLOW_UNAUTHENTICATED_VLLM=1)")
+    if api_key:
+        cmd += ["--api-key", api_key]
     if os.environ.get("MUSE_ENABLE_DFLASH") == "1":
         cmd += ["--speculative-algorithm", "DFLASH", "--speculative-draft-model-path", "meta-models/Muse-Glimmer-30B-assistant", "--speculative-dflash-block-size", "5"]
     subprocess.Popen(cmd, env=os.environ.copy())

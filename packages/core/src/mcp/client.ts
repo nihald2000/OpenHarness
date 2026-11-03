@@ -7,6 +7,7 @@ import type { McpServerInfo, McpServerAdminInfo, McpPreset } from "@openharness/
 import type { RegisteredTool, ToolExecutionContext, ToolExecutionResult } from "../agent/deps.ts";
 import { getActiveSandboxDaemon } from "../sandbox/providers.ts";
 import { resolveInside } from "../util/safe-path.ts";
+import { assertSafeExternalUrl, fetchSafeExternal } from "../util/safe-url.ts";
 
 type JsonObject = Record<string, unknown>;
 type McpToolDefinition = {
@@ -169,11 +170,11 @@ function mermaidFallbackSvg(source: string, theme = "default"): string {
 }
 
 function assertRemoteUrl(value: string): URL {
-  let url: URL;
-  try { url = new URL(value); } catch { throw new Error("MCP server URL is invalid."); }
-  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("MCP server URL must use HTTP or HTTPS.");
-  if (url.username || url.password) throw new Error("MCP server URLs must not contain credentials.");
-  return url;
+  try {
+    return assertSafeExternalUrl(value);
+  } catch (err) {
+    throw new Error(`MCP remote URL rejected: ${(err as Error).message}`);
+  }
 }
 
 export class McpClientManager {
@@ -393,7 +394,7 @@ export class McpClientManager {
     }
     if (name === "fetch_markdown") {
       const url = assertRemoteUrl(asString(args.url));
-      const response = await fetch(url, { signal: signal ?? AbortSignal.timeout(15_000), headers: { "User-Agent": "OpenHarness/1.0", Accept: "text/html,text/plain,application/xhtml+xml" }, redirect: "error" });
+      const response = await fetchSafeExternal(url, { signal: signal ?? AbortSignal.timeout(15_000), headers: { "User-Agent": "OpenHarness/1.0", Accept: "text/html,text/plain,application/xhtml+xml" } });
       if (!response.ok) throw new Error(`Page fetch failed with HTTP ${response.status}.`);
       const body = await readLimitedBody(response, 2 * 1024 * 1024);
       const contentType = response.headers.get("content-type") ?? "";
@@ -703,9 +704,17 @@ export class McpClientManager {
         if (!server || server.status !== "connected") return { output: null, error: `MCP server ${serverName} is not connected.` };
         return this.executeDiscoveredTool(serverName, toolName, (input.arguments && typeof input.arguments === "object" ? input.arguments : {}) as JsonObject, ctx);
       } },
-      { name: "mcp_connect_server", description: "Connect an MCP server using HTTP, SSE, or a local stdio command.", readOnly: false, idempotent: true, parameters: objectSchema({ name: { type: "string" }, transport: { type: "string", enum: ["http", "sse", "stdio"] }, url: { type: "string" }, command: { type: "string" }, args: { type: "array", items: { type: "string" } }, cwd: { type: "string" }, env: { type: "object" }, headers: { type: "object" } }, ["name", "transport"]), execute: async (input) => {
+      { name: "mcp_connect_server", description: "Connect an MCP server using HTTP or SSE.", readOnly: false, idempotent: true, parameters: objectSchema({ name: { type: "string" }, transport: { type: "string", enum: ["http", "sse"] }, url: { type: "string" }, headers: { type: "object" } }, ["name", "transport"]), execute: async (input) => {
         try {
-          const config: McpServerConfig = { name: asString(input.name), transport: asString(input.transport) as McpServerConfig["transport"], url: asString(input.url) || undefined, command: asString(input.command) || undefined, args: Array.isArray(input.args) ? input.args.map(String) : undefined, cwd: asString(input.cwd) || undefined, headers: input.headers && typeof input.headers === "object" ? input.headers as Record<string, string> : undefined, env: input.env && typeof input.env === "object" ? input.env as Record<string, string> : undefined };
+          const transport = asString(input.transport) as McpServerConfig["transport"];
+          if (transport === "stdio" && process.env.OH_ALLOW_STDIO_MCP !== "1") {
+            return { output: null, error: "Connecting stdio MCP servers from agent tool calls is disabled by security policy." };
+          }
+          const rawHeaders = input.headers && typeof input.headers === "object" ? (input.headers as Record<string, string>) : undefined;
+          if (rawHeaders && Object.values(rawHeaders).some((v) => /\{secret:/i.test(String(v)))) {
+            return { output: null, error: "Secret interpolation in agent-invoked mcp_connect_server calls is forbidden." };
+          }
+          const config: McpServerConfig = { name: asString(input.name), transport, url: asString(input.url) || undefined, headers: rawHeaders };
           return { output: await this.saveAndConnectServer(config) };
         } catch (error) { return { output: null, error: error instanceof Error ? error.message : "MCP connection failed." }; }
       } },

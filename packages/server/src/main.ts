@@ -73,10 +73,12 @@ async function readRawBody(req: http.IncomingMessage, max: number): Promise<Buff
 function isOriginAllowed(origin: string): boolean {
   const allowedList = process.env.OH_CORS_ORIGINS;
   const allowedRegex = process.env.OH_CORS_ORIGIN_REGEX;
-  if (!allowedList && !allowedRegex) return true;
+  if (!allowedList && !allowedRegex) {
+    return /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(origin);
+  }
   if (allowedList) {
     const parts = allowedList.split(",").map((s) => s.trim()).filter(Boolean);
-    if (parts.includes("*") || parts.includes(origin)) return true;
+    if (parts.includes(origin)) return true;
   }
   if (allowedRegex) {
     try {
@@ -195,12 +197,14 @@ export function createHttpServer(
         const filePath = url.searchParams.get("path") ?? "";
         const file = await app.readSessionRawFile(identity, sessionId, filePath);
         if (file.status !== 200 || !file.buffer) return send(res, file.status, { error: file.error ?? "Could not read file" });
-        const forceAttachment = url.searchParams.get("download") === "1" || file.mimeType?.startsWith("text/html");
+        const unsafeInlineMime = Boolean(file.mimeType && /^(?:text\/html|image\/svg\+xml|application\/xhtml\+xml|text\/xml|application\/xml)/i.test(file.mimeType));
+        const forceAttachment = url.searchParams.get("download") === "1" || unsafeInlineMime;
         const safeName = (file.filename ?? "download").replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
         res.writeHead(200, {
           "content-type": file.mimeType ?? "application/octet-stream",
           "content-length": String(file.buffer.byteLength),
           "content-disposition": `${forceAttachment ? "attachment" : "inline"}; filename="${safeName}"`,
+          "content-security-policy": "default-src 'none'; sandbox",
           "x-content-type-options": "nosniff",
           "cache-control": "private, no-store",
         });
@@ -213,10 +217,12 @@ export function createHttpServer(
         const attachment = app.attachments.get(identity.tenantId, sessionId, decodeURIComponent(rawAttachmentMatch[2]!));
         if (!attachment) return send(res, 404, { error: "Attachment not found" });
         const safeName = attachment.info.name.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
+        const safeInlineAttachment = /^(?:image\/(?:png|jpeg|webp|gif)|application\/pdf)$/i.test(attachment.info.mimeType);
         res.writeHead(200, {
-          "content-type": attachment.info.mimeType,
+          "content-type": safeInlineAttachment ? attachment.info.mimeType : "application/octet-stream",
           "content-length": String(attachment.data.byteLength),
-          "content-disposition": `inline; filename="${safeName}"`,
+          "content-disposition": `${safeInlineAttachment ? "inline" : "attachment"}; filename="${safeName}"`,
+          "content-security-policy": "default-src 'none'; sandbox",
           "x-content-type-options": "nosniff",
           "cache-control": "private, no-store",
         });

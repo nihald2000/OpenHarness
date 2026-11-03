@@ -27,7 +27,12 @@ const appendBounded = (array, value) => {
 function isAllowedNavigation(rawUrl) {
   try {
     const parsed = new URL(String(rawUrl));
-    return parsed.href === "about:blank" || parsed.protocol === "http:" || parsed.protocol === "https:";
+    if (parsed.href === "about:blank") return true;
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase();
+    if (host === "169.254.169.254" || host === "metadata.google.internal" || host.startsWith("169.254.")) return false;
+    if ((host === "127.0.0.1" || host === "localhost") && parsed.port === "8080") return false;
+    return true;
   } catch {
     return false;
   }

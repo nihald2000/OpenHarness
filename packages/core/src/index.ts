@@ -25,5 +25,5 @@ export * from "./skills/registry.ts";
 export * from "./mcp/client.ts";
 
 export * from "./util/safe-path.ts";
-
+export * from "./util/safe-url.ts";
 export * from "./util/atomic-write.ts";

@@ -240,8 +240,28 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
       return res.end();
     }
 
+    const hasValidSessionKey = (() => {
+      const provided = req.headers["x-session-key"];
+      return safeEquals(sessionKey, Array.isArray(provided) ? provided[0] : provided);
+    })();
+    const isAllowedPreviewPort = (port: number): boolean => {
+      for (const d of daemons.values()) {
+        if (d.isServicePort(port)) return false;
+      }
+      if (hasValidSessionKey) return true;
+      for (const d of daemons.values()) {
+        if (d.isRegisteredPreviewPort(port)) return true;
+      }
+      return false;
+    };
+
     const preview = previewTarget(url);
-    if (preview) return proxyPreview(req, res, preview.port, preview.path);
+    if (preview) {
+      if (!isAllowedPreviewPort(preview.port)) {
+        return sendJson(res, 403, { error: "Forbidden: preview port is not registered to an active sandbox session" }, { "x-oh-daemon": "1" });
+      }
+      return proxyPreview(req, res, preview.port, preview.path);
+    }
     if (url.startsWith("/preview/")) return sendJson(res, 400, { error: "Invalid preview port" });
 
     const refererPort = previewPortFromReferer(typeof req.headers.referer === "string" ? req.headers.referer : undefined);
@@ -250,6 +270,11 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
       refererPort !== undefined &&
       !isReservedDaemonPath(requestUrl.pathname)
     ) {
+      for (const d of daemons.values()) {
+        if (d.isServicePort(refererPort)) {
+          return sendJson(res, 403, { error: "Forbidden: internal service port cannot be proxied" }, { "x-oh-daemon": "1" });
+        }
+      }
       return proxyPreview(req, res, refererPort, `${requestUrl.pathname}${requestUrl.search}`);
     }
 
@@ -379,8 +404,11 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
       return;
     }
     const target = previewTarget(req.url);
-    if (!target) {
-      clientSocket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+    const wsKey = req.headers["x-session-key"];
+    const wsAuthed = safeEquals(sessionKey, Array.isArray(wsKey) ? wsKey[0] : wsKey);
+    const wsPortAllowed = target && (wsAuthed || Array.from(daemons.values()).some((d) => d.isRegisteredPreviewPort(target.port))) && !Array.from(daemons.values()).some((d) => d.isServicePort(target.port));
+    if (!target || !wsPortAllowed) {
+      clientSocket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
       clientSocket.destroy();
       return;
     }

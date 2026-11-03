@@ -125,6 +125,26 @@ export class SandboxDaemon {
   private processes = new Map<string, BackgroundProcessState>();
   private undoStack = new Map<string, string[]>();
   private ports = new Map<number, string>();
+  private servicePorts = new Set<number>();
+
+  public isServicePort(port: number): boolean {
+    return this.servicePorts.has(port);
+  }
+
+  public isRegisteredPreviewPort(port: number): boolean {
+    return this.ports.has(port) && !this.servicePorts.has(port);
+  }
+
+  private confineConfig() {
+    return {
+      srtSettingsPath: this.srtSettingsPath,
+      runAs: this.config.runAs,
+      homePath: this.config.homePath,
+      tmpPath: this.config.tmpPath,
+      useSrt: this.osEnforced,
+      srtProbe: this.config.srtProbe,
+    };
+  }
   private browserState: BrowserSessionState = {
     currentUrl: "about:blank",
     title: "Blank",
@@ -496,6 +516,30 @@ export class SandboxDaemon {
       const browserPayload = action === "navigate"
         ? { ...payload, url: rewritePreviewToLocalUrl(String(payload.url ?? "")) }
         : payload;
+      if (action === "navigate") {
+        const navUrl = String(browserPayload.url ?? "");
+        let parsedNav: URL;
+        try {
+          parsedNav = new URL(navUrl);
+        } catch {
+          return { status: 400, body: { error: `Invalid navigation URL: ${navUrl}` } };
+        }
+        const navPort = Number(parsedNav.port || 0);
+        const isLocalPreview =
+          (parsedNav.hostname === "127.0.0.1" || parsedNav.hostname === "localhost") &&
+          navPort >= 1024 &&
+          navPort <= 65535 &&
+          navPort !== 8080 &&
+          !this.servicePorts.has(navPort);
+        if (!isLocalPreview) {
+          const netCheck = evaluateNetworkAccess(this.config.policy, navUrl, "GET");
+          if (!netCheck.allowed) {
+            this.emitViolation("network", navUrl, netCheck.reason);
+            this.browserState.networkErrors.push(netCheck.reason ?? `Blocked: ${navUrl}`);
+            return { status: 403, body: { error: netCheck.reason } };
+          }
+        }
+      }
       const bridgeRes = await this.browserBridge.send(action, browserPayload, action === "run_flow" ? 45_000 : 20_000);
       if (bridgeRes.status !== 503) {
         return bridgeRes;
@@ -908,10 +952,12 @@ export class SandboxDaemon {
     } else {
       const redisBin = ["/usr/bin/redis-server", "/usr/local/bin/redis-server"].find((file) => fs.existsSync(file));
       if (!redisBin) return { status: 503, body: { error: "Redis is not installed in this sandbox image" } };
-      command = `${quote(redisBin)} --bind 127.0.0.1 --port ${port} --save '' --appendonly no --dir ${quote(serviceDir)}`;
-      env = { REDIS_HOST: "127.0.0.1", REDIS_PORT: String(port), REDIS_URL: `redis://127.0.0.1:${port}` };
+      const redisPass = crypto.randomBytes(16).toString("hex");
+      command = `${quote(redisBin)} --bind 127.0.0.1 --port ${port} --requirepass ${quote(redisPass)} --save '' --appendonly no --dir ${quote(serviceDir)}`;
+      env = { REDIS_HOST: "127.0.0.1", REDIS_PORT: String(port), REDIS_PASSWORD: redisPass, REDIS_URL: `redis://:${redisPass}@127.0.0.1:${port}` };
     }
-    const started = await this.startBackgroundProcess({ command, cwd: ".", port });
+    this.servicePorts.add(port);
+    const started = await this.startBackgroundProcess({ command, cwd: ".", port, internalService: true });
     if (started.status !== 200) return started;
     const processId = String((started.body as Record<string, unknown>).id ?? "");
     const deadline = Date.now() + 20_000;
@@ -979,7 +1025,12 @@ export class SandboxDaemon {
     };
     this.processes.set(id, procState);
 
+    const isInternalService = Boolean(payload.internalService);
     const registerPort = (port: number) => {
+      if (isInternalService || this.servicePorts.has(port)) {
+        procState.port = port;
+        return;
+      }
       if (procState.port === port) return;
       procState.port = port;
       const previewUrl = `http://127.0.0.1:${port}`;
@@ -1130,8 +1181,13 @@ export class SandboxDaemon {
     if (!worker) return { error: "Sandbox artifact worker is not installed" };
     const encoded = Buffer.from(JSON.stringify(args)).toString("base64");
     return new Promise((resolve) => {
-      execFile(pythonExecutable(), [worker, action, encoded], {
-        cwd: this.config.workspacePath, timeout: 55_000, maxBuffer: 32 * 1024 * 1024, windowsHide: true,
+      const drop =
+        this.config.runAs && process.platform === "linux" && process.getuid?.() === 0
+          ? ["setpriv", "--reuid", String(this.config.runAs.uid), "--regid", String(this.config.runAs.gid), "--clear-groups", "--no-new-privs", "--"]
+          : [];
+      const fullCmd = [...drop, pythonExecutable(), "-I", worker, action, encoded];
+      execFile(fullCmd[0]!, fullCmd.slice(1), {
+        cwd: this.config.tmpPath, timeout: 55_000, maxBuffer: 32 * 1024 * 1024, windowsHide: true,
         env: {
           PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
           PYTHONUNBUFFERED: "1",
@@ -1230,12 +1286,12 @@ export class SandboxDaemon {
         diagnostics.push(`JSON syntax error: ${err instanceof Error ? err.message : String(err)}`);
       }
     } else if (ext === ".js" || ext === ".mjs" || ext === ".cjs") {
-      const check = spawnConfinedArgv(["node", "--check", resolvedPath], this.config.workspacePath);
+      const check = spawnConfinedArgv(["node", "--check", resolvedPath], this.config.tmpPath, {}, 30_000, this.confineConfig());
       if (check.status !== 0) {
         diagnostics.push((check.stderr || check.stdout || "JS syntax error").trim());
       }
     } else if (ext === ".py") {
-      const check = spawnConfinedArgv([pythonExecutable(), "-m", "py_compile", resolvedPath], this.config.workspacePath);
+      const check = spawnConfinedArgv([pythonExecutable(), "-I", "-S", "-m", "py_compile", resolvedPath], this.config.tmpPath, {}, 30_000, this.confineConfig());
       if (check.status !== 0) {
         diagnostics.push((check.stderr || check.stdout || "Python syntax error").trim());
       }
@@ -1981,8 +2037,14 @@ export class SandboxDaemon {
   private async execIpython(
     payload: Record<string, unknown>
   ): Promise<{ status: number; body: Record<string, unknown> }> {
+    if (this.config.requireSrt && !this.osEnforced) {
+      return {
+        status: 503,
+        body: { ok: false, error: "OS-enforced sandbox runtime (srt) is required for ipython execution" },
+      };
+    }
     const code = String(payload.code ?? "");
-    const res = spawnConfinedArgv([pythonExecutable(), "-c", code], this.config.workspacePath, {}, 30_000);
+    const res = spawnConfinedArgv([pythonExecutable(), "-I", "-c", code], this.config.workspacePath, {}, 30_000, this.confineConfig());
     return {
       status: 200,
       body: {

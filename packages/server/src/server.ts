@@ -874,6 +874,7 @@ export class OpenHarnessServer {
           ctx,
           provider: providerRef!,
           toolRouter,
+          policyGate,
           emit: emitRef ?? undefined,
           modelRouting: {
             glimmerAvailable: Boolean(process.env.MUSE_GLIMMER_BASE_URL),
@@ -960,9 +961,13 @@ export class OpenHarnessServer {
               entry?.type === "openai" && entry.models && Object.hasOwn(entry.models, model)
             );
             if (!hasCustomOverride) {
+              const glimmerKey = this.secretStore.getDecrypted("MUSE_GLIMMER_API_KEY") ?? process.env.MUSE_GLIMMER_API_KEY;
+              if (!glimmerKey && !process.env.MUSE_GLIMMER_BASE_URL.startsWith("http://127.0.0.1") && !process.env.MUSE_GLIMMER_BASE_URL.startsWith("http://localhost")) {
+                throw new ProviderHttpError(401, "missing API key for Muse Glimmer endpoint (MUSE_GLIMMER_API_KEY)");
+              }
               return {
                 baseUrl: process.env.MUSE_GLIMMER_BASE_URL,
-                apiKey: this.secretStore.getDecrypted("MUSE_GLIMMER_API_KEY") ?? process.env.MUSE_GLIMMER_API_KEY ?? "modal-open-weights",
+                apiKey: glimmerKey ?? "local-dev-key",
               };
             }
           }
@@ -1245,7 +1250,7 @@ export class OpenHarnessServer {
     this.scheduleManager = new ScheduleManager({
       onEnqueueRun: async (req) => {
         const sessionId = `sess_${req.runId}`;
-        const tenantId = this.config.serviceTenantId ?? "default";
+        const tenantId = req.tenantId ?? this.config.serviceTenantId ?? "default";
         await this.stateStore.saveSession(tenantId, {
           id: sessionId,
           title: `Scheduled: ${req.prompt.slice(0, 40)}`,
@@ -1641,9 +1646,10 @@ export class OpenHarnessServer {
     if (method === "GET" && rawFileMatch) {
       const file = await this.readSessionRawFile(identity, decodeURIComponent(rawFileMatch[1]!), parsedUrl.searchParams.get("path") ?? "");
       if (file.status !== 200 || !file.buffer) return { status: file.status, body: { error: file.error ?? "Could not read file" } };
-      const forceAttachment = parsedUrl.searchParams.get("download") === "1" || file.mimeType?.startsWith("text/html");
+      const unsafeInlineMime = Boolean(file.mimeType && /^(?:text\/html|image\/svg\+xml|application\/xhtml\+xml|text\/xml|application\/xml)/i.test(file.mimeType));
+      const forceAttachment = parsedUrl.searchParams.get("download") === "1" || unsafeInlineMime;
       const safeName = (file.filename ?? "download").replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
-      return { status: 200, body: file.buffer, headers: { "content-type": file.mimeType ?? "application/octet-stream", "content-length": String(file.buffer.byteLength), "content-disposition": `${forceAttachment ? "attachment" : "inline"}; filename="${safeName}"`, "x-content-type-options": "nosniff", "cache-control": "private, no-store" } };
+      return { status: 200, body: file.buffer, headers: { "content-type": file.mimeType ?? "application/octet-stream", "content-length": String(file.buffer.byteLength), "content-disposition": `${forceAttachment ? "attachment" : "inline"}; filename="${safeName}"`, "content-security-policy": "default-src 'none'; sandbox", "x-content-type-options": "nosniff", "cache-control": "private, no-store" } };
     }
 
     const attachmentUploadMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/attachments$/);
@@ -1816,6 +1822,9 @@ export class OpenHarnessServer {
     }
 
     if (method === "POST" && pathname === "/v1/skills") {
+      if (!identity.admin) {
+        return { status: 403, body: { error: "Forbidden: admin privileges required to install or modify skills" } };
+      }
       try {
         if (typeof body?.url === "string" && body.url.trim()) {
           return { status: 201, body: await this.skillsRegistry.importSkillFromUrl(body.url.trim(), typeof body.id === "string" ? body.id : undefined) };
@@ -2746,7 +2755,12 @@ export class OpenHarnessServer {
     const sbDelMatch = pathname.match(/^\/v1\/sandboxes\/([^/]+)$/);
     if (method === "DELETE" && sbDelMatch) {
       const sandboxId = sbDelMatch[1]!;
+      const record = await this.sandboxRecords.get(sandboxId).catch(() => null);
       const handle = this.activeSandboxes.get(sandboxId);
+      const ownerTenant = record?.tenantId ?? (handle as { tenantId?: string } | undefined)?.tenantId;
+      if (!identity.admin && (!ownerTenant || ownerTenant !== tenantId)) {
+        return { status: 404, body: { error: "Sandbox not found" } };
+      }
       if (handle) {
         const provider = this.providers.get(handle.providerId);
         await provider?.destroy(handle);
@@ -2905,7 +2919,10 @@ export class OpenHarnessServer {
       const runId = runActionMatch[1]!;
       const action = runActionMatch[2]!;
       if (action === "pause") {
-        if (await this.runWorker.getRun(runId)) {
+        const v2Run = await this.runWorker.getRun(runId);
+        if (v2Run) {
+          const runTenant = v2Run.tenantId ?? "default";
+          if (runTenant !== tenantId && !identity.admin) return { status: 404, body: { error: "Run not found" } };
           const pausedV2 = await this.runWorker.pauseRun(runId);
           if (!pausedV2) return { status: 404, body: { error: "Run not found" } };
           return { status: 200, body: pausedV2 };
@@ -2938,12 +2955,21 @@ export class OpenHarnessServer {
         return { status: 200, body: resumed.run };
       }
       if (action === "cancel") {
+        const v2Run = await this.runWorker.getRun(runId);
+        if (v2Run) {
+          const runTenant = v2Run.tenantId ?? "default";
+          if (runTenant !== tenantId && !identity.admin) return { status: 404, body: { error: "Run not found" } };
+          this.worker.abortRun(runId);
+          const v2Cancelled = await this.runWorker.cancelRun(runId);
+          if (!v2Cancelled) return { status: 404, body: { error: "Run not found" } };
+          return { status: 200, body: v2Cancelled };
+        }
+        const v1Run = await this.stateStore.getRun(tenantId, runId);
+        if (!v1Run && !identity.admin) return { status: 404, body: { error: "Run not found" } };
         this.worker.abortRun(runId);
-        const v2Cancelled = await this.runWorker.cancelRun(runId);
         const cancelled = await this.worker.cancelRun(tenantId, runId);
-        const finalRun = v2Cancelled ?? cancelled;
-        if (!finalRun) return { status: 404, body: { error: "Run not found" } };
-        return { status: 200, body: finalRun };
+        if (!cancelled) return { status: 404, body: { error: "Run not found" } };
+        return { status: 200, body: cancelled };
       }
     }
 
@@ -3047,12 +3073,18 @@ export class OpenHarnessServer {
       }
     }
 
+    if (pathname === "/v1/schedules" || pathname.startsWith("/v1/schedules/")) {
+      if (!identity.admin && (identity.userId.startsWith("guest_") || tenantId.startsWith("guest_"))) {
+        return { status: 403, body: { error: "Forbidden: guest sessions cannot access schedules" } };
+      }
+    }
     if (method === "GET" && pathname === "/v1/schedules") {
-      return { status: 200, body: this.scheduleManager.list() };
+      return { status: 200, body: this.scheduleManager.list(identity.admin ? undefined : tenantId) };
     }
     if (method === "POST" && pathname === "/v1/schedules") {
       const payload = body ?? {};
       const created = this.scheduleManager.create({
+        tenantId,
         name: String(payload.name ?? "Scheduled Task"),
         cron: typeof payload.cron === "string" ? payload.cron : undefined,
         webhookSecret:
@@ -3069,18 +3101,27 @@ export class OpenHarnessServer {
     }
     const schedTriggerMatch = pathname.match(/^\/v1\/schedules\/([^/]+)\/trigger$/);
     if (method === "POST" && schedTriggerMatch) {
-      const res = await this.scheduleManager.triggerSchedule(schedTriggerMatch[1]!);
+      const schedId = schedTriggerMatch[1]!;
+      const existing = this.scheduleManager.get(schedId);
+      if (!existing || (!identity.admin && (existing.tenantId ?? "default") !== tenantId)) {
+        return { status: 404, body: { error: "Not found" } };
+      }
+      const res = await this.scheduleManager.triggerSchedule(schedId, `${existing.tenantId ?? "default"}:default`);
       return { status: res.triggered ? 202 : 409, body: res };
     }
     const schedIdMatch = pathname.match(/^\/v1\/schedules\/([^/]+)$/);
     if (schedIdMatch) {
       const schedId = schedIdMatch[1]!;
+      const existing = this.scheduleManager.get(schedId);
+      if (!existing || (!identity.admin && (existing.tenantId ?? "default") !== tenantId)) {
+        return { status: 404, body: { error: "Not found" } };
+      }
       if (method === "GET") {
-        const s = this.scheduleManager.get(schedId);
-        return s ? { status: 200, body: s } : { status: 404, body: { error: "Not found" } };
+        return { status: 200, body: existing };
       }
       if (method === "PATCH") {
-        const s = this.scheduleManager.update(schedId, body ?? {});
+        const { tenantId: _ignoreTenant, ...safePatch } = (body ?? {}) as Record<string, unknown>;
+        const s = this.scheduleManager.update(schedId, safePatch);
         return s ? { status: 200, body: s } : { status: 404, body: { error: "Not found" } };
       }
       if (method === "DELETE") {

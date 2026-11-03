@@ -10,6 +10,7 @@ import type {
   RegisteredTool,
   RunState,
 } from "../agent/deps.ts";
+import { isPrivateOrLoopbackHost } from "../util/safe-url.ts";
 
 const RISK_ORDER: Record<RiskLevel, number> = {
   low: 1,
@@ -144,7 +145,16 @@ export function classifyToolCallRisk(
   let computed: RiskLevel = opts?.readOnly ? "low" : "medium";
   let reason: string | undefined;
 
-  if (toolName === "bash" || toolName === "shell" || toolName === "process_start") {
+  if (toolName === "shell" || toolName === "mcp_connect_server") {
+    computed = "high";
+    reason = `Host process or MCP server connection tool "${toolName}" requires explicit human confirmation`;
+  } else if (toolName === "delegate") {
+    const role = String(input.agent ?? input.role ?? "explore").toLowerCase();
+    if (role !== "explore" && role !== "explorer") {
+      computed = "medium";
+      reason = `Delegating to write/exec-capable subagent role "${role}"`;
+    }
+  } else if (toolName === "bash" || toolName === "process_start") {
     const rawCmd = Array.isArray(input.command)
       ? input.command.join(" ")
       : String(input.command ?? "");
@@ -208,18 +218,43 @@ export function classifyToolCallRisk(
   } else if (toolName === "git_push" || toolName === "github_pr") {
     computed = "high";
     reason = `External repository mutation (${toolName})`;
-  } else if (toolName === "webfetch" || toolName === "browser_navigate") {
-    const urlStr = String(input.url ?? "");
-    try {
-      const host = new URL(urlStr).hostname.toLowerCase();
-      const known = (opts?.knownAllowedDomains ?? []).map((d) => d.toLowerCase());
-      if (known.length > 0 && !known.includes(host) && host !== "127.0.0.1" && host !== "localhost") {
-        computed = "high";
-        reason = `Network request to newly seen domain "${host}"`;
+  } else if (
+    toolName === "webfetch" ||
+    toolName === "browser_navigate" ||
+    toolName.startsWith("mcp__web_fetch__") ||
+    (toolName === "mcp_call_tool" && String(input.server ?? "") === "web-fetch")
+  ) {
+    const nestedArgs =
+      input.arguments && typeof input.arguments === "object"
+        ? (input.arguments as Record<string, unknown>)
+        : undefined;
+    const urlStr = String(input.url ?? nestedArgs?.url ?? "");
+    if (urlStr) {
+      try {
+        const parsed = new URL(urlStr);
+        const host = parsed.hostname.toLowerCase();
+        const isHostFetch =
+          toolName === "webfetch" ||
+          toolName.startsWith("mcp__web_fetch__") ||
+          toolName === "mcp_call_tool";
+        if (isHostFetch && isPrivateOrLoopbackHost(host)) {
+          computed = "high";
+          reason = `Host network fetch to internal/loopback/metadata target "${host}" is forbidden`;
+        } else {
+          const known = (opts?.knownAllowedDomains ?? []).map((d) => d.toLowerCase());
+          if (known.length > 0 && !known.includes(host) && host !== "127.0.0.1" && host !== "localhost") {
+            computed = "high";
+            reason = `Network request to newly seen domain "${host}"`;
+          } else if (isHostFetch) {
+            computed = maxRiskLevel(computed, "medium");
+          }
+        }
+      } catch {
+        computed = "unknown";
+        reason = `Unparseable URL "${urlStr}"`;
       }
-    } catch {
-      computed = "unknown";
-      reason = `Unparseable URL "${urlStr}"`;
+    } else if (toolName.startsWith("mcp__web_fetch__") || toolName === "mcp_call_tool") {
+      computed = maxRiskLevel(computed, "medium");
     }
   }
 
@@ -299,9 +334,25 @@ export class RiskPolicyGate implements PolicyGate {
           pattern: tool.name,
         };
       }
+      if (tool.name === "delegate") {
+        const role = String(input.agent ?? input.role ?? "explore").toLowerCase();
+        if (role !== "explore" && role !== "explorer") {
+          return {
+            action: "ask",
+            risk: "high",
+            reason: `Context is tainted by untrusted content (${state.taintSources.join(", ")}); delegating to "${role}" subagent requires explicit human confirmation.`,
+            pattern: tool.name,
+          };
+        }
+      }
 
       const urlCandidates: string[] = [];
       if (typeof input.url === "string") urlCandidates.push(input.url);
+      const nestedArgs =
+        input.arguments && typeof input.arguments === "object"
+          ? (input.arguments as Record<string, unknown>)
+          : undefined;
+      if (typeof nestedArgs?.url === "string") urlCandidates.push(nestedArgs.url);
       if (typeof input.command === "string") {
         const matches = input.command.match(/https?:\/\/[^\s"';|&)+]+/g);
         if (matches) urlCandidates.push(...matches);

@@ -203,10 +203,42 @@ export function spawnConfinedArgv(
   argv: string[],
   cwd: string,
   extraEnv: Record<string, string> = {},
-  timeoutMs = 30_000
+  timeoutMs = 30_000,
+  confine?: ConfineConfig
 ): { status: number; stdout: string; stderr: string } {
-  const env = { ...buildCleanEnv(), ...extraEnv };
-  const res = spawnSync(argv[0]!, argv.slice(1), {
+  const sessionEnv: Record<string, string> = { ...extraEnv };
+  if (confine?.runAs && confine.homePath) {
+    sessionEnv.HOME = confine.homePath;
+    sessionEnv.npm_config_cache = path.join(confine.homePath, ".npm");
+    sessionEnv.XDG_CACHE_HOME = path.join(confine.homePath, ".cache");
+  }
+  if (confine?.runAs && confine.tmpPath) sessionEnv.TMPDIR = confine.tmpPath;
+  const env = { ...buildCleanEnv(sessionEnv), ...extraEnv };
+  if (!confine?.runAs || !confine.homePath) env.HOME = env.HOME || cwd;
+  const disableSrt = process.env.OH_DISABLE_SRT === "1";
+  const requestedSrt = !confine || disableSrt ? false : confine.useSrt ?? isSrtInstalled();
+  const useSrt =
+    Boolean(confine) &&
+    !disableSrt &&
+    requestedSrt &&
+    !(isVmIsolated() && !canExecuteUnderSrt(confine!.srtSettingsPath, confine!.srtProbe));
+  const drop =
+    confine?.runAs && process.platform === "linux" && process.getuid?.() === 0
+      ? [
+          "setpriv",
+          "--reuid",
+          String(confine.runAs.uid),
+          "--regid",
+          String(confine.runAs.gid),
+          "--clear-groups",
+          "--no-new-privs",
+          "--",
+        ]
+      : [];
+  const fullArgv = useSrt
+    ? [...drop, "srt", "--settings", confine!.srtSettingsPath, "--", ...argv]
+    : [...drop, ...argv];
+  const res = spawnSync(fullArgv[0]!, fullArgv.slice(1), {
     cwd,
     env,
     encoding: "utf8",

@@ -18,6 +18,7 @@ import { getActiveSandboxDaemon, LocalSandboxProvider } from "../sandbox/provide
 import { compileSandboxPolicy } from "../sandbox/policy.ts";
 import { enforceToolOutputLimit } from "./output-limit.ts";
 import { resolveInside, PathEscapeError } from "../util/safe-path.ts";
+import { assertSafeExternalUrl, fetchSafeExternal } from "../util/safe-url.ts";
 import { SkillsRegistry } from "../skills/registry.ts";
 import { McpClientManager } from "../mcp/client.ts";
 
@@ -990,6 +991,9 @@ export class StandardToolRouter implements ToolRouter {
           },
         },
         execute: async (input, ctx) => {
+          if (process.env.OH_ENABLE_LEGACY_HOST_SHELL !== "1") {
+            return { output: null, error: "Legacy direct-host shell execution is disabled by security policy; use bash inside the sandbox." };
+          }
           const argv = Array.isArray(input.command) ? input.command.map(String) : [String(input.command)];
           const bin = argv[0] ?? "";
           if (!["git", "bun", "node", "python", "python3", "rg"].includes(bin)) {
@@ -1647,17 +1651,14 @@ export class StandardToolRouter implements ToolRouter {
 
           let parsedUrl: URL;
           try {
-            parsedUrl = new URL(url);
-            if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
-              throw new Error("Only HTTP and HTTPS URLs are supported");
-            }
+            parsedUrl = assertSafeExternalUrl(url);
           } catch (err) {
             return { output: null, error: `Invalid webfetch URL: ${(err as Error).message}` };
           }
 
           let response: Response;
           try {
-            response = await fetch(parsedUrl, {
+            response = await fetchSafeExternal(parsedUrl, {
               headers: { "User-Agent": "OpenHarness/1.0" },
               signal: ctx.signal
                 ? AbortSignal.any([ctx.signal, AbortSignal.timeout(15_000)])
