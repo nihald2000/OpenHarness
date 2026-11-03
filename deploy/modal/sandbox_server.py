@@ -69,7 +69,7 @@ sandbox_image = (
     memory=3072,
     timeout=3600,
     max_containers=1,
-    min_containers=int(os.environ.get("OH_SANDBOX_MIN_CONTAINERS", "0")),
+    min_containers=int(os.environ.get("OH_SANDBOX_MIN_CONTAINERS", "1")),
     scaledown_window=600,
 )
 @modal.concurrent(max_inputs=100)

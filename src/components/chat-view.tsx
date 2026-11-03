@@ -327,9 +327,22 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
       : draftModel || defaultModel;
   const selectedModelConfigured =
     sessionModelConfigured && models.some((model) => model.id === selectedModel);
-  const selectedRuntime = session?.runtime ?? draft.runtime ?? defaultRuntime;
+  const activeDefaultRuntime =
+    (defaultRuntime && runtimes.some((r) => r.id === defaultRuntime && r.active) ? defaultRuntime : "") ||
+    runtimes.find((r) => r.active && r.id === "modal")?.id ||
+    runtimes.find((r) => r.active)?.id ||
+    defaultRuntime;
+  const draftRuntime =
+    draft.runtime && runtimes.some((r) => r.id === draft.runtime && r.active)
+      ? draft.runtime
+      : "";
+  const sessionRuntime =
+    session?.runtime && (runtimes.length === 0 || runtimes.some((r) => r.id === session.runtime && r.active))
+      ? session.runtime
+      : "";
+  const selectedRuntime = sessionRuntime || draftRuntime || activeDefaultRuntime;
   const selectedRuntimeInfo = runtimes.find((runtime) => runtime.id === selectedRuntime);
-  const runtimeReady = runMode === "ask" || Boolean(selectedRuntimeInfo?.active);
+  const runtimeReady = catalogLoading || runMode === "ask" || Boolean(selectedRuntimeInfo?.active);
 
   useEffect(() => {
     setActiveSessionId(sessionId ?? null);
@@ -643,7 +656,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
       const created = await client.session.create({
         agent: overrideAgent ?? selectedAgent,
         model: selectedModel || undefined,
-        runtime: draft.runtime || undefined,
+        runtime: selectedRuntime || undefined,
       });
       createdId = created.id;
       upsertSession(created);
@@ -1157,7 +1170,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                     </Link>
                   </div>
                 )}
-                {!runtimeReady && selectedModelConfigured && (
+                {!catalogLoading && !runtimeReady && selectedModelConfigured && (
                   <div
                     className="mx-auto mb-3 w-full max-w-[720px] rounded-xl border border-border bg-elev px-4 py-3 text-xs text-muted"
                     role="status"

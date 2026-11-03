@@ -175,6 +175,36 @@ function resolveModalImageId(serverCodeRoot: string): string {
   return "";
 }
 
+function resolvePinnedModalSandboxUrl(
+  serverCodeRoot: string,
+  hostedIsolation: boolean,
+  pinnedModalKey: string
+): string {
+  const fromEnv = process.env.OH_MODAL_SANDBOX_URL?.trim();
+  if (fromEnv) return fromEnv;
+  if (!hostedIsolation || !pinnedModalKey) return "";
+  const candidates = [
+    path.resolve(serverCodeRoot, "vercel.json"),
+    path.resolve(serverCodeRoot, "..", "vercel.json"),
+    path.resolve(serverCodeRoot, "..", "..", "vercel.json"),
+  ];
+  for (const vercelPath of candidates) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(vercelPath, "utf8")) as {
+        rewrites?: Array<{ destination?: unknown }>;
+      };
+      for (const rule of parsed.rewrites ?? []) {
+        if (typeof rule?.destination !== "string") continue;
+        const m = rule.destination.match(/^(https:\/\/[^/]*openharness-sandboxd[^/]*\.modal\.run)(?:\/|$)/i);
+        if (m?.[1]) return m[1];
+      }
+    } catch {
+      // Ignore missing or unreadable vercel.json.
+    }
+  }
+  return "";
+}
+
 class UnconfiguredModalProvider implements SandboxProvider {
   readonly id = "modal" as const;
   readonly capabilities: SandboxCapabilities = {
@@ -692,8 +722,15 @@ export class OpenHarnessServer {
     this.settingsPath = path.join(dataDir, "settings.json");
     const rawSavedRuntime = this.readUserSettings().defaultRuntime;
     const envDefaultRuntime = process.env.OH_DEFAULT_RUNTIME || undefined;
-    const pinnedModalUrl = process.env.OH_MODAL_SANDBOX_URL?.trim();
     const pinnedModalKey = process.env.OH_MODAL_SANDBOX_KEY?.trim() || "";
+    const pinnedModalUrl = resolvePinnedModalSandboxUrl(
+      serverCodeRoot,
+      this.hostedIsolation,
+      pinnedModalKey
+    );
+    if (pinnedModalUrl && !process.env.OH_MODAL_SANDBOX_URL) {
+      process.env.OH_MODAL_SANDBOX_URL = pinnedModalUrl;
+    }
     this.defaultRuntime =
       rawSavedRuntime || envDefaultRuntime || this.config.defaultRuntime || "local";
     const modalImageId = process.env.OH_MODAL_IMAGE_ID || resolveModalImageId(serverCodeRoot);
@@ -711,9 +748,7 @@ export class OpenHarnessServer {
       this.defaultRuntime = "modal";
     }
     if (this.hostedIsolation && pinnedModalUrl && pinnedModalKey) {
-      if (!rawSavedRuntime || rawSavedRuntime === "local") {
-        this.defaultRuntime = "modal";
-      }
+      this.defaultRuntime = "modal";
     }
 
     this.providers =

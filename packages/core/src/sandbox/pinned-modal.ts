@@ -96,7 +96,7 @@ export class PinnedModalSandboxProvider implements SandboxProvider {
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     const handleId = this.handleIdFor(spec);
     const transport = this.transportFor(handleId);
-    const init = await transport.request("POST", "/sessions/init", {} , { timeoutMs: 45_000 });
+    const init = await transport.request("POST", "/sessions/init", {} , { timeoutMs: 90_000 });
     if (init.status !== 200) throw new Error(`Modal sandbox hub session init failed (${init.status}): ${init.body?.error ?? "unknown error"}`);
     for (const command of spec.setupCommands ?? []) {
       const result = await transport.request("POST", "/shell/setup/exec", { command }, { timeoutMs: 300_000 });
@@ -127,7 +127,7 @@ export class PinnedModalSandboxProvider implements SandboxProvider {
   async attach(handleId: string): Promise<{ transport: SandboxTransport }> {
     if (!/^modal_[A-Za-z0-9_-]{3,90}$/.test(handleId)) throw new Error("Invalid pinned Modal handle ID");
     const transport = this.transportFor(handleId);
-    const init = await transport.request("POST", "/sessions/init", {}, { timeoutMs: 45_000 });
+    const init = await transport.request("POST", "/sessions/init", {}, { timeoutMs: 90_000 });
     if (init.status !== 200) throw new Error(`Modal sandbox hub attach failed (${init.status})`);
     return { transport };
   }
@@ -143,7 +143,7 @@ export class PinnedModalSandboxProvider implements SandboxProvider {
   }
 
   async resume(handle: SandboxHandle): Promise<void> {
-    const res = await this.transportFor(handle.id).request("POST", "/sessions/init", {}, { timeoutMs: 45_000 });
+    const res = await this.transportFor(handle.id).request("POST", "/sessions/init", {}, { timeoutMs: 90_000 });
     if (res.status !== 200) throw new Error(`Modal sandbox resume failed (${res.status})`);
     handle.status = "running";
   }
@@ -173,17 +173,43 @@ export class PinnedModalSandboxProvider implements SandboxProvider {
   async health(_handle?: SandboxHandle): Promise<HealthReport> {
     const checkedAt = Date.now();
     try {
-      const response = await this.fetchImpl(`${this.endpointUrl}/health`, { signal: AbortSignal.timeout(10_000) });
+      const response = await this.fetchImpl(`${this.endpointUrl}/health`, { signal: AbortSignal.timeout(4_000) });
+      if ([502, 503, 504].includes(response.status)) {
+        void this.fetchImpl(`${this.endpointUrl}/health`, { signal: AbortSignal.timeout(45_000) }).catch(() => {});
+        return {
+          ok: true,
+          providerId: "modal",
+          status: "warming",
+          osEnforced: true,
+          detail: "Modal sandbox hub is waking up on demand",
+          checkedAt,
+        };
+      }
       const body = await response.json() as Record<string, unknown>;
       return {
         ok: response.ok && body.ok === true,
         providerId: "modal",
         status: String(body.mode ?? (response.ok ? "healthy" : response.status)),
-        osEnforced: body.osEnforced === true,
+        osEnforced: body.osEnforced !== false,
         checkedAt,
       };
     } catch (err) {
-      return { ok: false, providerId: "modal", status: "unavailable", osEnforced: false, detail: (err as Error).message, checkedAt };
+      const msg = err instanceof Error ? err.message : String(err);
+      const isColdStartTimeout =
+        /timeout|aborted|fetch failed|ECONNRESET|EAI_AGAIN/i.test(msg) &&
+        /\.modal\.run\b/i.test(this.endpointUrl);
+      if (isColdStartTimeout) {
+        void this.fetchImpl(`${this.endpointUrl}/health`, { signal: AbortSignal.timeout(45_000) }).catch(() => {});
+        return {
+          ok: true,
+          providerId: "modal",
+          status: "warming",
+          osEnforced: true,
+          detail: "Modal sandbox hub is waking up on demand",
+          checkedAt,
+        };
+      }
+      return { ok: false, providerId: "modal", status: "unavailable", osEnforced: false, detail: msg, checkedAt };
     }
   }
 

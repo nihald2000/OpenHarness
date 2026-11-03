@@ -12,6 +12,7 @@ Vercel frontend so browser requests and admin session cookies stay same-origin.
 from __future__ import annotations
 
 import os
+import re
 import pathlib
 import json
 import subprocess
@@ -22,6 +23,8 @@ ROOT = next(
     (parent for parent in MODULE_PATH.parents if (parent / "package.json").is_file()),
     pathlib.Path("/app"),
 )
+
+
 def read_manifest_image_id() -> str:
     # Modal loads this module from its uploaded source bundle, which may not
     # share the source file's original directory. The runtime image always
@@ -40,11 +43,45 @@ def read_manifest_image_id() -> str:
     return ""
 
 
+def read_vercel_modal_urls() -> tuple[str, str]:
+    sandbox_fallback = ""
+    server_fallback = ""
+    candidates = (
+        ROOT / "vercel.json",
+        pathlib.Path("/app/vercel.json"),
+    )
+    for vercel_path in candidates:
+        try:
+            data = json.loads(vercel_path.read_text())
+        except (OSError, ValueError, TypeError):
+            continue
+        for rule in data.get("rewrites", []):
+            dest = str(rule.get("destination", ""))
+            if not sandbox_fallback:
+                m_sb = re.match(r"^(https://[^/]*openharness-sandboxd[^/]*\.modal\.run)(?:/|$)", dest, re.I)
+                if m_sb:
+                    sandbox_fallback = m_sb.group(1)
+            if not server_fallback:
+                m_srv = re.match(r"^(https://[^/]*openharness-server[^/]*\.modal\.run)(?:/|$)", dest, re.I)
+                if m_srv:
+                    server_fallback = m_srv.group(1)
+    return sandbox_fallback, server_fallback
+
+
 MANIFEST_IMAGE_ID = read_manifest_image_id()
+VERCEL_SANDBOX_URL, VERCEL_SERVER_URL = read_vercel_modal_urls()
 RESOLVED_IMAGE_ID = (
     os.environ.get("OH_MODAL_IMAGE_ID_OVERRIDE", "").strip()
     or MANIFEST_IMAGE_ID.strip()
     or os.environ.get("OH_MODAL_IMAGE_ID", "").strip()
+)
+RESOLVED_SANDBOX_URL = (
+    os.environ.get("OH_MODAL_SANDBOX_URL", "").strip()
+    or VERCEL_SANDBOX_URL
+)
+RESOLVED_PUBLIC_URL = (
+    os.environ.get("OH_PUBLIC_URL", "").strip()
+    or VERCEL_SERVER_URL
 )
 app = modal.App("openharness-server")
 volume = modal.Volume.from_name("openharness-data", create_if_missing=True)
@@ -65,7 +102,11 @@ server_image = (
         copy=True,
     )
     .run_commands("cd /app && npm ci")
-    .env({"OH_MODAL_IMAGE_ID": RESOLVED_IMAGE_ID})
+    .env({
+        "OH_MODAL_IMAGE_ID": RESOLVED_IMAGE_ID,
+        "OH_MODAL_SANDBOX_URL": RESOLVED_SANDBOX_URL,
+        "OH_PUBLIC_URL": RESOLVED_PUBLIC_URL,
+    })
 )
 
 
@@ -87,17 +128,23 @@ server_image = (
 @modal.web_server(4096, startup_timeout=60)
 def server():
     image_id = RESOLVED_IMAGE_ID.strip() or os.environ.get("OH_MODAL_IMAGE_ID", "").strip()
-    sandbox_url = os.environ.get("OH_MODAL_SANDBOX_URL", "").strip()
+    sandbox_url = os.environ.get("OH_MODAL_SANDBOX_URL", "").strip() or RESOLVED_SANDBOX_URL
     if not sandbox_url:
         try:
-            sandbox_url = (modal.Function.from_name("openharness-sandboxd", "sandboxd").get_web_url() or "").strip()
+            fn = modal.Function.from_name("openharness-sandboxd", "sandboxd")
+            if hasattr(fn, "hydrate"):
+                fn.hydrate()
+            sandbox_url = (fn.get_web_url() or "").strip()
         except Exception as exc:
             print(f"[openharness-server] warning: could not lookup openharness-sandboxd web url: {exc}", flush=True)
-            sandbox_url = ""
+            sandbox_url = VERCEL_SANDBOX_URL
     glimmer_url = os.environ.get("MUSE_GLIMMER_BASE_URL", "").strip()
     if not glimmer_url:
         try:
-            raw_glimmer = (modal.Function.from_name("openharness-muse-glimmer", "serve").get_web_url() or "").strip()
+            fn_glimmer = modal.Function.from_name("openharness-muse-glimmer", "serve")
+            if hasattr(fn_glimmer, "hydrate"):
+                fn_glimmer.hydrate()
+            raw_glimmer = (fn_glimmer.get_web_url() or "").strip()
             if raw_glimmer:
                 glimmer_url = f"{raw_glimmer.rstrip('/')}/v1"
         except Exception as exc:
@@ -106,10 +153,15 @@ def server():
     shared_key = os.environ.get("OH_MODAL_SANDBOX_KEY", "").strip()
     if len(shared_key) < 32:
         raise RuntimeError("Secret openharness-sandbox-key must define OH_MODAL_SANDBOX_KEY (>= 32 chars)")
-    try:
-        public_url = (modal.Function.from_name("openharness-server", "server").get_web_url() or "").strip()
-    except Exception:
-        public_url = ""
+    public_url = os.environ.get("OH_PUBLIC_URL", "").strip() or RESOLVED_PUBLIC_URL
+    if not public_url:
+        try:
+            fn_srv = modal.Function.from_name("openharness-server", "server")
+            if hasattr(fn_srv, "hydrate"):
+                fn_srv.hydrate()
+            public_url = (fn_srv.get_web_url() or "").strip()
+        except Exception:
+            public_url = VERCEL_SERVER_URL
     env = {
         **os.environ,
         # The Modal worker-local socket is not available to the Node subprocess
@@ -149,7 +201,7 @@ def server():
     print(f"[openharness-server] active OH_MODAL_IMAGE_ID={image_id}", flush=True)
     print(f"[openharness-server] active OH_MODAL_SANDBOX_URL={sandbox_url}", flush=True)
     subprocess.Popen(
-        ["node", "--import", "tsx", "packages/server/src/main.ts"],
+        ["npx", "tsx", "packages/server/src/main.ts"],
         cwd="/app",
         env=env,
     )
