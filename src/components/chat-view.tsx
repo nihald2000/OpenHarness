@@ -123,6 +123,13 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   } | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [changedFiles, setChangedFiles] = useState<string[]>([]);
+  const [agentBrowserActivity, setAgentBrowserActivity] = useState<{
+    url?: string;
+    title?: string;
+    screenshotJpegBase64?: string;
+    cursor?: { x: number; y: number; action?: string; label?: string; timestamp?: number };
+    seq: number;
+  } | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [contextError, setContextError] = useState<string | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
@@ -190,8 +197,30 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         (ev.part.tool.startsWith("browser_") || ev.part.tool === "process_start" || ev.part.tool === "preview_url" || ev.part.tool === "request_takeover")
       ) {
         const outObj = ev.part.output && typeof ev.part.output === "object" ? (ev.part.output as Record<string, unknown>) : undefined;
+        const metaObj = ev.part.metadata && typeof ev.part.metadata === "object" ? (ev.part.metadata as Record<string, unknown>) : undefined;
         if (typeof outObj?.previewUrl === "string") {
           setPreviewUrl(maskModalPreviewUrl(outObj.previewUrl));
+        }
+        if (ev.part.tool.startsWith("browser_")) {
+          const frameData =
+            (typeof metaObj?.screenshotJpegBase64 === "string" && metaObj.screenshotJpegBase64) ||
+            (typeof outObj?.screenshotJpegBase64 === "string" && outObj.screenshotJpegBase64) ||
+            (typeof outObj?.dataBase64 === "string" && outObj.dataBase64) ||
+            undefined;
+          const rawCursor = (metaObj?.cursor ?? outObj?.cursor) as
+            | { x: number; y: number; action?: string; label?: string; timestamp?: number }
+            | undefined;
+          const pageUrl = typeof (metaObj?.url ?? outObj?.url) === "string" ? String(metaObj?.url ?? outObj?.url) : undefined;
+          const pageTitle = typeof (metaObj?.title ?? outObj?.title) === "string" ? String(metaObj?.title ?? outObj?.title) : undefined;
+          if (frameData || rawCursor || pageUrl) {
+            setAgentBrowserActivity({
+              url: pageUrl,
+              title: pageTitle,
+              screenshotJpegBase64: frameData,
+              cursor: rawCursor,
+              seq: Date.now(),
+            });
+          }
         }
         setStudioOpen(false);
         if (ev.part.tool === "request_takeover") {
@@ -317,13 +346,16 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     setTakeoverNote("");
     setBrowserDock("closed");
     setBrowserVerification(null);
+    setAgentBrowserActivity(null);
     browserAutoOpened.current = false;
   }, [sessionId]);
 
   const requestTakeover = async () => {
     const runId = session?.activeRunId ?? session?.runId;
     if (!runId || takeoverBusy) return;
+    pendingStateRevision.current += 1;
     setTakeoverBusy(true);
+    setStudioOpen(false);
     setBrowserDock("expanded");
     try {
       const result = await client.runs.takeover(runId, { reason: "User requested browser control" });
@@ -334,6 +366,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
 
   const returnTakeover = async () => {
     if (!takeover || takeoverBusy) return;
+    pendingStateRevision.current += 1;
     setTakeoverBusy(true);
     try {
       await client.runs.returnBrowserControl(takeover.runId, takeoverNote);
@@ -356,6 +389,11 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
           ? { ...pending.pendingQuestion, runId: pending.runId }
           : null
       );
+      if (pending.takeover) {
+        setTakeover(pending.takeover);
+        setStudioOpen(false);
+        setBrowserDock((prev) => (prev === "closed" ? "expanded" : prev));
+      }
       setPreviewUrl(maskModalPreviewUrl(pending.previewUrl));
       setChangedFiles(pending.changedFiles ?? []);
     }).catch((err) => {
@@ -369,7 +407,10 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
   useEffect(() => {
     if (!sessionId || loading || notFound) return;
     let cancelled = false;
+    let inFlight = false;
     const refreshRunState = async () => {
+      if (inFlight) return;
+      inFlight = true;
       const revisionAtRequest = pendingStateRevision.current;
       try {
         const pending = await client.session.pending(sessionId);
@@ -380,17 +421,24 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
               ? { ...pending.pendingQuestion, runId: pending.runId }
               : null
           );
+          if (pending.takeover) {
+            setTakeover((prev) => prev ?? pending.takeover ?? null);
+            setStudioOpen(false);
+            setBrowserDock((prev) => (prev === "closed" ? "expanded" : prev));
+          }
           setPreviewUrl(maskModalPreviewUrl(pending.previewUrl));
           setChangedFiles(pending.changedFiles ?? []);
         }
       } catch {
         // SSE remains the primary update path; polling repairs missed events.
+      } finally {
+        if (!cancelled) await loadPermissions(sessionId).catch(() => {});
+        inFlight = false;
       }
-      if (!cancelled) await loadPermissions(sessionId);
     };
     void refreshRunState();
     if (!isActive(session?.status)) return () => { cancelled = true; };
-    const timer = setInterval(() => void refreshRunState(), 2_500);
+    const timer = setInterval(() => void refreshRunState(), 4_000);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -1181,6 +1229,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         onReturnControl={() => void returnTakeover()}
         onDockWidthChange={setDockWidth}
         verifyLabel={browserVerification?.status === "running" ? browserVerification.check : undefined}
+        agentActivity={agentBrowserActivity}
       />}
     </div>
   );

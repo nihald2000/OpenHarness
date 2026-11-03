@@ -295,6 +295,15 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
     }
 
     if (req.method === "POST" && new URL(url, "http://127.0.0.1").pathname === "/sessions/init") {
+      const isNewSession = !daemons.has(sandboxId);
+      if (isNewSession) {
+        // Reclaim dev server ports (e.g. 3020) held by older inactive sessions in the shared hub
+        for (const [otherId, otherDaemon] of daemons.entries()) {
+          if (otherId !== sandboxId && (livePeers.get(otherId)?.size ?? 0) === 0) {
+            await otherDaemon.handleRequest("POST", "/processes/stop-all", { "x-session-key": sessionKey }).catch(() => {});
+          }
+        }
+      }
       const daemon = getOrCreateDaemon(sandboxId);
       return sendJson(res, 200, { ok: true, sandboxId, workspacePath: daemon.config.workspacePath }, { "x-oh-daemon": "1" });
     }
@@ -313,6 +322,17 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
 
     const daemon = getOrCreateDaemon(sandboxId);
     const routePath = new URL(url, "http://127.0.0.1").pathname;
+    if (req.method === "POST" && routePath === "/processes/start") {
+      const cmdStr = String(body.command ?? "");
+      const portHint = typeof body.port === "number" ? body.port : Number((cmdStr.match(/\b(?:--port|-p|-l|PORT=|http\.server)\s*(\d{4,5})\b/) ?? [])[1] || 0);
+      if (portHint >= 1024 && portHint <= 65535 && portHint !== 8080) {
+        for (const [otherId, otherDaemon] of daemons.entries()) {
+          if (otherId !== sandboxId && otherDaemon.isRegisteredPreviewPort(portHint)) {
+            await otherDaemon.handleRequest("POST", "/processes/stop-all", { "x-session-key": sessionKey }).catch(() => {});
+          }
+        }
+      }
+    }
     if (req.method === "POST" && routePath === "/browser/lock") {
       const owner = body.owner;
       if (owner !== "agent" && owner !== "human") return sendJson(res, 400, { error: "owner must be agent or human" }, { "x-oh-daemon": "1" });
@@ -322,7 +342,8 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
       }
       return sendJson(res, 200, { owner }, { "x-oh-daemon": "1" });
     }
-    if (browserOwners.get(sandboxId) === "human" && routePath.startsWith("/browser/") && !new Set(["/browser/observe", "/browser/console_logs", "/browser/network_errors"]).has(routePath)) {
+    const isHumanActor = req.headers["x-oh-browser-actor"] === "human" || routePath === "/browser/input" || body.actor === "human";
+    if (!isHumanActor && browserOwners.get(sandboxId) === "human" && routePath.startsWith("/browser/") && !new Set(["/browser/observe", "/browser/console_logs", "/browser/network_errors"]).has(routePath)) {
       return sendJson(res, 423, { error: "Browser is under human control" }, { "x-oh-daemon": "1" });
     }
     try {
@@ -378,8 +399,10 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
           send({ type: "frame", ...(frame as Record<string, unknown>) });
         };
         const onPage = (page: unknown) => send({ type: "page", ...(page as Record<string, unknown>) });
+        const onCursor = (cursor: unknown) => send({ type: "cursor", ...(cursor as Record<string, unknown>) });
         daemon.browser.on("frame", onFrame);
         daemon.browser.on("page", onPage);
+        daemon.browser.on("cursor", onCursor);
         send({ type: "owner", owner: browserOwners.get(ticket.sbx) ?? "agent" });
         void daemon.browser.send("screencast_start", { quality: 60 });
         socket.on("message", (raw) => {
@@ -396,6 +419,7 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
         socket.on("close", () => {
           daemon.browser.off("frame", onFrame);
           daemon.browser.off("page", onPage);
+          daemon.browser.off("cursor", onCursor);
           peers.delete(socket);
           if (peers.size === 0) {
             livePeers.delete(ticket.sbx);
@@ -405,6 +429,7 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
         socket.on("error", () => {
           daemon.browser.off("frame", onFrame);
           daemon.browser.off("page", onPage);
+          daemon.browser.off("cursor", onCursor);
         });
       });
       return;

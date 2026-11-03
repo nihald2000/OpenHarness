@@ -309,10 +309,23 @@ export function evaluateNetworkAccess(
     return { allowed: false, kind: "network", reason: `Malformed network target "${urlOrHost}"` };
   }
 
-  // 1. Always block cloud metadata and private/loopback IP literals regardless of mode (§5 C.4)
-  const loopback = host === "localhost" || host === "::1" || host === "0:0:0:0:0:0:0:1" || /^127\./.test(host);
-  if (loopback && process.env.OH_VM_ISOLATED !== "1") {
-    return { allowed: false, kind: "network", reason: `Loopback access is restricted outside an isolated sandbox (target: ${host}:${port ?? "unknown"})` };
+  // 1. Always block cloud metadata and private/loopback control-plane/service ports regardless of mode (§5 C.4)
+  const loopback = host === "localhost" || host === "::1" || host === "0:0:0:0:0:0:0:1" || /^127\./.test(host) || host === "0.0.0.0";
+  const isReservedLoopbackPort =
+    port === undefined ||
+    port < 1024 ||
+    port > 65535 ||
+    port === 8080 ||
+    port === 4096 ||
+    port === 6379 ||
+    port === 5432 ||
+    port === 9200;
+  if (loopback && isReservedLoopbackPort) {
+    return {
+      allowed: false,
+      kind: "network",
+      reason: `Loopback access is only allowed on ports 1024-65535 excluding control-plane/service ports (target: ${host}:${port ?? "unknown"})`,
+    };
   }
   if ((!loopback && isDeniedIpOrHost(host)) || (resolvedIp && isDeniedIpOrHost(resolvedIp))) {
     return {

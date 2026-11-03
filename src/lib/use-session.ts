@@ -80,9 +80,8 @@ export function useSession(
     } catch (err) {
       if (isStatus(err, 404)) {
         setNotFound(true);
-      } else {
-        setError(errorMessage(err));
       }
+      // Do not overwrite an already-loaded session with transient background poll errors
     }
   }, [sessionId]);
 
@@ -240,7 +239,15 @@ export function useSession(
       session?.status === "awaiting_input" ||
       session?.status === "awaiting_permission";
     if (!active && connection === "open") return;
-    const timer = setInterval(() => void refreshSession(), 2_000);
+    let inFlight = false;
+    const intervalMs = connection === "open" ? 6_000 : 2_500;
+    const timer = setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      void refreshSession().finally(() => {
+        inFlight = false;
+      });
+    }, intervalMs);
     return () => clearInterval(timer);
   }, [sessionId, session?.status, connection, refreshSession]);
 

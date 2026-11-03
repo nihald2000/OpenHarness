@@ -139,6 +139,11 @@ export interface SessionPendingState {
   runId: string | null;
   phase: RunPhase | null;
   pendingQuestion: PendingQuestion | null;
+  takeover?: {
+    runId: string;
+    reason: string;
+    instructions?: string;
+  } | null;
   previewUrl: string | null;
   changedFiles: string[];
 }

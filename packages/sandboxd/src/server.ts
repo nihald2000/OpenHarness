@@ -507,7 +507,8 @@ export class SandboxDaemon {
       this.browserOwner = payload.owner;
       return { status: 200, body: { owner: this.browserOwner } };
     }
-    if (this.browserOwner === "human" && pathname.startsWith("/browser/") &&
+    const isHumanActor = pathname === "/browser/input" || payload.actor === "human";
+    if (!isHumanActor && this.browserOwner === "human" && pathname.startsWith("/browser/") &&
         !new Set(["/browser/observe", "/browser/visual_regions", "/browser/console_logs", "/browser/network_errors"]).has(pathname)) {
       return { status: 423, body: { error: "Browser is under human control" } };
     }
@@ -662,9 +663,17 @@ export class SandboxDaemon {
 
     // 4. Check network calls inside shell (`curl`, `wget`, `fetch`, `169.254.169.254`)
     const isNetCmd = /\b(?:curl|wget|fetch|nc|ncat|urllib|requests)\b|169\.254\.169\.254/i.test(command);
-    const urlMatches = isNetCmd ? command.match(/https?:\/\/[^\s"';|&)+]+|\b169\.254\.169\.254\b/g) : null;
+    const urlMatches = isNetCmd ? command.match(/https?:\/\/[^\s"'`;|&)+}]+|\b169\.254\.169\.254\b/g) : null;
     if (urlMatches) {
-      for (const u of urlMatches) {
+      for (const rawUrl of urlMatches) {
+        const u = rawUrl.replace(/[.,;:)\]]+$/, "");
+        // Allow shell variable port expansion on loopback (e.g. http://localhost:$p or http://127.0.0.1:${port})
+        if (/^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\$[A-Za-z0-9_{}()]+/i.test(u)) {
+          continue;
+        }
+        if (u.includes("$") && !u.includes("169.254")) {
+          continue;
+        }
         let isLocalDevServer = false;
         try {
           const parsed = new URL(u.includes("://") ? u : `http://${u}`);

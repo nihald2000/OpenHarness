@@ -16,8 +16,25 @@ import { mapFramePointToViewport } from "../../packages/core/src/sandbox/live-co
 import { client } from "@/lib/client";
 import { VoiceMicButton } from "./voice-mic-button";
 
-type DockState = "closed" | "docked" | "expanded";
+export type BrowserDockState = "closed" | "docked" | "expanded";
+type DockState = BrowserDockState;
 type ViewMode = "auto" | "interactive" | "stream";
+
+type CursorState = {
+  x: number;
+  y: number;
+  action?: string;
+  label?: string;
+  timestamp?: number;
+};
+
+type AgentActivity = {
+  url?: string;
+  title?: string;
+  screenshotJpegBase64?: string;
+  cursor?: CursorState;
+  seq: number;
+};
 
 type Props = {
   sessionId?: string;
@@ -35,9 +52,16 @@ type Props = {
   onVoiceNote?: (text: string) => void;
   verifyLabel?: string;
   onDockWidthChange?: (width: number) => void;
+  agentActivity?: AgentActivity | null;
 };
 
-type FrameMeta = { timestamp?: number; deviceWidth?: number; deviceHeight?: number };
+type FrameMeta = {
+  timestamp?: number;
+  deviceWidth?: number;
+  deviceHeight?: number;
+  cursor?: CursorState;
+};
+
 const MODIFIERS = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) =>
   (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 const pageIsHidden = () => document.visibilityState === "hidden";
@@ -57,20 +81,22 @@ export function LiveBrowser({
   onVoiceNote,
   verifyLabel,
   onDockWidthChange,
+  agentActivity,
 }: Props) {
-  const [status, setStatus] = useState("Connecting…");
+  const [status, setStatus] = useState("Ready");
   const [page, setPage] = useState({ title: "", url: "" });
   const [polledPreviewUrl, setPolledPreviewUrl] = useState<string | null>(null);
   const [hasCanvasFrame, setHasCanvasFrame] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("auto");
   const [iframeKey, setIframeKey] = useState(0);
-  const [frameAge, setFrameAge] = useState<number | null>(null);
   const [focused, setFocused] = useState(false);
+  const [aiCursor, setAiCursor] = useState<CursorState | null>(null);
+  const [cursorVisible, setCursorVisible] = useState(false);
   const [width, setWidth] = useState(() => {
     try {
-      return Math.max(380, Math.min(1100, Number(localStorage.getItem("oh.dockWidth")) || window.innerWidth * 0.5));
+      return Math.max(400, Math.min(1100, Number(localStorage.getItem("oh.dockWidth")) || window.innerWidth * 0.48));
     } catch {
-      return Math.max(380, Math.min(1100, window.innerWidth * 0.5));
+      return Math.max(400, Math.min(1100, window.innerWidth * 0.48));
     }
   });
 
@@ -82,7 +108,9 @@ export function LiveBrowser({
   const lastFrameAt = useRef(0);
   const lastMouse = useRef(0);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cursorFadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollInFlight = useRef(false);
   const retryCount = useRef(0);
   const reconnectRef = useRef<(() => void) | null>(null);
 
@@ -124,10 +152,24 @@ export function LiveBrowser({
     normalizePreviewLink(polledPreviewUrl) ||
     (page.url && page.url !== "about:blank" ? normalizePreviewLink(page.url) : null);
 
-  // Determine whether to show interactive iframe or canvas stream
+  // Stable mode selection: never auto-flip between iframe and canvas on timers or WebSocket status changes.
+  // Default to Interactive Preview whenever a preview URL exists; user can switch to Agent View anytime.
   const showInteractiveIframe =
-    viewMode === "interactive" ||
-    (viewMode === "auto" && Boolean(effectivePreviewUrl) && (!hasCanvasFrame || status !== "Live"));
+    viewMode === "interactive" || (viewMode === "auto" && Boolean(effectivePreviewUrl));
+
+  const showInteractiveRef = useRef(showInteractiveIframe);
+  showInteractiveRef.current = showInteractiveIframe;
+  const effectivePreviewRef = useRef(effectivePreviewUrl);
+  effectivePreviewRef.current = effectivePreviewUrl;
+
+  const showCursorBriefly = useCallback((cursor: CursorState) => {
+    setAiCursor({ ...cursor, timestamp: Date.now() });
+    setCursorVisible(true);
+    if (cursorFadeTimer.current) clearTimeout(cursorFadeTimer.current);
+    cursorFadeTimer.current = setTimeout(() => {
+      setCursorVisible(false);
+    }, 1_600);
+  }, []);
 
   const drawLatest = useCallback(async () => {
     if (decoding.current) return;
@@ -154,45 +196,80 @@ export function LiveBrowser({
         setHasCanvasFrame(true);
       }
     } catch {
-      // Keep previous frame or fallback to interactive preview
+      // Keep previous frame
     } finally {
       decoding.current = false;
       if (pending.current) void drawLatest();
     }
   }, []);
 
+  useEffect(() => {
+    if (!agentActivity) return;
+    if (agentActivity.url && agentActivity.url !== "about:blank") {
+      setPage((prev) => ({
+        title: agentActivity.title || prev.title || "Running App",
+        url: agentActivity.url || prev.url,
+      }));
+    }
+    if (agentActivity.cursor && typeof agentActivity.cursor.x === "number") {
+      showCursorBriefly(agentActivity.cursor);
+    }
+    if (agentActivity.screenshotJpegBase64 && agentActivity.screenshotJpegBase64.length > 200) {
+      const meta: FrameMeta = {
+        timestamp: Date.now() / 1000,
+        deviceWidth: 1280,
+        deviceHeight: 800,
+        cursor: agentActivity.cursor,
+      };
+      frameMeta.current = meta;
+      pending.current = {
+        data: agentActivity.screenshotJpegBase64,
+        meta,
+      };
+      void drawLatest();
+    }
+  }, [agentActivity, drawLatest, showCursorBriefly]);
+
+  // Stable poll function that does NOT depend on status or showInteractiveIframe
   const pollBrowserState = useCallback(async () => {
-    if (!sessionId || dockIsClosed() || pageIsHidden()) return;
+    if (!sessionId || dockIsClosed() || pageIsHidden() || pollInFlight.current) return;
+    if (socket.current?.readyState === WebSocket.OPEN) return;
+    pollInFlight.current = true;
     try {
-      const res = await client.browser.state(sessionId);
+      const useLite = showInteractiveRef.current && Boolean(effectivePreviewRef.current);
+      const res = await client.browser.state(sessionId, { lite: useLite });
       if (res.url && res.url !== "about:blank") {
-        setPage({ title: res.title || "Running App", url: res.url });
+        setPage((prev) => (prev.url === res.url && prev.title === res.title ? prev : { title: res.title || "Running App", url: res.url }));
       }
       if (res.previewUrl) {
-        setPolledPreviewUrl(res.previewUrl);
+        setPolledPreviewUrl((prev) => (prev === res.previewUrl ? prev : res.previewUrl ?? null));
       }
-      if (res.screenshotJpegBase64 && res.screenshotJpegBase64.length > 200) {
+      if (!useLite && res.screenshotJpegBase64 && res.screenshotJpegBase64.length > 200) {
         pending.current = {
           data: res.screenshotJpegBase64,
           meta: { timestamp: Date.now() / 1000, deviceWidth: 1280, deviceHeight: 800 },
         };
         void drawLatest();
-        if (status !== "Live") setStatus("Live (Polled)");
-      } else if (res.previewUrl || previewUrl) {
-        if (status !== "Live") setStatus("Preview Ready");
+        setStatus("Live");
+      } else if (res.previewUrl || effectivePreviewRef.current) {
+        setStatus("Live");
       }
     } catch {
       // Ignore transient poll errors
+    } finally {
+      pollInFlight.current = false;
     }
-  }, [sessionId, drawLatest, previewUrl, status]);
+  }, [sessionId, drawLatest]);
 
   const connect = useCallback(async () => {
     if (!sessionId || dockIsClosed() || pageIsHidden()) return;
-    setStatus("Connecting…");
+    if (socket.current && (socket.current.readyState === WebSocket.OPEN || socket.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
     try {
       let ticketRes: { url: string; mode?: string } = { url: "" };
       if (control) {
-        const delays = [400, 500, 600, 800, 1_000, 1_500];
+        const delays = [300, 600];
         for (let attempt = 0; attempt < delays.length; attempt++) {
           try {
             ticketRes = await client.browser.liveTicket(sessionId, "control");
@@ -202,7 +279,7 @@ export function LiveBrowser({
               ticketRes = await client.browser.liveTicket(sessionId, "view").catch(() => ({ url: "", mode: "http-poll" }));
               break;
             }
-            await new Promise((resolve) => setTimeout(resolve, delays[attempt] ?? 1_000));
+            await new Promise((resolve) => setTimeout(resolve, delays[attempt] ?? 400));
           }
         }
       } else {
@@ -225,11 +302,23 @@ export function LiveBrowser({
         try {
           const data = JSON.parse(String(event.data)) as Record<string, unknown>;
           if (data.type === "frame" && typeof data.data === "string") {
-            frameMeta.current = (data.metadata ?? {}) as FrameMeta;
-            pending.current = { data: data.data, meta: frameMeta.current };
+            const meta = (data.metadata ?? {}) as FrameMeta;
+            frameMeta.current = meta;
+            pending.current = { data: data.data, meta };
             void drawLatest();
+          } else if (data.type === "cursor" && typeof data.x === "number") {
+            showCursorBriefly({
+              x: Number(data.x),
+              y: Number(data.y),
+              action: typeof data.action === "string" ? data.action : undefined,
+              label: typeof data.label === "string" ? data.label : undefined,
+            });
           } else if (data.type === "page") {
-            setPage({ title: String(data.title ?? ""), url: String(data.url ?? "") });
+            const nextUrl = String(data.url ?? "");
+            const nextTitle = String(data.title ?? "");
+            if (nextUrl && nextUrl !== "about:blank") {
+              setPage((prev) => (prev.url === nextUrl && prev.title === nextTitle ? prev : { title: nextTitle, url: nextUrl }));
+            }
           } else if (data.type === "owner") {
             setStatus("Live");
           }
@@ -240,29 +329,37 @@ export function LiveBrowser({
       ws.onclose = () => {
         if (socket.current === ws) socket.current = null;
         if (dockIsClosed() || pageIsHidden()) return;
-        void pollBrowserState();
-        const delay = Math.min(8_000, 1_500 * 2 ** Math.min(3, retryCount.current++));
+        const delay = Math.min(10_000, 2_000 * 2 ** Math.min(3, retryCount.current++));
         retryTimer.current = setTimeout(() => void reconnectRef.current?.(), delay);
       };
       ws.onerror = () => {
-        void pollBrowserState();
+        // Handled by onclose
       };
     } catch {
       await pollBrowserState();
     }
-  }, [sessionId, control, drawLatest, pollBrowserState]);
+  }, [sessionId, control, drawLatest, pollBrowserState, showCursorBriefly]);
   reconnectRef.current = connect;
 
   useEffect(() => {
     if (!isOpen || !sessionId || document.visibilityState === "hidden") return;
+    let disposed = false;
     retryCount.current = 0;
     void connect();
     void pollBrowserState();
-    pollTimer.current = setInterval(() => {
-      if (socket.current?.readyState !== WebSocket.OPEN) {
-        void pollBrowserState();
-      }
-    }, 2_000);
+
+    const scheduleNextPoll = () => {
+      if (disposed) return;
+      const intervalMs = showInteractiveRef.current && Boolean(effectivePreviewRef.current) ? 6_000 : 3_000;
+      pollTimer.current = setTimeout(async () => {
+        if (disposed) return;
+        if (socket.current?.readyState !== WebSocket.OPEN) {
+          await pollBrowserState();
+        }
+        scheduleNextPoll();
+      }, intervalMs);
+    };
+    scheduleNextPoll();
 
     const visible = () => {
       if (document.visibilityState === "hidden") {
@@ -276,14 +373,10 @@ export function LiveBrowser({
       }
     };
     document.addEventListener("visibilitychange", visible);
-    const ageTimer = setInterval(
-      () => setFrameAge(lastFrameAt.current ? Date.now() - lastFrameAt.current : null),
-      500
-    );
     return () => {
+      disposed = true;
       document.removeEventListener("visibilitychange", visible);
-      clearInterval(ageTimer);
-      if (pollTimer.current) clearInterval(pollTimer.current);
+      if (pollTimer.current) clearTimeout(pollTimer.current);
       pollTimer.current = null;
       if (retryTimer.current) clearTimeout(retryTimer.current);
       retryTimer.current = null;
@@ -291,7 +384,7 @@ export function LiveBrowser({
       socket.current = null;
       current?.close(1000, "Browser dock closed");
     };
-  }, [isOpen, sessionId, state, control, connect, pollBrowserState]);
+  }, [isOpen, sessionId, control, connect, pollBrowserState]);
 
   useEffect(() => {
     if (state !== "expanded" || control) return;
@@ -314,7 +407,12 @@ export function LiveBrowser({
     if (socket.current?.readyState === WebSocket.OPEN) {
       socket.current.send(JSON.stringify({ type: "input", payload }));
     } else if (sessionId) {
-      void client.browser.action(sessionId, "input", payload).catch(() => {});
+      void client.browser
+        .action(sessionId, "input", payload)
+        .then(() => {
+          void pollBrowserState();
+        })
+        .catch(() => {});
     }
   };
 
@@ -347,7 +445,7 @@ export function LiveBrowser({
     const startX = event.clientX;
     const initial = width;
     const move = (e: PointerEvent) => {
-      const next = Math.max(380, Math.min(1100, initial + startX - e.clientX));
+      const next = Math.max(400, Math.min(1100, initial + startX - e.clientX));
       setWidth(next);
       onDockWidthChange?.(next);
     };
@@ -359,167 +457,160 @@ export function LiveBrowser({
     window.addEventListener("pointerup", stop, { once: true });
   };
 
-  const canvasEvents = {
-    onClick: (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const onMouse = (type: "mousePressed" | "mouseReleased" | "mouseMoved") => (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (type === "mouseMoved" && Date.now() - lastMouse.current < 32) return;
+    lastMouse.current = Date.now();
+    if (type === "mousePressed") {
+      setFocused(true);
       e.currentTarget.focus();
-    },
-    onMouseMove: (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (!control) return;
-      const now = performance.now();
-      if (now - lastMouse.current < 33) return;
-      lastMouse.current = now;
-      const pt = resolveViewportPoint(e);
-      if (!pt) return;
-      send({ kind: "mouse", type: "mouseMoved", ...pt, buttons: e.buttons, modifiers: modifiers(e) });
-    },
-    onMouseDown: (e: React.MouseEvent<HTMLCanvasElement>) => {
-      e.currentTarget.focus();
-      if (!control) return;
-      const pt = resolveViewportPoint(e);
-      if (!pt) return;
-      send({
-        kind: "mouse",
-        type: "mousePressed",
-        ...pt,
-        button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left",
-        buttons: e.buttons,
-        clickCount: e.detail,
-        modifiers: modifiers(e),
-      });
-    },
-    onMouseUp: (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (!control) return;
-      const pt = resolveViewportPoint(e);
-      if (!pt) return;
-      send({
-        kind: "mouse",
-        type: "mouseReleased",
-        ...pt,
-        button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left",
-        buttons: e.buttons,
-        clickCount: e.detail,
-        modifiers: modifiers(e),
-      });
-    },
-    onWheel: (e: React.WheelEvent<HTMLCanvasElement>) => {
-      if (!control) return;
-      const pt = resolveViewportPoint(e);
-      if (!pt) return;
-      send({ kind: "wheel", ...pt, deltaX: e.deltaX, deltaY: e.deltaY, modifiers: modifiers(e) });
-    },
-    onContextMenu: (e: React.MouseEvent<HTMLCanvasElement>) => e.preventDefault(),
-    onPaste: (e: React.ClipboardEvent<HTMLCanvasElement>) => {
-      if (control) {
-        e.preventDefault();
-        send({ kind: "text", text: e.clipboardData.getData("text") });
-      }
-    },
-    onKeyDown: (e: React.KeyboardEvent<HTMLCanvasElement>) => {
-      if (!control) return;
-      const keyCode = e.keyCode;
-      const special = new Set([8, 9, 13, 27, 33, 34, 35, 36, 37, 38, 39, 40, 46]);
-      if (special.has(keyCode)) e.preventDefault();
-      const key = e.key === "Escape" ? "Escape" : e.key;
-      const printable = Array.from(key).length === 1 && !/[\u0000-\u001f\u007f]/u.test(key);
-      const text = key === "Enter" ? "\r" : printable ? key : undefined;
-      send({
-        kind: "key",
-        type: "keyDown",
-        key,
-        code: e.code,
-        ...(text !== undefined ? { text } : {}),
-        keyCode,
-        modifiers: modifiers(e),
-      });
-    },
-    onKeyUp: (e: React.KeyboardEvent<HTMLCanvasElement>) => {
-      if (control) {
-        send({
-          kind: "key",
-          type: "keyUp",
-          key: e.key === "Escape" ? "Escape" : e.key,
-          code: e.code,
-          keyCode: e.keyCode,
-          modifiers: modifiers(e),
-        });
-      }
-    },
+    }
+    const point = resolveViewportPoint(e);
+    if (!point) return;
+    const button = e.button === 2 ? "right" : e.button === 1 ? "middle" : "left";
+    send({
+      kind: "mouse",
+      type,
+      x: point.x,
+      y: point.y,
+      button: type === "mouseMoved" ? "none" : button,
+      buttons: e.buttons,
+      clickCount: type === "mouseMoved" ? 0 : 1,
+      modifiers: modifiers(e),
+    });
   };
 
-  if (state === "closed") return null;
+  const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    const point = resolveViewportPoint(e);
+    if (!point) return;
+    send({
+      kind: "wheel",
+      x: point.x,
+      y: point.y,
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+      modifiers: modifiers(e),
+    });
+  };
 
-  const isHealthy = status === "Live" || status === "Live (Polled)" || status === "Preview Ready" || Boolean(effectivePreviewUrl);
-  const displayUrl = effectivePreviewUrl || page.url || "Waiting for app server or browser navigation…";
-  const ageLabel =
-    frameAge !== null && frameAge < 2_500
-      ? "live"
-      : showInteractiveIframe && effectivePreviewUrl
-        ? "interactive"
-        : status;
+  const onKey = (type: "keyDown" | "keyUp") => (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+    if (!focused) return;
+    e.preventDefault();
+    const text = type === "keyDown" && e.key.length === 1 && !e.ctrlKey && !e.metaKey ? e.key : undefined;
+    send({
+      kind: "key",
+      type: text ? "keyDown" : type,
+      key: e.key,
+      code: e.code,
+      text,
+      keyCode: e.keyCode,
+      modifiers: modifiers(e),
+    });
+  };
 
+  const handleRefresh = () => {
+    setIframeKey((k) => k + 1);
+    void pollBrowserState();
+  };
+
+  if (!isOpen) return null;
+
+  const isLiveReady = status === "Live" || Boolean(effectivePreviewUrl) || hasCanvasFrame;
+  const displayUrl = effectivePreviewUrl || (page.url && page.url !== "about:blank" ? page.url : "");
+
+  // Clean, single-row studio-grade browser header bar
   const toolbar = (
-    <div className="flex flex-col border-b border-border bg-elev text-xs">
-      <div className="flex min-h-11 flex-wrap items-center justify-between gap-2 px-3 py-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className={`size-2.5 shrink-0 rounded-full ${isHealthy ? "bg-success" : "bg-warning animate-pulse"}`} />
-          <span className="font-semibold text-fg truncate max-w-44" title={page.title || "Live Workspace Browser"}>
-            {page.title || "Live Workspace Browser"}
-          </span>
-          <span className="rounded-md border border-border bg-bg px-2 py-0.5 text-[11px] text-muted">
-            {control ? "You have control" : ageLabel}
+    <div className="border-b border-border bg-elev/95 px-2.5 py-2 text-xs">
+      <div className="flex items-center gap-2">
+        {/* Left: Status + Segmented Mode Switcher */}
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span
+            title={isLiveReady ? "Connected" : "Connecting"}
+            className={`size-2 rounded-full ${
+              isLiveReady ? "bg-emerald-400" : "bg-amber-400 animate-pulse"
+            }`}
+          />
+          <div className="flex items-center rounded-lg border border-border bg-bg p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode("interactive")}
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition ${
+                showInteractiveIframe ? "bg-elev text-fg shadow-xs" : "text-muted hover:text-fg"
+              }`}
+              title="Interact directly with the live web app"
+            >
+              <MousePointer2 size={11} />
+              <span>Preview</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode("stream");
+                void pollBrowserState();
+              }}
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition ${
+                !showInteractiveIframe ? "bg-elev text-fg shadow-xs" : "text-muted hover:text-fg"
+              }`}
+              title="Watch the agent's headless Playwright browser"
+            >
+              <MonitorPlay size={11} />
+              <span>Agent View</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Center: Compact Address Bar */}
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-border bg-bg px-2.5 py-1">
+          <Globe size={11} className="shrink-0 text-muted" />
+          <span className="truncate font-mono text-[11px] text-fg/85">
+            {displayUrl || "Waiting for dev server…"}
           </span>
           {verifyLabel && (
-            <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-medium text-accent">
-              Verifying: {verifyLabel}
+            <span className="ml-auto shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+              {verifyLabel}
             </span>
           )}
         </div>
 
-        <div className="flex items-center gap-1.5">
-          <div className="inline-flex rounded-lg border border-border bg-bg p-0.5">
-            <button
-              type="button"
-              onClick={() => setViewMode("interactive")}
-              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                showInteractiveIframe ? "bg-accent text-accent-fg" : "text-muted hover:text-fg"
-              }`}
-              title="Interact directly with the live preview web server"
+        {/* Right: Actions */}
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={handleRefresh}
+            title="Reload"
+            className="rounded-lg border border-border bg-bg p-1.5 text-muted hover:bg-hover hover:text-fg"
+          >
+            <RefreshCw size={12} />
+          </button>
+          {effectivePreviewUrl && (
+            <a
+              href={effectivePreviewUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open preview in new tab"
+              className="inline-flex items-center gap-1 rounded-lg border border-border bg-bg px-2 py-1 text-[11px] font-medium text-fg hover:bg-hover"
             >
-              <Globe size={12} />
-              <span>Interactive Preview</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode("stream")}
-              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                !showInteractiveIframe ? "bg-accent text-accent-fg" : "text-muted hover:text-fg"
-              }`}
-              title="Watch or control the agent Playwright browser stream"
-            >
-              <MonitorPlay size={12} />
-              <span>Agent Browser</span>
-            </button>
-          </div>
-
+              <span className="hidden sm:inline">Open</span>
+              <ArrowUpRight size={12} />
+            </a>
+          )}
           {!control && onTakeControl && (
             <button
               type="button"
               disabled={takeoverBusy}
               onClick={onTakeControl}
-              className="inline-flex items-center gap-1 rounded-lg border border-accent/40 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent hover:bg-accent/20"
+              className="inline-flex items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-[11px] font-semibold text-accent-fg hover:bg-accent-strong disabled:opacity-60"
             >
-              <Hand size={12} />
-              <span>{takeoverBusy ? "Requesting…" : "Take control"}</span>
+              <Hand size={11} />
+              <span>{takeoverBusy ? "Opening…" : "Take control"}</span>
             </button>
           )}
-
           <button
             type="button"
             aria-label={expanded ? "Dock browser" : "Expand browser"}
             onClick={() => setState(expanded ? "docked" : "expanded")}
             className="rounded-lg border border-border bg-bg p-1.5 text-muted hover:bg-hover hover:text-fg"
           >
-            {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            {expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
           </button>
           <button
             type="button"
@@ -527,73 +618,38 @@ export function LiveBrowser({
             onClick={() => setState("closed")}
             className="rounded-lg border border-border bg-bg p-1.5 text-muted hover:bg-hover hover:text-fg"
           >
-            <X size={14} />
+            <X size={13} />
           </button>
         </div>
       </div>
 
-      {/* Address bar row */}
-      <div className="flex items-center gap-2 border-t border-border/60 bg-bg/60 px-3 py-1.5">
-        <button
-          type="button"
-          aria-label="Refresh preview"
-          onClick={() => {
-            setIframeKey((k) => k + 1);
-            void pollBrowserState();
-          }}
-          className="rounded border border-border bg-elev p-1 text-muted hover:bg-hover hover:text-fg"
-          title="Refresh preview"
-        >
-          <RefreshCw size={12} />
-        </button>
-        <div
-          className="min-w-0 flex-1 truncate rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[11px] text-muted"
-          title={displayUrl}
-        >
-          {displayUrl}
-        </div>
-        {effectivePreviewUrl && (
-          <a
-            href={effectivePreviewUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex shrink-0 items-center gap-1 rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-accent-fg hover:bg-accent-strong"
-          >
-            <span>Open in new tab</span>
-            <ArrowUpRight size={12} />
-          </a>
-        )}
-      </div>
-
-      {/* Human Takeover Banner */}
-      {(control || takeover) && (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-accent/30 bg-accent/10 px-3 py-2">
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-semibold text-accent">
-              Browser Takeover Active — Inspect & Interact with the App
-            </div>
-            {takeover && (
-              <div className="truncate text-[11px] text-fg" title={takeover.instructions || takeover.reason}>
-                {takeover.instructions || takeover.reason}
-              </div>
+      {/* Takeover Banner (only shown when human control is active) */}
+      {control && (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1.5">
+          <div className="min-w-0 flex-1 text-[11px]">
+            <span className="font-semibold text-fg">
+              {takeover?.reason || "You have browser control."}
+            </span>
+            {takeover?.instructions && (
+              <span className="ml-1.5 text-muted">{takeover.instructions}</span>
             )}
           </div>
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex items-center gap-1.5">
             <input
               aria-label="Note for the agent"
               value={takeoverNote}
               onChange={(e) => onTakeoverNote?.(e.target.value)}
-              placeholder="Feedback or instructions for agent…"
-              className="w-52 rounded-lg border border-border bg-bg px-2.5 py-1 text-xs text-fg"
+              placeholder="Note for agent (optional)…"
+              className="w-44 rounded-md border border-border bg-bg px-2 py-1 text-xs text-fg"
             />
             <VoiceMicButton compact onTranscript={onVoiceNote ?? (() => {})} disabled={takeoverBusy} />
             <button
               type="button"
               disabled={takeoverBusy}
               onClick={onReturnControl}
-              className="rounded-lg bg-accent px-3 py-1 text-xs font-semibold text-accent-fg hover:bg-accent-strong"
+              className="rounded-md bg-accent px-2.5 py-1 text-xs font-semibold text-accent-fg hover:bg-accent-strong"
             >
-              {takeoverBusy ? "Returning…" : "Return control to agent"}
+              {takeoverBusy ? "Returning…" : "Return control"}
             </button>
           </div>
         </div>
@@ -601,101 +657,119 @@ export function LiveBrowser({
     </div>
   );
 
+  const cursorLeftPct = aiCursor ? Math.max(3, Math.min(97, (aiCursor.x / 1280) * 100)) : 50;
+  const cursorTopPct = aiCursor ? Math.max(3, Math.min(97, (aiCursor.y / 800) * 100)) : 50;
+
+  // Keep both iframe and canvas mounted so switching tabs never reloads or flashes white
   const viewer = (
     <>
       {toolbar}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-neutral-950">
-        {showInteractiveIframe && effectivePreviewUrl ? (
+        {effectivePreviewUrl && (
           <iframe
             key={`${effectivePreviewUrl}:${iframeKey}`}
             title="Interactive App Preview"
             src={effectivePreviewUrl}
-            className="h-full w-full flex-1 border-0 bg-white"
+            className={`h-full w-full flex-1 border-0 bg-white ${
+              showInteractiveIframe ? "block" : "hidden"
+            }`}
+            allow="clipboard-read; clipboard-write"
           />
-        ) : (
-          <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-neutral-950">
-            <canvas
-              ref={canvasRef}
-              aria-label="Live browser screen"
-              tabIndex={0}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              className={`max-h-full max-w-full object-contain outline-none ${
-                control ? "cursor-crosshair" : ""
-              } ${hasCanvasFrame ? "block" : "hidden"}`}
-              {...canvasEvents}
-            />
-            {!hasCanvasFrame && (
-              <div className="flex max-w-sm flex-col items-center justify-center gap-3 p-6 text-center">
-                <Globe className="size-8 text-accent/80 animate-pulse" />
-                <div className="text-sm font-medium text-white">
-                  {effectivePreviewUrl
-                    ? "Preview server is live"
-                    : "Waiting for the agent to start the preview server or open a page…"}
-                </div>
-                <p className="text-xs text-neutral-400">
-                  {effectivePreviewUrl
-                    ? "Switch to Interactive Preview above or click below to interact with the live app directly."
-                    : "As soon as the dev server starts or the browser navigates, the live preview will appear here automatically."}
-                </p>
-                {effectivePreviewUrl && (
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setViewMode("interactive")}
-                      className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-fg"
-                    >
-                      Show Interactive Preview
-                    </button>
-                    <a
-                      href={effectivePreviewUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 rounded-lg border border-white/20 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/10"
-                    >
-                      <span>Open in new tab</span>
-                      <ArrowUpRight size={13} />
-                    </a>
-                  </div>
-                )}
-              </div>
-            )}
-            {control && hasCanvasFrame && !focused && (
-              <div className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-white/85">
-                <span className="rounded-lg bg-black/75 px-3 py-2 shadow-lg">
-                  <MousePointer2 className="mr-2 inline size-4" />
-                  Click inside the browser to interact & type
-                </span>
-              </div>
-            )}
-          </div>
         )}
+
+        <div
+          className={`relative min-h-0 flex-1 items-center justify-center ${
+            showInteractiveIframe && effectivePreviewUrl ? "hidden" : "flex"
+          }`}
+        >
+          <canvas
+            ref={canvasRef}
+            tabIndex={0}
+            aria-label="Live browser viewport"
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onContextMenu={(e) => e.preventDefault()}
+            onMouseDown={onMouse("mousePressed")}
+            onMouseUp={onMouse("mouseReleased")}
+            onMouseMove={onMouse("mouseMoved")}
+            onWheel={onWheel}
+            onKeyDown={onKey("keyDown")}
+            onKeyUp={onKey("keyUp")}
+            className={`max-h-full max-w-full cursor-pointer object-contain outline-none ${
+              focused ? "ring-1 ring-accent/60" : ""
+            }`}
+          />
+          {aiCursor && hasCanvasFrame && (
+            <div
+              style={{ left: `${cursorLeftPct}%`, top: `${cursorTopPct}%` }}
+              className={`pointer-events-none absolute z-20 -translate-x-0.5 -translate-y-0.5 transition-all duration-200 ease-out ${
+                cursorVisible ? "opacity-100" : "opacity-0"
+              }`}
+            >
+              <MousePointer2
+                size={18}
+                className="fill-sky-500 text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.6)]"
+              />
+              {aiCursor.label && (
+                <span className="ml-3 mt-0.5 inline-block whitespace-nowrap rounded border border-sky-400/40 bg-slate-900/90 px-1.5 py-0.5 text-[10px] font-medium text-sky-100 shadow-md">
+                  {aiCursor.label}
+                </span>
+              )}
+            </div>
+          )}
+          {!hasCanvasFrame && (
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2.5 p-6 text-center">
+              <div className="rounded-full border border-border bg-elev p-2.5 text-muted">
+                <MonitorPlay size={20} />
+              </div>
+              <div className="max-w-xs space-y-1">
+                <p className="text-xs font-medium text-fg">
+                  {effectivePreviewUrl
+                    ? "Preview server is running"
+                    : "Waiting for preview server…"}
+                </p>
+                <p className="text-[11px] text-muted">
+                  {effectivePreviewUrl
+                    ? "Click Preview in the top bar to interact with the live app."
+                    : "The live preview will appear automatically as soon as the app server starts."}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </>
   );
 
-  return state === "docked" ? (
+  if (expanded) {
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Expanded live browser"
+        className="fixed inset-0 z-50 flex flex-col bg-bg/95 p-3 backdrop-blur-xs"
+      >
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-elev shadow-2xl">
+          {viewer}
+        </div>
+      </div>
+    );
+  }
+
+  return (
     <>
       <div
         role="separator"
-        aria-label="Resize browser dock"
+        aria-orientation="vertical"
         onPointerDown={onResizeStart}
-        className="hidden w-1 cursor-col-resize bg-border hover:bg-accent md:block"
+        className="w-1 cursor-col-resize bg-border hover:bg-accent"
       />
-      <section
-        aria-label="Browser dock"
-        className="fixed inset-0 z-40 flex flex-col bg-bg md:static md:z-auto md:min-w-[360px] md:w-full md:border-l md:border-border md:overflow-hidden"
+      <aside
+        style={{ width }}
+        className="flex h-full shrink-0 flex-col overflow-hidden border-l border-border bg-elev"
       >
         {viewer}
-      </section>
+      </aside>
     </>
-  ) : (
-    <div className="fixed inset-0 z-50 bg-black/60 p-0 md:p-4" role="dialog" aria-label="Expanded live browser">
-      <section className="mx-auto flex h-full w-full flex-col overflow-hidden bg-bg shadow-2xl md:rounded-xl md:border md:border-border">
-        {viewer}
-      </section>
-    </div>
   );
 }
-
-export type BrowserDockState = DockState;

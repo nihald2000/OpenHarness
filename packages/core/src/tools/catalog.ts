@@ -1352,7 +1352,7 @@ export class StandardToolRouter implements ToolRouter {
       {
         name: "browser_navigate",
         description:
-          "Navigates the headless Chromium browser inside the sandbox to a URL (such as a local dev server preview URL). Output is marked untrusted. Example: {\"url\": \"http://127.0.0.1:3000\"}",
+          "Navigates the headless Chromium browser inside the sandbox to a URL (such as a local dev server preview URL) and returns the initial accessibility snapshot with `[ref=eN]` handles and `(x,y)` coordinates. Output is marked untrusted. Example: {\"url\": \"http://127.0.0.1:3000\"}",
         readOnly: false,
         idempotent: true,
         requiresSandbox: true,
@@ -1368,11 +1368,18 @@ export class StandardToolRouter implements ToolRouter {
           const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_navigate requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/browser/navigate", d.headers, input);
+          const { screenshotJpegBase64, ...restBody } = (res.body ?? {}) as Record<string, unknown>;
           return {
-            output: res.body,
+            output: restBody,
             error: res.status !== 200 ? String(res.body.error) : undefined,
             untrusted: true,
             provenance: `browser:${String(input.url)}`,
+            metadata: {
+              url: restBody.url,
+              title: restBody.title,
+              cursor: restBody.cursor,
+              
+            },
           };
         },
       },
@@ -1380,7 +1387,7 @@ export class StandardToolRouter implements ToolRouter {
       {
         name: "browser_snapshot",
         description:
-          "Returns the current page's accessibility tree with `[ref=eN]` element handles for interaction. Output is marked untrusted. Example: {}",
+          "Returns the current page's accessibility tree with `[ref=eN]` element handles and `(x,y)` cursor coordinates for interaction. Output is marked untrusted. Example: {}",
         readOnly: true,
         idempotent: true,
         requiresSandbox: true,
@@ -1389,10 +1396,17 @@ export class StandardToolRouter implements ToolRouter {
           const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_snapshot requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/browser/snapshot", d.headers, {});
+          const { screenshotJpegBase64, ...restBody } = (res.body ?? {}) as Record<string, unknown>;
           return {
-            output: res.body,
+            output: restBody,
             untrusted: true,
             provenance: "browser:snapshot",
+            metadata: {
+              url: restBody.url,
+              title: restBody.title,
+              cursor: restBody.cursor,
+              
+            },
           };
         },
       },
@@ -1400,50 +1414,79 @@ export class StandardToolRouter implements ToolRouter {
       {
         name: "browser_click",
         description:
-          "Clicks an element in the page using its `[ref=eN]` handle from `browser_snapshot`. Example: {\"ref\": \"e1\"}",
+          "Moves the live AI cursor and clicks an element in the page using its `[ref=eN]` handle from `browser_snapshot`, visible text/CSS selector, or `(x, y)` viewport coordinates, and returns the updated page snapshot. Examples: {\"ref\": \"e1\"} or {\"x\": 640, \"y\": 420}",
         readOnly: false,
         idempotent: false,
         requiresSandbox: true,
         parameters: {
           type: "object",
-          required: ["ref"],
-          properties: { ref: { type: "string" } },
+          properties: {
+            ref: { type: "string", description: "Element ref (e.g. 'e1') or button text" },
+            selector: { type: "string", description: "Optional CSS selector" },
+            x: { type: "number", description: "Optional viewport X coordinate (0..1280)" },
+            y: { type: "number", description: "Optional viewport Y coordinate (0..800)" },
+            doubleClick: { type: "boolean" },
+          },
         },
         execute: async (input, ctx) => {
           const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_click requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/browser/click", d.headers, input);
-          return { output: res.body, error: res.status !== 200 ? String(res.body.error) : undefined };
+          const { screenshotJpegBase64, ...restBody } = (res.body ?? {}) as Record<string, unknown>;
+          return {
+            output: restBody,
+            error: res.status !== 200 ? String(res.body.error) : undefined,
+            metadata: {
+              url: restBody.url,
+              title: restBody.title,
+              cursor: restBody.cursor,
+              
+            },
+          };
         },
       },
 
       {
         name: "browser_type",
         description:
-          "Types text into an input element identified by `[ref=eN]`. Example: {\"ref\": \"e2\", \"text\": \"hello\"}",
+          "Moves the live AI cursor and types text into an input element identified by `[ref=eN]`, CSS selector, or `(x, y)` coordinates, and returns the updated page snapshot. Example: {\"ref\": \"e2\", \"text\": \"hello\"}",
         readOnly: false,
         idempotent: false,
         requiresSandbox: true,
         parameters: {
           type: "object",
-          required: ["ref", "text"],
+          required: ["text"],
           properties: {
-            ref: { type: "string" },
+            ref: { type: "string", description: "Element ref (e.g. 'e2') or placeholder/label" },
+            selector: { type: "string", description: "Optional CSS selector" },
+            x: { type: "number", description: "Optional viewport X coordinate" },
+            y: { type: "number", description: "Optional viewport Y coordinate" },
             text: { type: "string" },
+            pressEnter: { type: "boolean" },
           },
         },
         execute: async (input, ctx) => {
           const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_type requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/browser/type", d.headers, input);
-          return { output: res.body, error: res.status !== 200 ? String(res.body.error) : undefined };
+          const { screenshotJpegBase64, ...restBody } = (res.body ?? {}) as Record<string, unknown>;
+          return {
+            output: restBody,
+            error: res.status !== 200 ? String(res.body.error) : undefined,
+            metadata: {
+              url: restBody.url,
+              title: restBody.title,
+              cursor: restBody.cursor,
+              
+            },
+          };
         },
       },
 
       {
         name: "browser_press",
         description:
-          "Presses a keyboard key (such as `Enter`, `Tab`, `Escape`) in the browser. Example: {\"key\": \"Enter\"}",
+          "Presses a keyboard key (such as `Enter`, `Tab`, `Escape`) in the browser and returns the updated page snapshot. Example: {\"key\": \"Enter\"}",
         readOnly: false,
         idempotent: false,
         requiresSandbox: true,
@@ -1456,7 +1499,16 @@ export class StandardToolRouter implements ToolRouter {
           const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "browser_press requires an active sandbox" };
           const res = await d.daemon.handleRequest("POST", "/browser/press", d.headers, input);
-          return { output: res.body };
+          const { screenshotJpegBase64, ...restBody } = (res.body ?? {}) as Record<string, unknown>;
+          return {
+            output: restBody,
+            metadata: {
+              url: restBody.url,
+              title: restBody.title,
+              cursor: restBody.cursor,
+              
+            },
+          };
         },
       },
 
@@ -1568,21 +1620,33 @@ export class StandardToolRouter implements ToolRouter {
             }
           }
           const existing = ctx.state.browserChecks ?? (ctx.state.browserChecks = []);
-          const sameName = existing.find((item) => item.name === name);
+          const sameIndex = existing.findIndex((item) => item.name === name);
+          const sameName = sameIndex >= 0 ? existing[sameIndex] : undefined;
+          const filesCount = (ctx.state.changedFiles ?? []).length;
+          (check as BrowserCheck & { filesCountAtDef?: number }).filesCountAtDef = filesCount;
+          let selected = check;
           if (sameName) {
             const normalize = (value: BrowserCheck) => JSON.stringify({ port: value.port, steps: value.steps, failOnConsoleErrors: value.failOnConsoleErrors });
+            const prevMeta = sameName as BrowserCheck & { locked?: boolean; filesCountAtDef?: number };
+            const filesChangedSinceDef = typeof prevMeta.filesCountAtDef === "number" && prevMeta.filesCountAtDef !== filesCount;
+            const wasLocked = prevMeta.locked === true && !filesChangedSinceDef && !/repro|bug/i.test(name);
             if (normalize(sameName) !== normalize(check)) {
-              ctx.state.browserChecksHistory ??= [];
-              ctx.state.browserChecksHistory.push(structuredClone(sameName));
-              ctx.state.browserCheckTampering ??= [];
-              ctx.state.browserCheckTampering.push(name);
-              return { output: null, error: `Browser check "${name}" is immutable. The original definition was preserved and this change is flagged for review.` };
+              if (wasLocked) {
+                ctx.state.browserChecksHistory ??= [];
+                ctx.state.browserChecksHistory.push(structuredClone(sameName));
+                ctx.state.browserCheckTampering ??= [];
+                ctx.state.browserCheckTampering.push(name);
+                return { output: null, error: `Browser check "${name}" is immutable. The original definition was preserved and this change is flagged for review.` };
+              }
+              existing[sameIndex] = check;
+              selected = check;
+            } else {
+              selected = sameName;
             }
           } else {
             if (existing.length >= 10) return { output: null, error: "A run may define at most 10 browser checks" };
             existing.push(check);
           }
-          const selected = sameName ?? check;
           const d = await this.getDaemonAndHeaders(ctx);
           const ports = await d.daemon.handleRequest("GET", "/ports", d.headers);
           const knownPorts = Array.isArray(ports.body.ports) ? (ports.body.ports as Array<{ port: number }>).map((entry) => entry.port) : [];
@@ -1590,8 +1654,17 @@ export class StandardToolRouter implements ToolRouter {
           if (!port || !knownPorts.includes(port)) return { output: null, error: "Browser check requires a port started by this run" };
           const res = await d.daemon.handleRequest("POST", "/browser/run_flow", d.headers, { port, steps: selected.steps, failOnConsoleErrors: selected.failOnConsoleErrors });
           const result = res.body as Record<string, any>;
-          const { screenshotJpegBase64: _screenshot, ...safeResult } = result;
-          return { output: { check: name, ...safeResult, evidence: formatBrowserEvidence(name, selected.steps.length, result, "") }, error: result.passed ? undefined : String(result.error ?? "Browser check failed") };
+          (selected as BrowserCheck & { locked?: boolean }).locked = Boolean(result.passed);
+          const { screenshotJpegBase64, ...safeResult } = result;
+          return {
+            output: { check: name, ...safeResult, evidence: formatBrowserEvidence(name, selected.steps.length, result, "") },
+            error: result.passed ? undefined : String(result.error ?? "Browser check failed"),
+            metadata: {
+              url: safeResult.url,
+              cursor: safeResult.cursor,
+              
+            },
+          };
         },
       },
 

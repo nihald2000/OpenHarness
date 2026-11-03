@@ -439,10 +439,26 @@ export class OpenHarnessServer {
     return { status: 200, buffer: bytes, mimeType, filename: path.posix.basename(filePath.replace(/\\/g, "/")) };
   }
   private async setSessionBrowserOwner(sess: Session, owner: "agent" | "human"): Promise<void> {
-    const daemon = await this.resolveSessionDaemon(sess);
-    if (!daemon) throw new HttpError(404, "Sandbox is no longer running");
-    const result = await daemon.handleRequest("POST", "/browser/lock", { "x-session-key": daemon.config.sessionKey }, { owner });
-    if (result.status !== 200) throw new HttpError(result.status, String(result.body.error ?? "Could not change browser control owner"));
+    const isModal = Boolean(sess.sandboxHandleId?.startsWith("modal"));
+    const work = (async () => {
+      const daemon = await this.resolveSessionDaemon(sess);
+      if (!daemon) {
+        if (isModal) return;
+        throw new HttpError(404, "Sandbox is no longer running");
+      }
+      const result = await daemon.handleRequest("POST", "/browser/lock", { "x-session-key": daemon.config.sessionKey }, { owner });
+      if (result.status !== 200 && !isModal) {
+        throw new HttpError(result.status, String(result.body.error ?? "Could not change browser control owner"));
+      }
+    })();
+    if (!isModal) {
+      await work;
+      return;
+    }
+    await Promise.race([
+      work.catch(() => {}),
+      new Promise<void>((resolve) => setTimeout(resolve, 3_000)),
+    ]);
   }
   private async sessionBrowserRequest(sess: Session, action: "observe" | "screenshot", payload: Record<string, unknown> = {}) {
     const daemon = await this.resolveSessionDaemon(sess);
@@ -452,14 +468,39 @@ export class OpenHarnessServer {
   private async returnBrowserControl(tenantId: string, runId: string, note: string): Promise<{ queued: boolean; record: RunRecord }> {
     const run = await this.runWorker.getRun(runId);
     if (!run || (run.tenantId ?? "default") !== tenantId) throw new HttpError(404, "Run not found");
-    if (run.status !== "awaiting_input" || run.pauseReason !== "takeover") throw new HttpError(409, "Run is not waiting for a browser takeover to finish");
+    const checkpoint = await this.stateStore.getStepCheckpoint(tenantId, runId);
+    const isTakeoverState =
+      (run.status === "awaiting_input" && run.pauseReason === "takeover") ||
+      checkpoint?.state.takeoverRequested === true ||
+      checkpoint?.state.pauseReason === "takeover";
+    if (!isTakeoverState) throw new HttpError(409, "Run is not waiting for a browser takeover to finish");
     const session = await this.stateStore.getSession(tenantId, run.sessionId);
     if (!session) throw new HttpError(404, "Session not found");
+    const isModal = Boolean(session.sandboxHandleId?.startsWith("modal"));
     await this.setSessionBrowserOwner(session, "agent");
-    const observed = await this.sessionBrowserRequest(session, "observe");
+    let observed: { status: number; body: Record<string, unknown> };
+    if (isModal) {
+      observed = await Promise.race([
+        this.sessionBrowserRequest(session, "observe").catch(() => ({
+          status: 200,
+          body: { url: checkpoint?.state.previewUrl ?? "http://127.0.0.1:3020/", title: session.title || "App", text: "", snapshot: "" },
+        })),
+        new Promise<{ status: number; body: Record<string, unknown> }>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                status: 200,
+                body: { url: checkpoint?.state.previewUrl ?? "http://127.0.0.1:3020/", title: session.title || "App", text: "", snapshot: "" },
+              }),
+            3_500
+          )
+        ),
+      ]);
+    } else {
+      observed = await this.sessionBrowserRequest(session, "observe");
+    }
     const body = observed.body as Record<string, unknown>;
-    if (observed.status !== 200) throw new HttpError(observed.status, String(body.error ?? "Could not inspect the page after takeover"));
-    const checkpoint = await this.stateStore.getStepCheckpoint(tenantId, runId);
+    if (observed.status !== 200 && !isModal) throw new HttpError(observed.status, String(body.error ?? "Could not inspect the page after takeover"));
     if (!checkpoint) throw new HttpError(409, "Run checkpoint is unavailable");
     const model = checkpoint.state.model;
     const snapshot = String(body.snapshot ?? "").split(/\r?\n/)
@@ -1535,14 +1576,42 @@ export class OpenHarnessServer {
     let last = after;
     let replaying = true;
     const pending: EventEnvelope[] = [];
+    const sanitizeSseEvent = (ev: OpenHarnessEvent): OpenHarnessEvent => {
+      if (ev.type === "part.updated" && ev.part.type === "tool") {
+        const meta = ev.part.metadata as Record<string, unknown> | undefined;
+        const out = ev.part.output as Record<string, unknown> | undefined;
+        if (meta?.screenshotJpegBase64 || out?.screenshotJpegBase64 || out?.dataBase64) {
+          const cleanMeta = meta ? { ...meta } : undefined;
+          if (cleanMeta) delete cleanMeta.screenshotJpegBase64;
+          const cleanOut = out && typeof out === "object" ? { ...out } : ev.part.output;
+          if (cleanOut && typeof cleanOut === "object") {
+            delete (cleanOut as Record<string, unknown>).screenshotJpegBase64;
+            if ((cleanOut as Record<string, unknown>).mimeType === "image/png") {
+              delete (cleanOut as Record<string, unknown>).dataBase64;
+            }
+          }
+          return {
+            ...ev,
+            part: {
+              ...ev.part,
+              ...(cleanMeta ? { metadata: cleanMeta } : {}),
+              output: cleanOut,
+            },
+          };
+        }
+      }
+      return ev;
+    };
     const write = (e: EventEnvelope) => {
+      if (res.writableEnded || res.destroyed) return;
       const ephemeralDelta = e.event.type === "part.delta";
       if (!ephemeralDelta && e.seq <= last) return;
       if (!ephemeralDelta) last = e.seq;
+      if (res.writableLength > 4_000_000) return;
+      const safeEvent = sanitizeSseEvent(e.event);
       res.write(
-        `id: ${e.seq}\ndata: ${JSON.stringify({ ...e.event, seq: e.seq })}\n\n`
+        `id: ${e.seq}\ndata: ${JSON.stringify({ ...safeEvent, seq: e.seq })}\n\n`
       );
-      if (res.writableLength > 2_000_000) res.destroy();
     };
 
     const unsubscribe = this.eventBus.subscribe(
@@ -1550,27 +1619,36 @@ export class OpenHarnessServer {
       (e) => (replaying ? pending.push(e) : write(e))
     );
 
-    const historical = await this.stateStore.listEventsAfter(
+    const rawHistorical = await this.stateStore.listEventsAfter(
       id.tenantId,
       after,
       sessionId
     );
+    // For global stream (sessionId === undefined) with after === 0, only replay recent global events
+    const historical =
+      !sessionId && after === 0 && rawHistorical.length > 40
+        ? rawHistorical.slice(-40)
+        : rawHistorical;
+    if (!sessionId && after === 0 && rawHistorical.length > 40) {
+      last = rawHistorical[rawHistorical.length - 41]?.seq ?? after;
+    }
     for (const e of historical) write(e);
     replaying = false;
     for (const e of pending) write(e);
 
-    res.write("retry: 500\n\n");
+    res.write("retry: 1000\n\n");
     const ping = setInterval(() => {
       if (!res.writableEnded && !res.destroyed) {
         res.write(`event: ping\ndata: {"ts":${Date.now()}}\n\n`);
       }
-    }, 10_000);
+    }, 15_000);
     const rotate = setTimeout(() => {
       if (!res.writableEnded && !res.destroyed) {
-        res.write(`event: rotate\ndata: {"retryMs":250}\n\n`);
-        res.end();
+        res.write(`event: rotate\ndata: {"retryMs":500}\n\n`, () => {
+          if (!res.writableEnded && !res.destroyed) res.end();
+        });
       }
-    }, 45_000);
+    }, 50_000);
     res.on("close", () => {
       clearInterval(ping);
       clearTimeout(rotate);
@@ -1727,10 +1805,24 @@ export class OpenHarnessServer {
     const browserStateMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/browser\/state$/);
     if (method === "GET" && browserStateMatch) {
       const sessionId = decodeURIComponent(browserStateMatch[1]!);
+      const lite = parsedUrl.searchParams.get("lite") === "1";
       const session = await this.stateStore.getSession(tenantId, sessionId);
       if (!session) return { status: 404, body: { error: "Session not found" } };
       const runId = session.activeRunId ?? session.runId;
       const checkpoint = runId ? await this.stateStore.getStepCheckpoint(tenantId, runId) : null;
+      if (lite) {
+        return {
+          status: 200,
+          body: {
+            active: Boolean(session.sandboxHandleId),
+            url: checkpoint?.state.previewUrl ?? "",
+            title: session.title || "Sandbox Browser",
+            previewUrl: checkpoint?.state.previewUrl ?? null,
+            screenshotJpegBase64: null,
+            ports: [],
+          },
+        };
+      }
       const daemon = await this.resolveSessionDaemon(session);
       const transport = session.sandboxHandleId ? this.activeSandboxes.get(session.sandboxHandleId)?.transport : undefined;
       if (!daemon && !transport) {
@@ -1772,6 +1864,7 @@ export class OpenHarnessServer {
           title: String(obsBody.title ?? ""),
           text: String(obsBody.text ?? ""),
           snapshot: String(obsBody.snapshot ?? ""),
+          cursor: obsBody.cursor ?? null,
           screenshotJpegBase64: typeof obsBody.screenshotJpegBase64 === "string" ? obsBody.screenshotJpegBase64 : null,
           previewUrl: effectivePreviewUrl,
           ports: rawPorts,
@@ -1791,9 +1884,12 @@ export class OpenHarnessServer {
       if (!["navigate", "input", "click", "type", "press", "observe"].includes(action)) {
         return { status: 400, body: { error: "Unsupported browser action" } };
       }
-      const actionPayload = (body?.payload && typeof body.payload === "object" ? body.payload : body ?? {}) as Record<string, unknown>;
+      const actionPayload = {
+        ...((body?.payload && typeof body.payload === "object" ? body.payload : body ?? {}) as Record<string, unknown>),
+        actor: "human",
+      };
       const result = daemon
-        ? await daemon.handleRequest("POST", `/browser/${action}`, { "x-session-key": daemon.config.sessionKey }, actionPayload)
+        ? await daemon.handleRequest("POST", `/browser/${action}`, { "x-session-key": daemon.config.sessionKey, "x-oh-browser-actor": "human" }, actionPayload)
         : await transport!.request("POST", `/browser/${action}`, actionPayload);
       return { status: result.status, body: result.body };
     }
@@ -2955,6 +3051,11 @@ export class OpenHarnessServer {
         ? await this.stateStore.getStepCheckpoint(tenantId, runId)
         : null;
       const durableRun = runId ? this.runWorker.stateMachine.getRun(runId) : null;
+      const takeoverActive =
+        Boolean(runId) &&
+        (checkpoint?.state.takeoverRequested === true ||
+          checkpoint?.state.pauseReason === "takeover" ||
+          durableRun?.pauseReason === "takeover");
       return {
         status: 200,
         body: {
@@ -2964,6 +3065,13 @@ export class OpenHarnessServer {
           pendingQuestion:
             checkpoint?.state.pendingQuestion ?? durableRun?.pendingQuestion ?? null,
           pendingApproval: checkpoint?.state.pendingApproval ?? null,
+          takeover: takeoverActive
+            ? {
+                runId: runId!,
+                reason: checkpoint?.state.takeover?.reason ?? "Browser takeover active",
+                instructions: checkpoint?.state.takeover?.instructions,
+              }
+            : null,
           previewUrl: checkpoint?.state.previewUrl ?? null,
           changedFiles: checkpoint?.state.changedFiles ?? [],
         },

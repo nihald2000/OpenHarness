@@ -427,17 +427,19 @@ export class HttpOpenHarnessClient {
     liveTicket: async (sessionId: string, mode: "view" | "control"): Promise<{ url: string; mode?: string }> => {
       return this.request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/browser/live-ticket`, { mode });
     },
-    state: async (sessionId: string): Promise<{
+    state: async (sessionId: string, opts?: { lite?: boolean }): Promise<{
       active: boolean;
       url: string;
       title: string;
       text?: string;
       snapshot?: string;
+      cursor?: { x: number; y: number; action?: string; label?: string; timestamp?: number } | null;
       screenshotJpegBase64?: string | null;
       previewUrl?: string | null;
       ports?: Array<{ port: number; previewUrl?: string }>;
     }> => {
-      return this.request("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/browser/state`);
+      const q = opts?.lite ? "?lite=1" : "";
+      return this.request("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/browser/state${q}`);
     },
     action: async (sessionId: string, action: string, payload: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
       return this.request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/browser/action`, { action, payload });
