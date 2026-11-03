@@ -1,6 +1,8 @@
+import { useId, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Circle,
   CircleDot,
   ListChecks,
@@ -88,7 +90,7 @@ export function PlanSteps({
   live?: boolean;
 }) {
   return (
-    <ol className="space-y-2">
+    <ol className="space-y-1.5">
       {steps.map((step, i) => {
         const isCompleted = step.status === "completed";
         const isInProgress = step.status === "in_progress";
@@ -99,25 +101,25 @@ export function PlanSteps({
             <span className="mt-0.5 shrink-0">
               {isCompleted ? (
                 <CheckCircle2
-                  className="size-4 text-success"
+                  className="size-3.5 text-success"
                   aria-hidden="true"
                 />
               ) : isInProgress ? (
                 live ? (
-                  <Spinner className="size-4 text-accent" />
+                  <Spinner className="size-3.5 text-accent" />
                 ) : (
                   <CircleDot
-                    className="size-4 text-accent"
+                    className="size-3.5 text-accent"
                     aria-hidden="true"
                   />
                 )
               ) : isBlocked ? (
                 <AlertTriangle
-                  className="size-4 text-warning"
+                  className="size-3.5 text-warning"
                   aria-hidden="true"
                 />
               ) : (
-                <Circle className="size-4 text-muted" aria-hidden="true" />
+                <Circle className="size-3.5 text-muted" aria-hidden="true" />
               )}
             </span>
             <div className="min-w-0 flex-1">
@@ -136,7 +138,7 @@ export function PlanSteps({
                 <span className="sr-only">({step.status})</span>
               </div>
               {step.detail && (
-                <p className="mt-1 text-xs text-muted">{step.detail}</p>
+                <p className="mt-0.5 text-xs text-muted">{step.detail}</p>
               )}
             </div>
           </li>
@@ -155,11 +157,13 @@ export function PlanCard({
 }) {
   const plan = extractPlanFromTool(part);
   const isRunning = part.state === "pending" || part.state === "running";
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
 
   if (!plan) {
     return (
-      <div className="my-2 flex items-center gap-2 rounded-xl border border-border bg-elev px-3 py-2 text-xs text-muted">
-        {isRunning ? <Spinner /> : <ListChecks className="size-4" aria-hidden="true" />}
+      <div className="my-1.5 flex items-center gap-2 rounded-xl border border-border bg-elev px-3 py-1.5 text-xs text-muted">
+        {isRunning ? <Spinner className="size-3.5" /> : <ListChecks className="size-3.5" aria-hidden="true" />}
         <span>{isRunning ? "Updating plan..." : "Plan updated"}</span>
       </div>
     );
@@ -168,35 +172,45 @@ export function PlanCard({
   const prog = planProgress(plan);
 
   return (
-    <div className="my-2 overflow-hidden rounded-xl border border-border bg-elev text-xs">
-      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-        <div className="flex items-center gap-2">
+    <div className="my-1.5 overflow-hidden rounded-xl border border-border bg-elev text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-controls={bodyId}
+        className="touch-target flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-hover/60"
+      >
+        <div className="flex min-w-0 items-center gap-2">
           {isRunning ? (
-            <Spinner className="size-4 text-accent" />
+            <Spinner className="size-3.5 shrink-0 text-accent" />
           ) : (
-            <ListChecks className="size-4 text-accent" aria-hidden="true" />
+            <ListChecks className="size-3.5 shrink-0 text-accent" aria-hidden="true" />
           )}
-          <span className="font-semibold text-fg">{plan.title || "Plan"}</span>
+          <span className="truncate font-semibold text-fg">{plan.title || "Plan"}</span>
+          {prog.current && !open && (
+            <span className="hidden sm:inline truncate text-muted">· {prog.current.title}</span>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <Badge tone={prog.done ? "success" : "accent"}>
-            {prog.completed}/{prog.total} Done
-            {prog.blocked > 0 ? ` · ${prog.blocked} blocked` : ""}
+            {prog.completed}/{prog.total}
           </Badge>
+          <ChevronDown
+            className={`size-3.5 text-muted transition-transform duration-150 ${open ? "rotate-180" : ""}`}
+            aria-hidden="true"
+          />
         </div>
-      </div>
+      </button>
 
-      {plan.explanation && (
-        <p className="px-4 pb-3 text-xs text-muted">{plan.explanation}</p>
+      {open && (
+        <div id={bodyId} className="border-t border-border bg-bg px-3.5 py-2.5 space-y-2">
+          {plan.explanation && (
+            <p className="text-xs text-muted">{plan.explanation}</p>
+          )}
+          <PlanProgressBar completed={prog.completed} total={prog.total} />
+          <PlanSteps steps={plan.steps} live={live || isRunning} />
+        </div>
       )}
-
-      <div className="px-4 pb-3">
-        <PlanProgressBar completed={prog.completed} total={prog.total} />
-      </div>
-
-      <div className="border-t border-border bg-bg px-4 py-3">
-        <PlanSteps steps={plan.steps} live={live || isRunning} />
-      </div>
     </div>
   );
 }

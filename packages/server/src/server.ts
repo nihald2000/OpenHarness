@@ -1816,8 +1816,15 @@ export class OpenHarnessServer {
       if (currentWindow.count >= 30) return { status: 429, body: { error: "Live browser ticket limit exceeded" } };
       currentWindow.count++;
       this.liveTicketWindows.set(tenantId, currentWindow);
-      const sandboxId = session.sandboxHandleId;
-      if (!sandboxId) return { status: 409, body: { error: "Session has no active browser sandbox" } };
+      const activeRunId = session.activeRunId ?? session.runId;
+      const activeCheckpoint = activeRunId ? await this.stateStore.getStepCheckpoint(tenantId, activeRunId) : null;
+      const sandboxId = session.sandboxHandleId ?? activeCheckpoint?.state.sandboxHandleId ?? undefined;
+      if (!sandboxId) {
+        if (mode === "view") {
+          return { status: 200, body: { url: "", mode: "http-poll", sessionId } };
+        }
+        return { status: 409, body: { error: "Session has no active browser sandbox" } };
+      }
       if (mode === "control") {
         const runId = session.activeRunId ?? session.runId;
         const run = runId ? await this.stateStore.getRun(tenantId, runId) : null;

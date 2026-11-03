@@ -51,6 +51,19 @@ function normalizeRefId(rawRef) {
   return s;
 }
 
+function isLikelyCssSelector(value) {
+  const s = String(value ?? "").trim();
+  if (!s) return false;
+  if (/^(?:#|\.|\[|css=)/i.test(s)) return true;
+  if (/[#.\[\]>~+]/.test(s) && !/\s{2,}/.test(s)) {
+    if (/^[a-zA-Z0-9_*#.\[\]="':()\- >~+]+$/.test(s)) return true;
+  }
+  if (/^(?:input|button|select|textarea|form|label|a|h[1-6]|main|section|header|footer|nav|table|tr|td|th|ul|ol|li|body|html|canvas|svg|img|dialog|details|summary)(?:[#.\[:\s>~+]|$)/i.test(s)) {
+    return true;
+  }
+  return false;
+}
+
 async function moveAiCursorOnPage(targetPage, x, y, action = "move", label = "") {
   const clampedX = Math.max(4, Math.min(VIEWPORT.width - 4, Math.round(Number(x) || 640)));
   const clampedY = Math.max(4, Math.min(VIEWPORT.height - 4, Math.round(Number(y) || 400)));
@@ -68,10 +81,11 @@ async function moveAiCursorOnPage(targetPage, x, y, action = "move", label = "")
 }
 
 async function emitFreshCastFrame(targetPage = page) {
-  if (!targetPage) return null;
+  const p = targetPage ?? page;
+  if (!p) return null;
   try {
-    await maskSensitiveFields();
-    const buf = await targetPage.screenshot({ type: "jpeg", quality: 58, scale: "css" }).catch(() => null);
+    await p.addStyleTag({ content: SENSITIVE_MASK_STYLE }).catch(() => {});
+    const buf = await p.screenshot({ type: "jpeg", quality: 58, scale: "css" }).catch(() => null);
     if (!buf) return null;
     const base64 = buf.toString("base64");
     lastFrame = {
@@ -326,7 +340,7 @@ async function resolveInteractiveElement(activePage, payload) {
   }
   // 3. Fallback: selector, text, or role lookup if model passed text/selector instead of eN
   const queryText = String(payload.text_target ?? payload.label ?? (!/^e\d+$/i.test(rawRef) ? rawRef : "")).trim();
-  const cssSelector = String(payload.selector ?? payload.css ?? "").trim();
+  const cssSelector = String(payload.selector ?? payload.css ?? (isLikelyCssSelector(rawRef) ? rawRef : "")).trim();
   if (cssSelector) {
     const handle = await activePage.$(cssSelector).catch(() => null);
     if (handle) {
@@ -341,6 +355,34 @@ async function resolveInteractiveElement(activePage, payload) {
     }
   }
   if (queryText) {
+    const byLabel = activePage.getByLabel(queryText, { exact: false }).first();
+    if ((await byLabel.count().catch(() => 0)) > 0) {
+      const handle = await byLabel.elementHandle().catch(() => null);
+      if (handle) {
+        const box = await handle.boundingBox().catch(() => null);
+        return {
+          handle,
+          ref: queryText,
+          label: queryText,
+          x: box ? Math.round(box.x + box.width / 2) : 640,
+          y: box ? Math.round(box.y + box.height / 2) : 400,
+        };
+      }
+    }
+    const byPlaceholder = activePage.getByPlaceholder(queryText, { exact: false }).first();
+    if ((await byPlaceholder.count().catch(() => 0)) > 0) {
+      const handle = await byPlaceholder.elementHandle().catch(() => null);
+      if (handle) {
+        const box = await handle.boundingBox().catch(() => null);
+        return {
+          handle,
+          ref: queryText,
+          label: queryText,
+          x: box ? Math.round(box.x + box.width / 2) : 640,
+          y: box ? Math.round(box.y + box.height / 2) : 400,
+        };
+      }
+    }
     const byRoleBtn = activePage.getByRole("button", { name: queryText }).first();
     if ((await byRoleBtn.count().catch(() => 0)) > 0) {
       const handle = await byRoleBtn.elementHandle().catch(() => null);
@@ -377,13 +419,16 @@ function flowLocator(target, targetPage = page) {
   if (typeof target === "string") {
     const value = target.trim();
     if (!value) throw new Error("target selector cannot be empty");
+    if (/^css=/i.test(value)) return targetPage.locator(value.slice(4).trim());
+    if (/^text=/i.test(value)) return targetPage.getByText(value.slice(5).trim(), { exact: false });
+    if (/^label=/i.test(value)) return targetPage.getByLabel(value.slice(6).trim(), { exact: false });
     if (/^@?e\d+$/i.test(value)) {
       const cleanRef = value.replace(/^@/, "").toLowerCase();
       return targetPage.locator(`[data-oh-ref="${cleanRef}"]`);
     }
-    if (/^(?:#|\.|\[)/.test(value)) return targetPage.locator(value);
     const role = value.match(/^role=(\w+)(?:\[name=(.+)\])?$/i);
     if (role) return targetPage.getByRole(role[1], { name: (role[2] || "").replace(/^['\"]|['\"]$/g, "") });
+    if (isLikelyCssSelector(value)) return targetPage.locator(value);
     return targetPage.getByText(value, { exact: false });
   }
   if (target?.css) return targetPage.locator(String(target.css));
@@ -396,55 +441,225 @@ function flowLocator(target, targetPage = page) {
   throw new Error("target requires role/name, label, text, or css");
 }
 
+async function resolveFillLocator(target, targetPage) {
+  // 1. Direct CSS selector
+  if (target && typeof target === "object" && typeof target.css === "string" && target.css.trim()) {
+    const loc = targetPage.locator(target.css.trim()).first();
+    if ((await loc.count().catch(() => 0)) > 0) return loc;
+  }
+  if (typeof target === "string" && isLikelyCssSelector(target)) {
+    const loc = targetPage.locator(target.trim().replace(/^css=/i, "")).first();
+    if ((await loc.count().catch(() => 0)) > 0) return loc;
+  }
+  // 2. Try label / placeholder / id / name / sibling input lookup for human-readable field names
+  const query = typeof target === "string"
+    ? target.trim()
+    : String(target?.label ?? target?.name ?? target?.text ?? target?.css ?? "").trim();
+  if (query) {
+    const byLabel = targetPage.getByLabel(query, { exact: false }).first();
+    if ((await byLabel.count().catch(() => 0)) > 0) return byLabel;
+
+    const byPlaceholder = targetPage.getByPlaceholder(query, { exact: false }).first();
+    if ((await byPlaceholder.count().catch(() => 0)) > 0) return byPlaceholder;
+
+    if (!isLikelyCssSelector(query)) {
+      const slug = query.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (slug) {
+        const byAttr = targetPage.locator(
+          `input#${slug}, textarea#${slug}, select#${slug}, input[name="${slug}"], textarea[name="${slug}"], select[name="${slug}"], input[id*="${slug}" i], input[name*="${slug}" i], textarea[id*="${slug}" i], select[id*="${slug}" i]`
+        ).first();
+        if ((await byAttr.count().catch(() => 0)) > 0) return byAttr;
+      }
+      const bySiblingLabel = targetPage.locator(
+        `label:has-text(${JSON.stringify(query)}) ~ input, label:has-text(${JSON.stringify(query)}) ~ textarea, label:has-text(${JSON.stringify(query)}) ~ select, label:has-text(${JSON.stringify(query)}) input, label:has-text(${JSON.stringify(query)}) textarea, label:has-text(${JSON.stringify(query)}) select`
+      ).first();
+      if ((await bySiblingLabel.count().catch(() => 0)) > 0) return bySiblingLabel;
+    }
+  }
+  return flowLocator(target, targetPage).first();
+}
+
+async function resolveClickLocator(target, targetPage) {
+  if (target && typeof target === "object" && typeof target.css === "string" && target.css.trim()) {
+    const css = target.css.trim();
+    const loc = targetPage.locator(css).first();
+    if ((await loc.count().catch(() => 0)) > 0) return loc;
+  }
+  if (typeof target === "string" && isLikelyCssSelector(target)) {
+    const css = target.trim().replace(/^css=/i, "");
+    const loc = targetPage.locator(css).first();
+    if ((await loc.count().catch(() => 0)) > 0) return loc;
+  }
+  const query = typeof target === "string"
+    ? target.trim()
+    : String(target?.text ?? target?.label ?? target?.name ?? "").trim();
+  if (query && !(target && typeof target === "object" && target.role)) {
+    const byBtn = targetPage.getByRole("button", { name: query, exact: false }).first();
+    if ((await byBtn.count().catch(() => 0)) > 0) return byBtn;
+    const byLabel = targetPage.getByLabel(query, { exact: false }).first();
+    if ((await byLabel.count().catch(() => 0)) > 0) return byLabel;
+    const byText = targetPage.getByText(query, { exact: false }).first();
+    if ((await byText.count().catch(() => 0)) > 0) return byText;
+  }
+  return flowLocator(target, targetPage).first();
+}
+
 function checkUrl(rawUrl, baseUrl) {
   const url = new URL(String(rawUrl), baseUrl);
   const base = new URL(baseUrl);
-  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || url.port !== base.port) {
+  if (url.protocol !== "http:" || (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") || url.port !== base.port) {
     throw new Error(`blocked url ${url.href}`);
   }
+  url.hostname = "127.0.0.1";
   return url.href;
 }
 
-function normalizeFlowTarget(raw) {
-  if (typeof raw === "string") return raw.trim() || undefined;
+function normalizeFlowTarget(raw, options = {}) {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return undefined;
+    if (options.forceCss || isLikelyCssSelector(trimmed)) {
+      return { css: trimmed.replace(/^css=/i, "").trim() };
+    }
+    return trimmed;
+  }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const source = raw.target && typeof raw.target === "object" && !Array.isArray(raw.target) ? raw.target : raw;
+  if (typeof raw.target === "string" && raw.target.trim()) {
+    const t = raw.target.trim();
+    if (isLikelyCssSelector(t)) return { css: t.replace(/^css=/i, "").trim() };
+    return t;
+  }
   const result = {};
-  if (typeof source.role === "string") { result.role = source.role; result.name = String(source.name ?? source.text ?? source.label ?? ""); }
-  if (typeof source.label === "string") result.label = source.label;
-  if (typeof source.text === "string") result.text = source.text;
-  if (typeof source.css === "string") result.css = source.css;
-  else if (typeof source.selector === "string") result.css = source.selector;
+  if (typeof source.css === "string" && source.css.trim()) result.css = source.css.trim();
+  else if (typeof source.selector === "string" && source.selector.trim()) result.css = source.selector.trim();
+  if (typeof source.role === "string" && source.role.trim()) {
+    result.role = source.role.trim();
+    result.name = String(source.name ?? (options.ignoreText ? "" : source.text) ?? source.label ?? "");
+  }
+  if (typeof source.label === "string" && source.label.trim()) result.label = source.label.trim();
+  else if (typeof source.placeholder === "string" && source.placeholder.trim()) result.label = source.placeholder.trim();
+  if (!options.ignoreText && typeof source.text === "string" && source.text.trim() && !result.css) {
+    result.text = source.text.trim();
+  }
+  if (!result.css && !result.role && !result.label && !result.text && typeof source.name === "string" && source.name.trim()) {
+    result.css = `[name="${source.name.trim().replace(/"/g, '\\"')}"]`;
+  }
   if (source.exact === true) result.exact = true;
   return Object.keys(result).length ? result : undefined;
 }
 
+const KNOWN_FLOW_ACTIONS = new Set([
+  "navigate", "goto", "open",
+  "click", "check", "tap",
+  "fill", "type", "input", "select",
+  "press", "key",
+  "wait", "sleep",
+  "expecthidden", "asserthidden",
+  "expecturl", "asserturl",
+  "expectvisible", "assertvisible",
+  "asserttext", "expecttext", "assert", "verify",
+]);
+
 function normalizeFlowStep(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const step = raw;
-  if (typeof step.goto === "string" || typeof step.navigate === "string" || typeof step.url === "string") return { goto: String(step.goto ?? step.navigate ?? step.url) };
-  const action = String(step.action ?? step.type ?? "").toLowerCase().replaceAll("_", "");
-  if (["navigate", "goto", "open"].includes(action)) return { goto: String(step.path ?? step.url ?? step.value ?? step.target ?? "/") };
-  if (action === "click" || "click" in step) {
-    const target = normalizeFlowTarget(step.click ?? step.target ?? step.selector ?? step.css ?? step);
+  if (typeof step.goto === "string" || typeof step.navigate === "string" || typeof step.url === "string") {
+    return { goto: String(step.goto ?? step.navigate ?? step.url) };
+  }
+  const rawAction = String(step.action ?? step.type ?? "").toLowerCase().replaceAll("_", "");
+  const isTypeShorthand =
+    step.action === undefined &&
+    typeof step.type === "string" &&
+    !KNOWN_FLOW_ACTIONS.has(rawAction) &&
+    (step.value !== undefined || step.text !== undefined || step.textValue !== undefined || step.input !== undefined);
+  const action = isTypeShorthand ? "type" : rawAction;
+
+  if (["navigate", "goto", "open"].includes(action)) {
+    return { goto: String(step.path ?? step.url ?? step.value ?? step.target ?? "/") };
+  }
+  if (["click", "check", "tap"].includes(action) || "click" in step || "check" in step) {
+    const explicitCss = typeof step.css === "string" ? step.css : typeof step.selector === "string" ? step.selector : undefined;
+    const target = explicitCss
+      ? normalizeFlowTarget(explicitCss, { forceCss: true })
+      : normalizeFlowTarget(step.click ?? step.check ?? step.target ?? step);
     return target === undefined ? undefined : { click: target };
   }
-  if (["fill", "type", "input"].includes(action) || "fill" in step) {
-    const target = normalizeFlowTarget(step.fill ?? step.target ?? step.selector ?? step.css ?? step);
-    return target === undefined ? undefined : { fill: target, value: String(step.value ?? step.textValue ?? step.input ?? "") };
+  if (["fill", "type", "input", "select"].includes(action) || "fill" in step || "select" in step) {
+    const fillObj = step.fill && typeof step.fill === "object" && !Array.isArray(step.fill) ? step.fill : undefined;
+    const targetObj = step.target && typeof step.target === "object" && !Array.isArray(step.target) ? step.target : undefined;
+    const fillValue = String(
+      step.value ??
+      step.textValue ??
+      step.input ??
+      step.text ??
+      fillObj?.value ??
+      fillObj?.textValue ??
+      fillObj?.input ??
+      fillObj?.text ??
+      targetObj?.value ??
+      ""
+    );
+    const explicitCss = typeof step.css === "string" ? step.css : typeof step.selector === "string" ? step.selector : undefined;
+    const rawTarget = isTypeShorthand
+      ? step.type
+      : (explicitCss ?? step.fill ?? step.select ?? step.target ?? step);
+    const target = explicitCss
+      ? normalizeFlowTarget(explicitCss, { forceCss: true, ignoreText: true })
+      : normalizeFlowTarget(rawTarget, { ignoreText: true });
+    return target === undefined ? undefined : { fill: target, value: fillValue };
   }
-  if (action === "press" || "press" in step) return { press: String(step.press ?? step.key ?? step.value ?? "Enter") };
-  if (["wait", "sleep"].includes(action) || "wait" in step || "waitMs" in step) return { waitMs: Number(step.ms ?? step.timeout ?? step.waitMs ?? step.value ?? step.wait ?? 500) };
+  if (["press", "key"].includes(action) || "press" in step) {
+    return { press: String(step.press ?? step.key ?? step.value ?? "Enter") };
+  }
+  if (["wait", "sleep"].includes(action) || "wait" in step || "waitMs" in step) {
+    return { waitMs: Number(step.ms ?? step.timeout ?? step.waitMs ?? step.value ?? step.wait ?? 500) };
+  }
   if (["expecthidden", "asserthidden"].includes(action) || "expectHidden" in step) {
-    const target = normalizeFlowTarget(step.expectHidden ?? step.target ?? step.selector ?? step.css ?? step.text ?? step.value);
+    const explicitCss = typeof step.css === "string" ? step.css : typeof step.selector === "string" ? step.selector : undefined;
+    const target = explicitCss
+      ? normalizeFlowTarget(explicitCss, { forceCss: true })
+      : normalizeFlowTarget(step.expectHidden ?? step.target ?? step.text ?? step.value ?? step);
     return target === undefined ? undefined : { expectHidden: target };
   }
-  if (["expecturl", "asserturl"].includes(action) || "expectUrl" in step) return { expectUrl: String(step.expectUrl ?? step.url ?? step.value ?? step.target ?? "") };
+  if (["expecturl", "asserturl"].includes(action) || "expectUrl" in step) {
+    return { expectUrl: String(step.expectUrl ?? step.url ?? step.value ?? step.target ?? "") };
+  }
   if (["expectvisible", "assertvisible", "asserttext", "expecttext", "assert", "verify"].includes(action) || "expectVisible" in step || "expectText" in step) {
     const textAssert = ["asserttext", "expecttext"].includes(action) || "expectText" in step;
-    const target = normalizeFlowTarget(step.expectText ?? step.expectVisible ?? step.target ?? step.selector ?? step.css ?? step.text ?? step.value);
+    const explicitCss = typeof step.css === "string" ? step.css : typeof step.selector === "string" ? step.selector : undefined;
+    const expectTextObj = step.expectText && typeof step.expectText === "object" && !Array.isArray(step.expectText) ? step.expectText : undefined;
+    const containsVal =
+      typeof step.contains === "string" ? step.contains
+      : typeof expectTextObj?.contains === "string" ? expectTextObj.contains
+      : typeof step.text === "string" && (explicitCss || step.target || step.expectText) ? step.text
+      : typeof step.value === "string" && (explicitCss || step.target || step.expectText) ? step.value
+      : typeof step.text === "string" ? step.text
+      : undefined;
+    const equalsVal =
+      typeof step.equals === "string" ? step.equals
+      : typeof expectTextObj?.equals === "string" ? expectTextObj.equals
+      : undefined;
+    const matchesVal =
+      typeof step.matches === "string" ? step.matches
+      : typeof expectTextObj?.matches === "string" ? expectTextObj.matches
+      : undefined;
+    let target = explicitCss
+      ? normalizeFlowTarget(explicitCss, { forceCss: true, ignoreText: Boolean(containsVal || equalsVal || matchesVal) })
+      : normalizeFlowTarget(step.expectText ?? step.expectVisible ?? step.target ?? step.text ?? step.value ?? step);
+    if (textAssert && typeof step.expectText === "string" && !equalsVal && !containsVal && !matchesVal) {
+      target = { css: "body" };
+      return { expectText: target, contains: step.expectText };
+    }
     if (target === undefined) return undefined;
-    if (textAssert) return { expectText: target, ...(typeof step.equals === "string" ? { equals: step.equals } : {}), ...(typeof step.contains === "string" ? { contains: step.contains } : typeof step.text === "string" ? { contains: step.text } : {}) };
+    if (textAssert) {
+      return {
+        expectText: target,
+        ...(equalsVal !== undefined ? { equals: equalsVal } : {}),
+        ...(containsVal !== undefined ? { contains: containsVal } : {}),
+        ...(matchesVal !== undefined ? { matches: matchesVal } : {}),
+      };
+    }
     return { expectVisible: target, ...(typeof step.timeoutMs === "number" ? { timeoutMs: step.timeoutMs } : {}) };
   }
   if (typeof step.wait === "number") return { waitMs: step.wait };
@@ -463,6 +678,8 @@ async function runFlow(payload) {
   suppressPageSwitchCount++;
   try {
     checkPage = await activePage.context().newPage();
+    checkPage.setDefaultTimeout(5_000);
+    checkPage.setDefaultNavigationTimeout(15_000);
     internalPages.add(checkPage);
   } finally {
     suppressPageSwitchCount--;
@@ -508,21 +725,49 @@ async function runFlow(payload) {
         const response = await checkPage.goto(url, { waitUntil: "load", timeout: 15_000 });
         if (!response) throw new Error(`goto failed: ${url}`);
         if (response.status() >= 500) failedRequests.push(`GET ${url} -> ${response.status()}`);
+        await moveAiCursorOnPage(checkPage, 640, 360, "navigate", `Open · ${new URL(url).pathname || "/"}`);
+        await emitFreshCastFrame(checkPage);
         record(i, step, { url: checkPage.url(), status: response.status() });
       } else if ("click" in step) {
-        const loc = flowLocator(step.click, checkPage).first();
-        const box = await loc.boundingBox().catch(() => null);
-        if (box) await moveAiCursorOnPage(checkPage, box.x + box.width / 2, box.y + box.height / 2, "click", `Click · ${typeof step.click === "string" ? step.click : (step.click?.name || step.click?.text || "element")}`);
-        await loc.click({ timeout: 5_000 });
+        const loc = await resolveClickLocator(step.click, checkPage);
+        const box = await loc.boundingBox({ timeout: 1_200 }).catch(() => null);
+        const labelStr = typeof step.click === "string"
+          ? step.click
+          : (step.click?.name || step.click?.text || step.click?.label || step.click?.css || "element");
+        if (box) await moveAiCursorOnPage(checkPage, box.x + box.width / 2, box.y + box.height / 2, "click", `Click · ${labelStr}`);
+        try {
+          await loc.click({ timeout: 4_500 });
+        } catch (clickErr) {
+          // Fallback to force click for custom-styled radios/checkboxes wrapped in labels
+          try {
+            await loc.click({ timeout: 1_500, force: true });
+          } catch {
+            throw clickErr;
+          }
+        }
+        await emitFreshCastFrame(checkPage);
         record(i, step, "clicked");
       } else if ("fill" in step) {
-        const loc = flowLocator(step.fill, checkPage).first();
-        const box = await loc.boundingBox().catch(() => null);
-        if (box) await moveAiCursorOnPage(checkPage, box.x + box.width / 2, box.y + box.height / 2, "type", `Type · ${String(step.value ?? "").slice(0, 24)}`);
-        await loc.fill(String(step.value ?? ""), { timeout: 5_000 });
+        const loc = await resolveFillLocator(step.fill, checkPage);
+        const box = await loc.boundingBox({ timeout: 1_200 }).catch(() => null);
+        const fillVal = String(step.value ?? "");
+        if (box) await moveAiCursorOnPage(checkPage, box.x + box.width / 2, box.y + box.height / 2, "type", `Type · ${fillVal.slice(0, 24)}`);
+        const tagInfo = await loc.evaluate((el) => ({
+          tag: (el.tagName || "").toLowerCase(),
+          type: (el.getAttribute("type") || "").toLowerCase(),
+        })).catch(() => ({ tag: "input", type: "text" }));
+        if (tagInfo.tag === "select") {
+          await loc.selectOption(fillVal, { timeout: 5_000 });
+        } else if (tagInfo.type === "checkbox" || tagInfo.type === "radio") {
+          await loc.check({ timeout: 5_000, force: true });
+        } else {
+          await loc.fill(fillVal, { timeout: 5_000 });
+        }
+        await emitFreshCastFrame(checkPage);
         record(i, step, "filled");
       } else if ("press" in step) {
         await checkPage.keyboard.press(String(step.press));
+        await emitFreshCastFrame(checkPage);
         record(i, step, "pressed");
       } else if ("expectVisible" in step) {
         await flowLocator(step.expectVisible, checkPage).first().waitFor({ state: "visible", timeout: Math.min(5_000, Math.max(1, Number(step.timeoutMs) || 5_000)) });
@@ -540,6 +785,9 @@ async function runFlow(payload) {
         let matched = false;
         do {
           actual = (await flowLocator(step.expectText, checkPage).first().innerText({ timeout: 1_000 }).catch(() => "")).trim();
+          if (!actual) {
+            actual = (await flowLocator(step.expectText, checkPage).first().inputValue({ timeout: 500 }).catch(() => "")).trim();
+          }
           matched = (step.equals === undefined || actual === step.equals) &&
             (step.contains === undefined || actual.includes(step.contains)) &&
             (step.matches === undefined || new RegExp(step.matches).test(actual));
@@ -558,12 +806,15 @@ async function runFlow(payload) {
       if (failOnConsoleErrors && errors.length) throw new Error(`page errors: ${errors.slice(0, 3).join(" | ")}`);
       if (failedRequests.length) throw new Error(`failed requests: ${failedRequests.slice(0, 3).join(" | ")}`);
     }
+    if (!activePage.url() || activePage.url() === "about:blank") {
+      await activePage.goto(checkPage.url() || baseUrl, { waitUntil: "domcontentloaded", timeout: 5_000 }).catch(() => {});
+    }
     await snapshot().catch(() => {});
     const screenshotJpegBase64 = await emitFreshCastFrame(checkPage);
     return { passed: true, failedStep: -1, log, text: await evidenceText(), url: checkPage.url(), errors, failedRequests, cursor: lastCursor, screenshotJpegBase64 };
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
-    const image = await checkPage.screenshot({ type: "jpeg", quality: 50 }).catch(() => null);
+    const screenshotJpegBase64 = await emitFreshCastFrame(checkPage);
     return {
       passed: false,
       failedStep,
@@ -574,7 +825,7 @@ async function runFlow(payload) {
       log: log.slice(-20),
       errors: errors.slice(-20),
       failedRequests: failedRequests.slice(-20),
-      screenshotJpegBase64: image?.toString("base64") ?? null,
+      screenshotJpegBase64,
     };
   } finally {
     await checkPage.close().catch(() => {});
@@ -656,7 +907,7 @@ async function handleCommand(command) {
       else await activePage.goto(target, { waitUntil: "domcontentloaded", timeout: 15_000 });
       await moveAiCursorOnPage(activePage, 640, 360, "navigate", `Open · ${new URL(target).pathname || "/"}`);
       const snap = await snapshot();
-      const screenshotJpegBase64 = await emitFreshCastFrame(checkPage);
+      const screenshotJpegBase64 = await emitFreshCastFrame(activePage);
       return {
         id,
         status: 200,
@@ -673,7 +924,7 @@ async function handleCommand(command) {
 
     if (action === "snapshot") {
       const snap = await snapshot();
-      const screenshotJpegBase64 = await emitFreshCastFrame(checkPage);
+      const screenshotJpegBase64 = await emitFreshCastFrame(activePage);
       return { id, status: 200, body: { ...snap, cursor: lastCursor, screenshotJpegBase64 } };
     }
 
@@ -707,7 +958,7 @@ async function handleCommand(command) {
         await activePage.mouse.click(cx, cy, { clickCount: payload.doubleClick ? 2 : 1 });
         await activePage.waitForTimeout(120);
         const snap = await snapshot();
-        const screenshotJpegBase64 = await emitFreshCastFrame(checkPage);
+        const screenshotJpegBase64 = await emitFreshCastFrame(activePage);
         return {
           id,
           status: 200,
@@ -745,7 +996,7 @@ async function handleCommand(command) {
       }
       await activePage.waitForTimeout(120);
       const snap = await snapshot();
-      const screenshotJpegBase64 = await emitFreshCastFrame(checkPage);
+      const screenshotJpegBase64 = await emitFreshCastFrame(activePage);
       return {
         id,
         status: 200,
@@ -763,7 +1014,7 @@ async function handleCommand(command) {
     }
 
     if (action === "type") {
-      const value = String(payload.text ?? "").slice(0, 10_000);
+      const value = String(payload.text ?? payload.value ?? "").slice(0, 10_000);
       if (typeof payload.x === "number" && typeof payload.y === "number" && !payload.ref) {
         const cx = Math.max(0, Math.min(VIEWPORT.width - 1, Math.round(payload.x)));
         const cy = Math.max(0, Math.min(VIEWPORT.height - 1, Math.round(payload.y)));
@@ -773,7 +1024,7 @@ async function handleCommand(command) {
         if (payload.pressEnter) await activePage.keyboard.press("Enter");
         await activePage.waitForTimeout(120);
         const snap = await snapshot();
-        const screenshotJpegBase64 = await emitFreshCastFrame(checkPage);
+        const screenshotJpegBase64 = await emitFreshCastFrame(activePage);
         return {
           id,
           status: 200,
@@ -816,7 +1067,7 @@ async function handleCommand(command) {
       if (payload.pressEnter) await activePage.keyboard.press("Enter");
       await activePage.waitForTimeout(120);
       const snap = await snapshot();
-      const screenshotJpegBase64 = await emitFreshCastFrame(checkPage);
+      const screenshotJpegBase64 = await emitFreshCastFrame(activePage);
       return {
         id,
         status: 200,
@@ -839,7 +1090,7 @@ async function handleCommand(command) {
       await activePage.keyboard.press(key);
       await activePage.waitForTimeout(100);
       const snap = await snapshot();
-      const screenshotJpegBase64 = await emitFreshCastFrame(checkPage);
+      const screenshotJpegBase64 = await emitFreshCastFrame(activePage);
       return {
         id,
         status: 200,

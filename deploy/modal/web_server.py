@@ -116,6 +116,7 @@ server_image = (
     secrets=[
         modal.Secret.from_name("openharness-server"),
         modal.Secret.from_name("openharness-sandbox-key"),
+        modal.Secret.from_name("openharness-muse-glimmer"),
     ],
     cpu=0.5,
     memory=1024,

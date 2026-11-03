@@ -45,6 +45,8 @@ export const Composer = forwardRef<
   {
     agentName: string;
     isPlanMode?: boolean;
+    runMode?: "task" | "ask";
+    onRunModeChange?: (mode: "task" | "ask") => void;
     commands: CommandInfo[];
     active: boolean;
     sending: boolean;
@@ -58,6 +60,8 @@ export const Composer = forwardRef<
   {
     agentName: _agentName,
     isPlanMode = false,
+    runMode = "task",
+    onRunModeChange,
     commands,
     active,
     sending,
@@ -161,7 +165,7 @@ export const Composer = forwardRef<
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = `${Math.min(240, el.scrollHeight)}px`;
+    el.style.height = `${Math.min(200, el.scrollHeight)}px`;
   }, [text]);
 
   const slashQuery = useMemo(() => {
@@ -258,8 +262,6 @@ export const Composer = forwardRef<
     }
   };
 
-  const placeholder = "Message…";
-
   const activeCmdId =
     slashOpen && matchingCommands[slashIndex]
       ? `${slashListboxId}-cmd-${slashIndex}`
@@ -267,7 +269,7 @@ export const Composer = forwardRef<
 
   return (
     <div
-      className="mx-auto w-full max-w-[720px] px-4 pb-4 max-[420px]:mx-0 max-[420px]:max-w-none max-[420px]:px-2"
+      className="mx-auto w-full max-w-[740px] px-4 pb-3 max-[420px]:mx-0 max-[420px]:max-w-none max-[420px]:px-2"
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) e.preventDefault();
       }}
@@ -281,13 +283,13 @@ export const Composer = forwardRef<
       <div className="relative">
         {attachMenuOpen && (
           <div role="menu" aria-label="Add attachments" className="absolute bottom-full left-0 z-30 mb-2 w-52 rounded-xl border border-border bg-bg p-1 shadow-menu animate-fade-in">
-            <button type="button" role="menuitem" onClick={() => fileInputRef.current?.click()} className="touch-target flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-fg hover:bg-hover">
-              <FileText className="size-4 text-accent" aria-hidden="true" /> Add files
+            <button type="button" role="menuitem" onClick={() => fileInputRef.current?.click()} className="touch-target flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium text-fg hover:bg-hover">
+              <FileText className="size-3.5 text-accent" aria-hidden="true" /> Add files
             </button>
-            <button type="button" role="menuitem" onClick={() => folderInputRef.current?.click()} className="touch-target flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-fg hover:bg-hover">
-              <FolderUp className="size-4 text-accent" aria-hidden="true" /> Add folder
+            <button type="button" role="menuitem" onClick={() => folderInputRef.current?.click()} className="touch-target flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium text-fg hover:bg-hover">
+              <FolderUp className="size-3.5 text-accent" aria-hidden="true" /> Add folder
             </button>
-            <p className="px-3 pb-2 pt-1 text-[11px] text-muted">Up to 100 files, 20 MB total. Code mode can work with any file type.</p>
+            <p className="px-3 pb-1.5 pt-1 text-[11px] text-muted">Up to 100 files, 20 MB total.</p>
           </div>
         )}
         <input ref={fileInputRef} type="file" multiple className="sr-only" aria-hidden="true" tabIndex={-1} onChange={(e) => { if (e.currentTarget.files) addFiles(e.currentTarget.files); e.currentTarget.value = ""; }} />
@@ -312,7 +314,7 @@ export const Composer = forwardRef<
                     e.preventDefault();
                     pickCommand(cmd);
                   }}
-                  className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg px-3 py-2 text-xs transition-colors duration-150 ease-out ${
+                  className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg px-3 py-2 text-xs transition-colors ${
                     isSelected ? "bg-hover text-fg" : "text-fg hover:bg-hover/70"
                   }`}
                 >
@@ -340,18 +342,18 @@ export const Composer = forwardRef<
         )}
 
         <div
-          className={`rounded-2xl border border-border bg-elev p-2 shadow-card transition-colors duration-150 ease-out focus-within:border-accent focus-within:bg-bg ${
+          className={`rounded-2xl border border-border bg-elev px-3 pt-2.5 pb-2 shadow-card transition-colors duration-150 ease-out focus-within:border-accent/60 focus-within:bg-bg ${
             disabled ? "opacity-40 pointer-events-none" : ""
           }`}
         >
           {attachments.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-2 border-b border-border px-1 pb-2">
+            <div className="mb-2 flex flex-wrap gap-1.5 border-b border-border pb-2">
               {attachments.map((item, index) => (
-                <div key={`${item.groupId}:${item.relativePath}:${index}`} title={item.relativePath} className="flex max-w-full items-center gap-2 rounded-xl border border-border bg-bg px-2 py-1.5 text-xs">
+                <div key={`${item.groupId}:${item.relativePath}:${index}`} title={item.relativePath} className="flex max-w-full items-center gap-1.5 rounded-lg border border-border bg-bg px-2 py-1 text-xs">
                   <FileText className="size-3.5 shrink-0 text-accent" aria-hidden="true" />
                   <span className="max-w-44 truncate text-fg">{item.relativePath}</span>
                   <span className="shrink-0 text-muted">{formatBytes(item.file.size)}</span>
-                  <button type="button" onClick={() => setAttachments((current) => current.filter((_, i) => i !== index))} aria-label={`Remove ${item.file.name}`} className="touch-target inline-flex size-5 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-fg">
+                  <button type="button" onClick={() => setAttachments((current) => current.filter((_, i) => i !== index))} aria-label={`Remove ${item.file.name}`} className="touch-target inline-flex size-4 items-center justify-center rounded text-muted hover:bg-hover hover:text-fg">
                     <X className="size-3" aria-hidden="true" />
                   </button>
                 </div>
@@ -359,8 +361,8 @@ export const Composer = forwardRef<
             </div>
           )}
           {verifyEnabled && (
-            <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-border px-2 pb-2 text-xs">
-              <span className="font-medium text-fg">Verify &amp; fix with</span>
+            <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-border pb-2 text-xs">
+              <span className="font-medium text-fg">Verify with</span>
               <input
                 ref={verifyInputRef}
                 type="text"
@@ -378,143 +380,157 @@ export const Composer = forwardRef<
                 }}
                 placeholder="bun test"
                 aria-label="Verify and fix command"
-                className="h-7 min-w-[10rem] flex-1 rounded-lg border border-border bg-bg px-2 font-mono text-xs text-fg placeholder:text-muted focus-visible:border-accent"
+                className="h-6 min-w-[8rem] flex-1 rounded-md border border-border bg-bg px-2 font-mono text-xs text-fg placeholder:text-muted focus-visible:border-accent"
               />
-              {trimmedCmd ? (
-                <span className="text-xs text-muted">
-                  Runs after the turn; failures go back to the agent
-                </span>
-              ) : (
-                <span className="text-xs font-medium text-warning">
-                  Enter a command to enable
-                </span>
-              )}
               <button
                 type="button"
                 onClick={() => updateVerifyEnabled(false)}
                 aria-label="Disable verify and fix"
-                title="Disable verify and fix"
-                className="touch-target inline-flex size-6 items-center justify-center rounded-lg text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg"
+                className="touch-target inline-flex size-5 items-center justify-center rounded text-muted hover:bg-hover hover:text-fg"
               >
-                <X className="size-3.5" aria-hidden="true" />
+                <X className="size-3" aria-hidden="true" />
               </button>
             </div>
           )}
 
-          <div className="flex items-end gap-2">
-            <button
-              type="button"
-              onClick={() => setAttachMenuOpen((open) => !open)}
-              aria-label="Add files or folder"
-              title="Add files or folder"
-              aria-expanded={attachMenuOpen}
-              className="touch-target inline-flex size-9 shrink-0 items-center justify-center rounded-xl text-muted transition-colors duration-150 ease-out hover:bg-hover hover:text-fg"
-            >
-              <Plus className={`size-5 transition-transform ${attachMenuOpen ? "rotate-45" : ""}`} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const next = !verifyEnabled;
-                updateVerifyEnabled(next);
-                if (next) {
-                  requestAnimationFrame(() => verifyInputRef.current?.focus());
-                }
-              }}
-              aria-label="Verify & fix toggle"
-              title="Verify & fix toggle"
-              aria-pressed={verifyEnabled}
-              className={`touch-target relative inline-flex size-9 shrink-0 items-center justify-center rounded-xl border transition-colors duration-150 ease-out ${
-                verifyEnabled
-                  ? "border-accent/30 bg-accent/10 text-accent"
-                  : "border-transparent text-muted hover:bg-hover hover:text-fg"
-              }`}
-            >
-              <Wrench className="size-4" aria-hidden="true" />
-              {verifyEnabled && trimmedCmd && (
-                <span
-                  className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-accent"
-                  aria-hidden="true"
-                />
-              )}
-            </button>
+          <textarea
+            ref={textareaRef}
+            id="oh-composer"
+            rows={1}
+            value={text}
+            disabled={disabled}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={isPlanMode ? "Ask or describe what to plan…" : "Message OpenHarness… (/ for commands)"}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={slashOpen}
+            aria-controls={slashOpen ? slashListboxId : undefined}
+            aria-activedescendant={activeCmdId}
+            className="max-h-48 min-h-[1.75rem] w-full resize-none bg-transparent text-sm leading-relaxed text-fg placeholder:text-muted focus:outline-none"
+          />
 
-            <textarea
-              ref={textareaRef}
-              id="oh-composer"
-              rows={1}
-              value={text}
-              disabled={disabled}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={placeholder}
-              role="combobox"
-              aria-autocomplete="list"
-              aria-expanded={slashOpen}
-              aria-controls={slashOpen ? slashListboxId : undefined}
-              aria-activedescendant={activeCmdId}
-              className="max-h-60 min-h-[2.25rem] flex-1 resize-none bg-transparent py-2 px-1 text-sm leading-normal text-fg placeholder:text-muted focus:outline-none"
-            />
-
-            <VoiceMicButton onTranscript={(transcript) => setText((current) => current ? `${current}${/\s$/.test(current) ? "" : " "}${transcript}` : transcript)} disabled={disabled || active || sending} />
-
-            {active ? (
+          {/* Compact Claude/ChatGPT bottom action toolbar inside the composer */}
+          <div className="mt-1.5 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={onStop}
-                disabled={stopping}
-                aria-label="Stop"
-                title="Stop"
-                className="touch-target inline-flex size-9 shrink-0 items-center justify-center rounded-xl bg-danger/15 text-danger transition-colors duration-150 ease-out hover:bg-danger/25 disabled:opacity-40"
+                onClick={() => setAttachMenuOpen((open) => !open)}
+                aria-label="Add files or folder"
+                title="Add files or folder"
+                aria-expanded={attachMenuOpen}
+                className="touch-target inline-flex size-7 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg"
               >
-                {stopping ? (
-                  <Spinner className="size-4" />
-                ) : (
-                  <Square
-                    className="size-3.5 fill-current"
-                    aria-hidden="true"
-                  />
-                )}
+                <Plus className={`size-4 transition-transform ${attachMenuOpen ? "rotate-45" : ""}`} aria-hidden="true" />
               </button>
-            ) : (
+
+              {onRunModeChange && (
+                <div className="inline-flex items-center rounded-lg border border-border/80 bg-bg p-0.5 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => onRunModeChange("task")}
+                    aria-pressed={runMode === "task"}
+                    className={`rounded-md px-2 py-0.5 font-medium transition-colors ${
+                      runMode === "task"
+                        ? "bg-accent text-accent-fg"
+                        : "text-muted hover:text-fg"
+                    }`}
+                  >
+                    Code
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onRunModeChange("ask")}
+                    aria-pressed={runMode === "ask"}
+                    className={`rounded-md px-2 py-0.5 font-medium transition-colors ${
+                      runMode === "ask"
+                        ? "bg-accent text-accent-fg"
+                        : "text-muted hover:text-fg"
+                    }`}
+                  >
+                    Ask
+                  </button>
+                </div>
+              )}
+
               <button
                 type="button"
-                onClick={submit}
-                disabled={!canSend}
-                aria-label="Send message"
-                title="Send message"
-                className={`touch-target inline-flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors duration-150 ease-out ${
-                  canSend
-                    ? "bg-accent text-accent-fg hover:bg-accent-strong"
-                    : "bg-hover text-muted opacity-50 pointer-events-none"
+                onClick={() => {
+                  const next = !verifyEnabled;
+                  updateVerifyEnabled(next);
+                  if (next) {
+                    requestAnimationFrame(() => verifyInputRef.current?.focus());
+                  }
+                }}
+                aria-label="Verify & fix toggle"
+                title="Verify & fix command"
+                aria-pressed={verifyEnabled}
+                className={`touch-target relative inline-flex size-7 shrink-0 items-center justify-center rounded-lg border transition-colors ${
+                  verifyEnabled
+                    ? "border-accent/30 bg-accent/10 text-accent"
+                    : "border-transparent text-muted hover:bg-hover hover:text-fg"
                 }`}
               >
-                {sending ? (
-                  <Spinner className="size-4" />
-                ) : (
-                  <ArrowUp className="size-4" aria-hidden="true" />
-                )}
+                <Wrench className="size-3.5" aria-hidden="true" />
               </button>
-            )}
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <VoiceMicButton
+                onTranscript={(transcript) =>
+                  setText((current) =>
+                    current ? `${current}${/\s$/.test(current) ? "" : " "}${transcript}` : transcript
+                  )
+                }
+                disabled={disabled || active || sending}
+              />
+
+              {active ? (
+                <button
+                  type="button"
+                  onClick={onStop}
+                  disabled={stopping}
+                  aria-label="Stop"
+                  title="Stop"
+                  className="touch-target inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-danger/15 text-danger transition-colors hover:bg-danger/25 disabled:opacity-40"
+                >
+                  {stopping ? (
+                    <Spinner className="size-3.5" />
+                  ) : (
+                    <Square className="size-3 fill-current" aria-hidden="true" />
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={submit}
+                  disabled={!canSend}
+                  aria-label="Send message"
+                  title="Send message"
+                  className={`touch-target inline-flex size-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
+                    canSend
+                      ? "bg-accent text-accent-fg hover:bg-accent-strong"
+                      : "bg-hover text-muted opacity-50 pointer-events-none"
+                  }`}
+                >
+                  {sending ? (
+                    <Spinner className="size-3.5" />
+                  ) : (
+                    <ArrowUp className="size-4" aria-hidden="true" />
+                  )}
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
-        {attachmentError && <p role="alert" className="mt-2 px-1 text-xs text-danger">{attachmentError}</p>}
+        {attachmentError && <p role="alert" className="mt-1.5 px-1 text-xs text-danger">{attachmentError}</p>}
 
         {uploadProgress && (
-          <div className="mt-2 px-1 text-xs text-muted" role="status" aria-live="polite">
+          <div className="mt-1.5 px-1 text-xs text-muted" role="status" aria-live="polite">
             Uploading files {uploadProgress.completed}/{uploadProgress.total}…
           </div>
         )}
-        <div className="mt-2 hidden md:flex items-center justify-between px-1 text-xs text-muted">
-          <span>
-            Enter to send · Shift+Enter for a new line · / for commands
-            {verifyEnabled && trimmedCmd
-              ? ` · will verify with ${trimmedCmd}`
-              : ""}
-          </span>
-          {isPlanMode && <span>plan mode is read-only</span>}
-        </div>
       </div>
     </div>
   );

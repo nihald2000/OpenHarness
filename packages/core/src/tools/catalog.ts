@@ -68,21 +68,58 @@ function pngChunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([length, name, data, checksum]);
 }
 
-function normalizeBrowserTarget(raw: unknown): BrowserCheckTarget | string | undefined {
-  if (typeof raw === "string") return raw.trim() || undefined;
+const KNOWN_BROWSER_CHECK_ACTIONS = new Set([
+  "navigate", "goto", "open",
+  "click", "check", "tap",
+  "fill", "type", "input", "select",
+  "press", "key",
+  "wait", "sleep",
+  "expecthidden", "asserthidden",
+  "expecturl", "asserturl",
+  "expectvisible", "assertvisible",
+  "asserttext", "expecttext", "assert", "verify",
+]);
+
+function normalizeBrowserTarget(
+  raw: unknown,
+  opts?: { forceCss?: boolean; ignoreText?: boolean }
+): BrowserCheckTarget | string | undefined {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return undefined;
+    if (opts?.forceCss) return { css: trimmed.replace(/^css=/i, "").trim() };
+    return trimmed;
+  }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const value = raw as Record<string, unknown>;
+  if (typeof value.target === "string" && value.target.trim()) {
+    return opts?.forceCss ? { css: value.target.trim() } : value.target.trim();
+  }
   const target = value.target && typeof value.target === "object" && !Array.isArray(value.target)
     ? value.target as Record<string, unknown> : value;
-  const role = typeof target.role === "string" ? target.role : undefined;
+  const role = typeof target.role === "string" && target.role.trim() ? target.role.trim() : undefined;
   const name = typeof target.name === "string" ? target.name : undefined;
-  const label = typeof target.label === "string" ? target.label : undefined;
-  const text = typeof target.text === "string" ? target.text : undefined;
-  const css = typeof target.css === "string" ? target.css
-    : typeof target.selector === "string" ? target.selector : undefined;
-  if (!role && !label && !text && !css) return undefined;
+  const label = typeof target.label === "string" && target.label.trim()
+    ? target.label.trim()
+    : typeof target.placeholder === "string" && target.placeholder.trim()
+    ? target.placeholder.trim()
+    : undefined;
+  const css = typeof target.css === "string" && target.css.trim()
+    ? target.css.trim()
+    : typeof target.selector === "string" && target.selector.trim()
+    ? target.selector.trim()
+    : undefined;
+  const text = !opts?.ignoreText && !css && typeof target.text === "string" && target.text.trim()
+    ? target.text.trim()
+    : undefined;
+  if (!role && !label && !text && !css) {
+    if (typeof target.name === "string" && target.name.trim()) {
+      return { css: `[name="${target.name.trim().replace(/"/g, '\"')}"]` };
+    }
+    return undefined;
+  }
   return {
-    ...(role ? { role, name: name ?? text ?? label ?? "" } : {}),
+    ...(role ? { role, name: name ?? (opts?.ignoreText ? undefined : text) ?? label ?? "" } : {}),
     ...(label ? { label } : {}),
     ...(text ? { text } : {}),
     ...(css ? { css } : {}),
@@ -100,34 +137,103 @@ export function normalizeBrowserCheckSteps(rawSteps: unknown[]): BrowserCheckSte
       normalized.push({ goto: String(step.goto ?? step.navigate ?? step.url) });
       continue;
     }
-    const action = String(step.action ?? step.type ?? "").toLowerCase().replaceAll("_", "");
+    const rawAction = String(step.action ?? step.type ?? "").toLowerCase().replaceAll("_", "");
+    const isTypeShorthand =
+      step.action === undefined &&
+      typeof step.type === "string" &&
+      !KNOWN_BROWSER_CHECK_ACTIONS.has(rawAction) &&
+      (step.value !== undefined || step.text !== undefined || step.textValue !== undefined || step.input !== undefined);
+    const action = isTypeShorthand ? "type" : rawAction;
+
     if (["navigate", "goto", "open"].includes(action)) {
       normalized.push({ goto: String(step.path ?? step.url ?? step.value ?? step.target ?? "/") });
-    } else if (action === "click" || "click" in step) {
-      const target = normalizeBrowserTarget(step.click ?? step.target ?? step.selector ?? step.css ?? step);
+    } else if (["click", "check", "tap"].includes(action) || "click" in step || "check" in step) {
+      const explicitCss = typeof step.css === "string" ? step.css : typeof step.selector === "string" ? step.selector : undefined;
+      const target = explicitCss
+        ? normalizeBrowserTarget(explicitCss, { forceCss: true })
+        : normalizeBrowserTarget(step.click ?? step.check ?? step.target ?? step);
       if (!target) return undefined;
       normalized.push({ click: target });
-    } else if (["fill", "type", "input"].includes(action) || "fill" in step) {
-      const target = normalizeBrowserTarget(step.fill ?? step.target ?? step.selector ?? step.css ?? step);
+    } else if (["fill", "type", "input", "select"].includes(action) || "fill" in step || "select" in step) {
+      const fillObj = step.fill && typeof step.fill === "object" && !Array.isArray(step.fill)
+        ? (step.fill as Record<string, unknown>)
+        : undefined;
+      const targetObj = step.target && typeof step.target === "object" && !Array.isArray(step.target)
+        ? (step.target as Record<string, unknown>)
+        : undefined;
+      const fillValue = String(
+        step.value ??
+        step.textValue ??
+        step.input ??
+        step.text ??
+        fillObj?.value ??
+        fillObj?.textValue ??
+        fillObj?.input ??
+        fillObj?.text ??
+        targetObj?.value ??
+        ""
+      );
+      const explicitCss = typeof step.css === "string" ? step.css : typeof step.selector === "string" ? step.selector : undefined;
+      const rawTarget = isTypeShorthand
+        ? step.type
+        : (explicitCss ?? step.fill ?? step.select ?? step.target ?? step);
+      const target = explicitCss
+        ? normalizeBrowserTarget(explicitCss, { forceCss: true, ignoreText: true })
+        : normalizeBrowserTarget(rawTarget, { ignoreText: true });
       if (!target) return undefined;
-      normalized.push({ fill: target, value: String(step.value ?? step.textValue ?? step.input ?? "") });
-    } else if (action === "press" || "press" in step) {
+      normalized.push({ fill: target, value: fillValue });
+    } else if (["press", "key"].includes(action) || "press" in step) {
       normalized.push({ press: String(step.press ?? step.key ?? step.value ?? "Enter") });
     } else if (["wait", "sleep"].includes(action) || "wait" in step || "waitMs" in step) {
       normalized.push({ waitMs: Number(step.ms ?? step.timeout ?? step.waitMs ?? step.value ?? step.wait ?? 500) });
     } else if (["expecthidden", "asserthidden"].includes(action) || "expectHidden" in step) {
-      const target = normalizeBrowserTarget(step.expectHidden ?? step.target ?? step.selector ?? step.css ?? step.text ?? step.value);
+      const explicitCss = typeof step.css === "string" ? step.css : typeof step.selector === "string" ? step.selector : undefined;
+      const target = explicitCss
+        ? normalizeBrowserTarget(explicitCss, { forceCss: true })
+        : normalizeBrowserTarget(step.expectHidden ?? step.target ?? step.text ?? step.value ?? step);
       if (!target) return undefined;
       normalized.push({ expectHidden: target });
     } else if (["expecturl", "asserturl"].includes(action) || "expectUrl" in step) {
       normalized.push({ expectUrl: String(step.expectUrl ?? step.url ?? step.value ?? step.target ?? "") });
     } else if (["expectvisible", "assertvisible", "asserttext", "expecttext", "assert", "verify"].includes(action) || "expectVisible" in step || "expectText" in step) {
       const textAssert = action === "asserttext" || action === "expecttext" || "expectText" in step;
-      const rawTarget = step.expectText ?? step.expectVisible ?? step.target ?? step.selector ?? step.css ?? step.text ?? step.value;
-      const target = normalizeBrowserTarget(rawTarget);
+      const explicitCss = typeof step.css === "string" ? step.css : typeof step.selector === "string" ? step.selector : undefined;
+      const expectTextObj = step.expectText && typeof step.expectText === "object" && !Array.isArray(step.expectText)
+        ? (step.expectText as Record<string, unknown>)
+        : undefined;
+      const containsVal =
+        typeof step.contains === "string" ? step.contains
+        : typeof expectTextObj?.contains === "string" ? expectTextObj.contains
+        : typeof step.text === "string" && Boolean(explicitCss || step.target || step.expectText) ? step.text
+        : typeof step.value === "string" && Boolean(explicitCss || step.target || step.expectText) ? step.value
+        : typeof step.text === "string" ? step.text
+        : undefined;
+      const equalsVal =
+        typeof step.equals === "string" ? step.equals
+        : typeof expectTextObj?.equals === "string" ? expectTextObj.equals
+        : undefined;
+      const matchesVal =
+        typeof step.matches === "string" ? step.matches
+        : typeof expectTextObj?.matches === "string" ? expectTextObj.matches
+        : undefined;
+      let target = explicitCss
+        ? normalizeBrowserTarget(explicitCss, { forceCss: true, ignoreText: Boolean(containsVal || equalsVal || matchesVal) })
+        : normalizeBrowserTarget(step.expectText ?? step.expectVisible ?? step.target ?? step.text ?? step.value ?? step);
+      if (textAssert && typeof step.expectText === "string" && !equalsVal && !containsVal && !matchesVal) {
+        normalized.push({ expectText: { css: "body" }, contains: step.expectText });
+        continue;
+      }
       if (!target) return undefined;
-      if (textAssert) normalized.push({ expectText: target, ...(typeof step.equals === "string" ? { equals: step.equals } : {}), ...(typeof step.contains === "string" ? { contains: step.contains } : typeof step.text === "string" ? { contains: step.text } : {}) });
-      else normalized.push({ expectVisible: target, ...(typeof step.timeoutMs === "number" ? { timeoutMs: step.timeoutMs } : {}) });
+      if (textAssert) {
+        normalized.push({
+          expectText: target,
+          ...(equalsVal !== undefined ? { equals: equalsVal } : {}),
+          ...(containsVal !== undefined ? { contains: containsVal } : {}),
+          ...(matchesVal !== undefined ? { matches: matchesVal } : {}),
+        });
+      } else {
+        normalized.push({ expectVisible: target, ...(typeof step.timeoutMs === "number" ? { timeoutMs: step.timeoutMs } : {}) });
+      }
     } else if (typeof step.wait === "number") {
       normalized.push({ waitMs: step.wait });
     } else {
@@ -403,10 +509,30 @@ export class StandardToolRouter implements ToolRouter {
       : undefined;
     if (typeof rawRes.output === "string" || typeof fieldValue === "string") {
       const maxChars = name === "bash" ? 12_000 : name === "browser_snapshot" ? 8_000 : name === "process_logs" ? 6_000 : 16_000;
-      const bounded = enforceToolOutputLimit(typeof rawRes.output === "string" ? rawRes.output : fieldValue, callId, ctx.workspaceRoot, {
+      const rawToSpill = typeof rawRes.output === "string" ? rawRes.output : fieldValue;
+      const bounded = enforceToolOutputLimit(rawToSpill, callId, ctx.workspaceRoot, {
         maxChars,
         style: name === "process_logs" ? "tail" : "head-tail",
       });
+      if (bounded.truncated && bounded.spillPath) {
+        const fullText = typeof rawToSpill === "string" ? rawToSpill : JSON.stringify(rawToSpill, null, 2) ?? "";
+        if (this.opts.workspaceRoot && path.resolve(this.opts.workspaceRoot) !== path.resolve(ctx.workspaceRoot)) {
+          try {
+            const fallbackSpill = resolveInside(this.opts.workspaceRoot, bounded.spillPath);
+            fs.mkdirSync(path.dirname(fallbackSpill), { recursive: true });
+            fs.writeFileSync(fallbackSpill, fullText, "utf8");
+          } catch {}
+        }
+        const activeDaemon = ctx.sandboxHandleId ? getActiveSandboxDaemon(ctx.sandboxHandleId) : undefined;
+        if (activeDaemon) {
+          void activeDaemon.handleRequest(
+            "POST",
+            "/files/create",
+            { "x-session-key": activeDaemon.config.sessionKey },
+            { path: bounded.spillPath, content: fullText }
+          ).catch(() => {});
+        }
+      }
       return {
         ...rawRes,
         output: typeof rawRes.output === "string"
@@ -679,9 +805,27 @@ export class StandardToolRouter implements ToolRouter {
           const requestedPath = String(input.path ?? "");
           if (requestedPath.replace(/\\/g, "/").startsWith(".openharness/outputs/")) {
             try {
-              const target = resolveInside(ctx.workspaceRoot, requestedPath);
-              if (!fs.existsSync(target)) return { output: null, error: `File not found: ${requestedPath}` };
-              const content = fs.readFileSync(target, "utf8");
+              const candidateRoots = [ctx.workspaceRoot, this.opts.workspaceRoot].filter(Boolean);
+              let content: string | undefined;
+              for (const root of candidateRoots) {
+                try {
+                  const target = resolveInside(root, requestedPath);
+                  if (fs.existsSync(target)) {
+                    content = fs.readFileSync(target, "utf8");
+                    break;
+                  }
+                } catch {}
+              }
+              if (content === undefined) {
+                const activeDaemon = ctx.sandboxHandleId ? getActiveSandboxDaemon(ctx.sandboxHandleId) : undefined;
+                if (activeDaemon) {
+                  const res = await activeDaemon.handleRequest("POST", "/files/view", { "x-session-key": activeDaemon.config.sessionKey }, { path: requestedPath });
+                  if (res.status === 200 && typeof res.body.content === "string") {
+                    content = res.body.content;
+                  }
+                }
+              }
+              if (content === undefined) return { output: null, error: `File not found: ${requestedPath}` };
               const hasPaging = input.offset !== undefined || input.limit !== undefined;
               if (!hasPaging) return { output: content };
               const lines = content.split("\n");
@@ -856,11 +1000,20 @@ export class StandardToolRouter implements ToolRouter {
         },
         execute: async (input, ctx) => {
           const requestedPath = String(input.path ?? "").replace(/\\/g, "/");
-          if (requestedPath === ".openharness/outputs" || requestedPath.startsWith(".openharness/outputs/")) {
+          if (requestedPath === ".openharness" || requestedPath === ".openharness/outputs" || requestedPath.startsWith(".openharness/outputs/")) {
             try {
-              const target = resolveInside(ctx.workspaceRoot, requestedPath);
-              const entries = fs.readdirSync(target, { withFileTypes: true });
-              return { output: entries.map((entry) => ({ name: entry.name, type: entry.isDirectory() ? "directory" : "file" })) };
+              const seen = new Map<string, { name: string; type: "directory" | "file" }>();
+              for (const root of [ctx.workspaceRoot, this.opts.workspaceRoot].filter(Boolean)) {
+                try {
+                  const target = resolveInside(root, requestedPath);
+                  if (fs.existsSync(target) && fs.statSync(target).isDirectory()) {
+                    for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+                      seen.set(entry.name, { name: entry.name, type: entry.isDirectory() ? "directory" : "file" });
+                    }
+                  }
+                } catch {}
+              }
+              return { output: Array.from(seen.values()) };
             } catch (err) { return { output: null, error: (err as Error).message }; }
           }
           const d = await this.getDaemonAndHeaders(ctx);
@@ -1032,6 +1185,26 @@ export class StandardToolRouter implements ToolRouter {
         execute: async (input, ctx) => {
           const d = await this.getDaemonAndHeaders(ctx);
           if (!d) return { output: null, error: "bash requires an active sandbox" };
+          if (String(input.command ?? "").includes(".openharness")) {
+            for (const root of [ctx.workspaceRoot, this.opts.workspaceRoot].filter(Boolean)) {
+              try {
+                const outDir = path.join(root, ".openharness", "outputs");
+                if (fs.existsSync(outDir)) {
+                  for (const name of fs.readdirSync(outDir)) {
+                    const full = path.join(outDir, name);
+                    if (fs.statSync(full).isFile()) {
+                      await d.daemon.handleRequest(
+                        "POST",
+                        "/files/create",
+                        d.headers,
+                        { path: `.openharness/outputs/${name}`, content: fs.readFileSync(full, "utf8") }
+                      ).catch(() => {});
+                    }
+                  }
+                }
+              } catch {}
+            }
+          }
           const sid = String(input.sessionId ?? "main");
           const maxCmdSec = ctx.state.budgets.maxCommandSec ?? 1800;
           const timeoutSec = Math.min(maxCmdSec, Number(input.timeoutSec ?? 120));
@@ -1552,7 +1725,7 @@ export class StandardToolRouter implements ToolRouter {
 
       {
         name: "browser_check_def",
-        description: "Define and immediately run a repeatable browser verification flow against this run's local preview. Steps accept canonical goto/click/fill/press/waitMs/expectVisible/expectHidden/expectUrl forms and common {action|type, ...} forms, for example {action:'navigate',path:'/'} or {action:'assert_text',text:'VERIFIED'}. Once defined, do not weaken or replace it.",
+        description: "Define and run a repeatable browser check flow. Steps: {goto:'/'}, {click:'#btn'}, {fill:'#input',value:'hi'}, {expectVisible:'Done'}, or {expectText:'#out',contains:'ok'}. Once passing, do not weaken it.",
         readOnly: false,
         idempotent: false,
         requiresSandbox: true,
@@ -1629,7 +1802,8 @@ export class StandardToolRouter implements ToolRouter {
             const normalize = (value: BrowserCheck) => JSON.stringify({ port: value.port, steps: value.steps, failOnConsoleErrors: value.failOnConsoleErrors });
             const prevMeta = sameName as BrowserCheck & { locked?: boolean; filesCountAtDef?: number };
             const filesChangedSinceDef = typeof prevMeta.filesCountAtDef === "number" && prevMeta.filesCountAtDef !== filesCount;
-            const wasLocked = prevMeta.locked === true && !filesChangedSinceDef && !/repro|bug/i.test(name);
+            const isExpandingSteps = check.steps.length > sameName.steps.length;
+            const wasLocked = prevMeta.locked === true && !filesChangedSinceDef && !isExpandingSteps && !/repro|bug|probe|smoke/i.test(name);
             if (normalize(sameName) !== normalize(check)) {
               if (wasLocked) {
                 ctx.state.browserChecksHistory ??= [];

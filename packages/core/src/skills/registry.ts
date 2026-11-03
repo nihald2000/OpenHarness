@@ -139,15 +139,21 @@ Load this skill whenever building, scaffolding, or extending a web application, 
     name: "frontend-design",
     source: "builtin",
     description:
-      "Production UI/UX design system guidelines for clean typography, responsive layouts, accessible contrast, and polished interactive components.",
-    triggers: ["ui design", "styling", "css", "landing page", "component design", "ux"],
-    content: `# Frontend Design & UI Craft Skill
+      "Claude/Linear/Stripe-grade UI/UX design system guidelines for modern typography, refined neutral surfaces, accessible forms, and polished interactive components.",
+    triggers: ["ui design", "styling", "css", "landing page", "component design", "ux", "checkout", "dashboard", "web app"],
+    content: `# Frontend Design & UI Craft Skill (Claude / Linear / Stripe Standard)
 
-## Principles
-1. **Visual Hierarchy**: Use clear typographic scale, generous whitespace, consistent border radii, and subtle surface elevation.
-2. **Interactive Polish**: Every button, input, and card should have distinct hover, focus-visible, active, and disabled states.
-3. **Responsive by Default**: Use CSS Grid and Flexbox layouts that adapt cleanly from mobile (375px) to desktop (1440px+).
-4. **Accessibility**: Use semantic HTML landmarks, explicit \`aria-label\` attributes on icon buttons, and WCAG AA contrast.`,
+## Core Aesthetic & Layout Principles
+1. **Refined Neutral Surfaces & Crisp Borders**:
+   - Use warm alabaster/off-white (\`#fcfcfa\` / \`#f4f3ee\`) or deep slate/obsidian (\`#111318\` / \`#181b22\`) surfaces with subtle \`1px solid\` borders (\`rgba(0,0,0,0.08)\` or \`rgba(255,255,255,0.08)\`) and soft shadows (\`0 4px 20px rgba(0,0,0,0.06)\`).
+   - Avoid harsh neon gradients, clashing primary colors, or raw unstyled HTML boxes.
+2. **Typography & Spacing**:
+   - Use \`Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif\` with tight heading tracking (\`-0.02em\`), comfortable body line-height (\`1.55\`), and a consistent \`8px\` / \`12px\` / \`16px\` / \`24px\` spacing scale.
+3. **Clean User-Facing Surfaces (No Raw Debug Dumps)**:
+   - Never dump raw JSON \`<pre>\` debug state onto the primary user interface unless explicitly requested; use clean summary cards, badges, or a collapsible developer drawer.
+4. **Testable, Accessible Forms & Controls**:
+   - Always pair every \`<input>\`, \`<select>\`, and \`<textarea>\` with a stable \`id\`, \`name\`, \`placeholder\`, and an explicit \`<label for="...">\` so both human users and automated browser checks (\`browser_check_def\`) can target fields reliably.
+   - Give primary action buttons clear, unique IDs and descriptive text labels.`,
   },
   {
     id: "python-data-science",

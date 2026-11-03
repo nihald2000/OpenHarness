@@ -69,3 +69,45 @@ test("browser_check_def runs immediately, preserves its first definition, and hi
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   }
 });
+
+test("normalizeBrowserCheckSteps preserves CSS selectors, extracts text/value for fill/type steps, and read_file resolves .openharness/outputs across roots", async () => {
+  const { normalizeBrowserCheckSteps } = await import("../packages/core/src/tools/catalog.ts");
+  const normalized = normalizeBrowserCheckSteps([
+    { action: "navigate", path: "/" },
+    { action: "click", selector: "input[value='express']" },
+    { action: "type", selector: "#name", text: "Ada Lovelace" },
+    { type: "#email", text: "ada@example.com" },
+    { fill: "#zip", text: "94107" },
+    { action: "assert_text", selector: "#summary", text: "$75.00" },
+    { expectText: "Express" },
+  ]);
+  assert.deepEqual(normalized, [
+    { goto: "/" },
+    { click: { css: "input[value='express']" } },
+    { fill: { css: "#name" }, value: "Ada Lovelace" },
+    { fill: "#email", value: "ada@example.com" },
+    { fill: "#zip", value: "94107" },
+    { expectText: { css: "#summary" }, contains: "$75.00" },
+    { expectText: { css: "body" }, contains: "Express" },
+  ]);
+
+  const fallbackRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oh-outputs-fallback-"));
+  const sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oh-outputs-session-"));
+  try {
+    const outDir = path.join(fallbackRoot, ".openharness", "outputs");
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(path.join(outDir, "call_test123.txt"), "spilled content ok", "utf8");
+    const state = createInitialRunState({ runId: "r", sessionId: "s", tenantId: "t", mode: "task", phase: "building" });
+    const router = new StandardToolRouter({ workspaceRoot: fallbackRoot });
+    const ctx = { runId: "r", sessionId: "s", tenantId: "t", workspaceRoot: sessionRoot, state };
+    const readRes = await router.executeTool("c1", "read_file", { path: ".openharness/outputs/call_test123.txt" }, ctx);
+    assert.equal(readRes.error, undefined);
+    assert.equal(readRes.output, "spilled content ok");
+    const listRes = await router.executeTool("c2", "list", { path: ".openharness/outputs" }, ctx);
+    assert.equal(listRes.error, undefined);
+    assert.deepEqual(listRes.output, [{ name: "call_test123.txt", type: "file" }]);
+  } finally {
+    fs.rmSync(fallbackRoot, { recursive: true, force: true });
+    fs.rmSync(sessionRoot, { recursive: true, force: true });
+  }
+});

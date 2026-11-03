@@ -879,6 +879,8 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
           compacting={compacting}
           fix={fix}
           readOnly={readOnly}
+          browserOpen={browserDock !== "closed"}
+          studioOpen={studioOpen}
           onOpenBrowser={() => { setStudioOpen(false); setBrowserDock((current) => current === "closed" ? "docked" : "closed"); }}
           onOpenStudio={() => { setBrowserDock("closed"); setStudioOpen((current) => !current); }}
         />
@@ -954,28 +956,22 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
               </div>
             )}
 
-            {!takeover && (session?.status === "running" || session?.status === "awaiting_input") && session.sandboxHandleId && (
-              <div className="mx-auto mb-3 w-full max-w-[720px] px-4 text-right">
-                <button type="button" disabled={takeoverBusy} onClick={() => void requestTakeover()} className="rounded-lg border border-border bg-elev px-3 py-1.5 text-xs font-medium text-fg hover:bg-hover">{takeoverBusy ? "Requesting…" : "Take control of browser"}</button>
-              </div>
-            )}
-
             {pendingQuestion && (
-              <div className="mx-auto mb-3 w-full max-w-[720px] px-4">
-                <div className="rounded-xl border border-accent/40 bg-elev p-4 shadow-sm">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-accent">
+              <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
+                <div className="rounded-xl border border-accent/40 bg-elev p-3.5 shadow-sm">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-accent">
                     Clarifying Question
                   </div>
-                  <p className="mt-1 text-sm text-fg">{pendingQuestion.question}</p>
+                  <p className="mt-1 text-xs text-fg">{pendingQuestion.question}</p>
                   {pendingQuestion.options && pendingQuestion.options.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-2">
+                    <div className="mt-2 flex flex-wrap gap-1.5">
                       {pendingQuestion.options.map((opt) => (
                         <button
                           key={opt}
                           type="button"
                           onClick={() => setQuestionAnswer(opt)}
                           aria-pressed={questionAnswer === opt}
-                          className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${questionAnswer === opt ? "border-accent bg-accent/15 text-accent" : "border-border bg-bg text-fg hover:bg-hover"}`}
+                          className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${questionAnswer === opt ? "border-accent bg-accent/15 text-accent" : "border-border bg-bg text-fg hover:bg-hover"}`}
                         >
                           {opt}
                         </button>
@@ -983,7 +979,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                     </div>
                   )}
                   <form
-                    className="mt-3 flex gap-2"
+                    className="mt-2.5 flex gap-2"
                     onSubmit={(e) => {
                       e.preventDefault();
                       if (!questionAnswer.trim()) return;
@@ -997,12 +993,12 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                       onChange={(e) => setQuestionAnswer(e.target.value)}
                       disabled={questionSubmitting}
                       placeholder="Type your answer..."
-                      className="flex-1 rounded-lg border border-border bg-bg px-3 py-1.5 text-xs text-fg"
+                      className="flex-1 rounded-lg border border-border bg-bg px-3 py-1 text-xs text-fg"
                     />
                     <button
                       type="submit"
                       disabled={!questionAnswer.trim() || questionSubmitting}
-                      className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-strong"
+                      className="rounded-lg bg-accent px-3 py-1 text-xs font-medium text-accent-fg hover:bg-accent-strong"
                     >
                       {questionSubmitting ? "Submitting…" : "Submit"}
                     </button>
@@ -1012,9 +1008,9 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
             )}
 
             {runError && (
-              <div className="mx-auto mb-3 w-full max-w-[720px] px-4">
-                <div className="flex items-center justify-between gap-3 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-xs">
-                  <div>
+              <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-danger/40 bg-danger/10 px-3.5 py-2 text-xs">
+                  <div className="min-w-0 truncate">
                     <span className="font-semibold text-danger">
                       {runError.code || "RUN_ERROR"}:{" "}
                     </span>
@@ -1031,98 +1027,77 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                           .retry(rId)
                           .catch((err) => notify("error", errorMessage(err)));
                       }}
-                      className="shrink-0 rounded-lg border border-border bg-elev px-3 py-1.5 font-medium text-fg hover:bg-hover"
+                      className="shrink-0 rounded-lg border border-border bg-elev px-2.5 py-1 font-medium text-fg hover:bg-hover"
                     >
-                      Retry Run
+                      Retry
                     </button>
                   )}
                 </div>
               </div>
             )}
 
-            {(changedFiles.length > 0 || previewUrl) && (
+            {/* Compact single-row artifact & browser control bar above composer */}
+            {(changedFiles.length > 0 || previewUrl || (!takeover && (session?.status === "running" || session?.status === "awaiting_input") && session?.sandboxHandleId)) && (
               <section
-                aria-label="Run Results"
-                className="mx-auto mb-3 w-full max-w-[720px] rounded-xl border border-success/35 bg-success/5 px-4 py-3"
+                aria-label="Workspace artifacts and preview"
+                className="mx-auto mb-1.5 flex w-full max-w-[740px] flex-wrap items-center justify-between gap-2 px-4 text-xs"
               >
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-success">
-                      Run Results
-                    </h3>
-                    {changedFiles.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {changedFiles.map((file) => (
-                          <button
-                            type="button"
-                            key={file}
-                            onClick={() => { setStudioTargetPath(file); setStudioOpen(true); setBrowserDock("closed"); }}
-                            className="max-w-full truncate rounded-md border border-border bg-bg px-2 py-1 font-mono text-[11px] text-fg hover:border-accent hover:text-accent"
-                            title={file}
-                          >
-                            {file}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 flex-wrap items-center gap-2">
-                    {previewUrl && (
-                      <a
-                        href={previewUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-accent-fg hover:bg-accent-strong"
-                      >
-                        Open Preview ↗
-                      </a>
-                    )}
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+                  {changedFiles.slice(0, 4).map((file) => (
+                    <button
+                      type="button"
+                      key={file}
+                      onClick={() => { setStudioTargetPath(file); setStudioOpen(true); setBrowserDock("closed"); }}
+                      className="max-w-[11rem] truncate rounded-lg border border-border bg-elev px-2 py-0.5 font-mono text-[11px] text-fg transition-colors hover:border-accent hover:text-accent"
+                      title={`Open ${file} in Studio`}
+                    >
+                      {file}
+                    </button>
+                  ))}
+                  {changedFiles.length > 4 && (
+                    <button
+                      type="button"
+                      onClick={() => { setStudioOpen(true); setBrowserDock("closed"); }}
+                      className="rounded-lg border border-border bg-elev px-2 py-0.5 text-[11px] text-muted hover:text-fg"
+                    >
+                      +{changedFiles.length - 4} more
+                    </button>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {!takeover && (session?.status === "running" || session?.status === "awaiting_input") && session?.sandboxHandleId && (
+                    <button
+                      type="button"
+                      disabled={takeoverBusy}
+                      onClick={() => void requestTakeover()}
+                      className="rounded-lg border border-border bg-elev px-2.5 py-1 text-[11px] font-medium text-fg transition-colors hover:bg-hover"
+                    >
+                      {takeoverBusy ? "Requesting…" : "Take control"}
+                    </button>
+                  )}
+                  {previewUrl && (
+                    <a
+                      href={previewUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-lg bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-colors hover:bg-accent-strong"
+                    >
+                      Open Preview ↗
+                    </a>
+                  )}
+                  {changedFiles.length > 0 && (
                     <button
                       type="button"
                       onClick={() => void handleDownloadArchive()}
-                      className="rounded-lg border border-border bg-elev px-3 py-2 text-xs font-semibold text-fg hover:bg-hover"
+                      className="rounded-lg border border-border bg-elev px-2.5 py-1 text-[11px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg"
+                      title="Download workspace archive (.tar.gz)"
                     >
-                      Download Archive (.tar.gz)
+                      Archive ↓
                     </button>
-                  </div>
+                  )}
                 </div>
               </section>
             )}
-
-            <div className="mx-auto mb-1 flex w-full max-w-[720px] items-center justify-between px-4 text-xs text-muted">
-              <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-elev p-0.5">
-                <button
-                  type="button"
-                  onClick={() => { setRunMode("task"); try { localStorage.setItem("oh-default-mode", "task"); } catch {} }}
-                  aria-pressed={runMode === "task"}
-                  className={`rounded-md px-2.5 py-1 font-medium ${
-                    runMode === "task" ? "bg-accent text-accent-fg" : "text-muted hover:text-fg"
-                  }`}
-                >
-                  Code
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setRunMode("ask"); try { localStorage.setItem("oh-default-mode", "ask"); } catch {} }}
-                  aria-pressed={runMode === "ask"}
-                  className={`rounded-md px-2.5 py-1 font-medium ${
-                    runMode === "ask" ? "bg-accent text-accent-fg" : "text-muted hover:text-fg"
-                  }`}
-                >
-                  Ask
-                </button>
-              </div>
-              {previewUrl && (
-                <a
-                  href={previewUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-medium text-accent hover:underline"
-                >
-                  Live Preview ↗
-                </a>
-              )}
-            </div>
 
             {plan && showApprovalBar && (
               <PlanDock
@@ -1196,6 +1171,11 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                   ref={composerRef}
                   agentName={selectedAgent}
                   isPlanMode={selectedAgent === "plan"}
+                  runMode={runMode}
+                  onRunModeChange={(mode) => {
+                    setRunMode(mode);
+                    try { localStorage.setItem("oh-default-mode", mode); } catch {}
+                  }}
                   commands={commands}
                   active={activeRun}
                   sending={sending}
