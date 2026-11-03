@@ -237,12 +237,24 @@ export class DurableRunWorker implements RunWorker {
     const run = this.stateMachine.getRun(runId);
     if (!run) return null;
     if (run.status !== "awaiting_input" || run.phase !== "paused") return run;
-    const checkpoint = await this.deps.stateStore.getStepCheckpoint(run.tenantId ?? "default", runId);
-    if (checkpoint?.state.pauseReason === "paused_budget") {
+    const tenantId = run.tenantId ?? "default";
+    const checkpoint = await this.deps.stateStore.getStepCheckpoint(tenantId, runId);
+    const wasBudgetPause = checkpoint?.state.pauseReason === "paused_budget";
+    if (wasBudgetPause && checkpoint) {
       checkpoint.state.inputTokensThisRun = 0;
       checkpoint.state.pauseReason = undefined;
       checkpoint.state.phase = "building";
       checkpoint.state.budgetPauseRequested = false;
+      await this.deps.stateStore.saveMessage(tenantId, run.sessionId, {
+        info: { id: `budget_resume_${runId}_${Date.now()}`, role: "user", summary: true },
+        createdAt: Date.now(),
+        parts: [{
+          type: "text",
+          text: "The input-token budget window has been reset. Continue executing the remaining implementation and verification steps now using tools; do not repeat the summary.",
+          synthetic: true,
+        }],
+      });
+      checkpoint.state.transcriptCursor = (checkpoint.state.transcriptCursor ?? 0) + 1;
       await this.deps.stateStore.saveStepCheckpoint(checkpoint);
     }
     if (checkpoint?.state.pauseReason === "takeover") {
@@ -257,7 +269,9 @@ export class DurableRunWorker implements RunWorker {
       : "building";
     const tr = await this.stateMachine.transition(runId, "awaiting_input", "running", { phase: resumePhase, pauseReason: undefined });
     if (tr.ok) {
-      await this.emitter.emit(tr.run?.tenantId ?? run.tenantId ?? "default", run.sessionId, {
+      const updatedSession = await this.deps.stateStore.getSession(tenantId, run.sessionId);
+      if (updatedSession) await this.emitter.emit(tenantId, run.sessionId, { type: "session.updated", session: updatedSession });
+      await this.emitter.emit(tenantId, run.sessionId, {
         type: "run.status", sessionId: run.sessionId, runId, status: "running",
       });
       this.launchRun(runId);
@@ -377,6 +391,7 @@ export class DurableRunWorker implements RunWorker {
             }
             const res = await this.deps.provider.generateTurn({
               ...req,
+              tenantId: state.tenantId,
               signal: ctrl.signal,
               onDelta: (delta) => {
                 markActivity();

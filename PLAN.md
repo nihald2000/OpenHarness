@@ -3,12 +3,17 @@
 ## Live browser and full-stack sandbox follow-up
 - [x] Validate and ship the letterbox-aware canvas coordinates, independent verification tabs, and resilient screencast reconnection changes.
 - [x] Complete model-scaled context settings, bounded screenshot token estimates, manual `/compact`, and full task-tool catalog coverage; the full regression gate passes.
-- [ ] Add the docked/expanded canvas browser view, live frame backpressure, and takeover input fidelity; validate with browser UI checks before marking complete.
-- [ ] Add sandbox-isolated browser flow checks to the verify/fix loop with immutable definitions and actionable evidence.
+- [x] Add the docked/expanded canvas browser view, live frame backpressure, and takeover input fidelity; validate with browser UI checks before marking complete.
+- [x] Add sandbox-isolated browser flow checks to the verify/fix loop with immutable definitions and actionable evidence.
 - [x] Implement and locally test short-lived live-browser tickets, origin checks, screencasting, and durable-run takeover pause/resume.
 - [x] Implement and test `process_start.waitFor`, session-local service tool routing, pinned-hub image dependencies, and the guest run cap configuration.
 - [x] Pass typecheck, the full test suite, production build, Python syntax, and worker syntax checks.
 - [ ] Build the Modal image and verify live PostgreSQL/Redis readiness and browser WebSocket/takeover against the deployed hub before claiming deployment verification.
+
+## Guest-owned provider settings — implemented and locally verified
+- [x] Add guest-visible model selection and personal OpenAI-compatible provider settings without exposing admin settings or server-wide secrets.
+- [x] Encrypt guest API keys with the configured `OPENHARNESS_SECRET_KEY`; persist them through tenant-keyed Local/Postgres state-store operations and expose only `hasApiKey` metadata.
+- [x] Verify guest isolation, encrypted persistence, and tenant predicates in the Postgres adapter with focused tests; full multi-node Postgres/Redis integration and replay coverage remain outstanding.
 
 ## Document Studio, multimodal deliverables, skills, and MCP — implemented and locally verified
 - [x] Add binary-safe workspace read and authenticated raw-download routes with tenant and path containment.
@@ -17,12 +22,18 @@
 - [x] Add binary file previews/downloads and one-click skills catalog UI; document-studio regression tests and the full local suite pass.
 - [x] `npm run typecheck`, `npm test` (94 passed, 2 skipped), `npm run build:web`, and Modal sandbox image Python syntax check pass on this Windows host.
 
-## Browser IPC and Studio artifact reliability follow-up — in progress
-- [ ] Preserve the browser worker request envelope, selector shorthand handling, and bounded browser-flow timeout without replaying an identical timed-out flow.
-- [ ] Route structured document preview, extraction, conversion, and artifact inspection through the sandbox artifact worker with separated stdout/stderr and Python renderer fallbacks.
-- [ ] Synchronize session attachments after sandbox creation and expose tenant-scoped raw attachment bytes.
-- [ ] Capture deliverable metadata from sandbox writes and provide inline visual previews plus a session Studio dock.
-- [ ] Pass focused regressions, full typecheck, tests, build, and Python syntax checks before marking this phase complete.
+## Browser IPC and Studio artifact reliability follow-up — implemented and locally verified
+- [x] Preserve the browser worker request envelope, selector shorthand handling, and bounded browser-flow timeout without replaying an identical timed-out flow.
+- [x] Route structured document preview, extraction, conversion, and artifact inspection through the sandbox artifact worker with separated stdout/stderr and Python renderer fallbacks.
+- [x] Synchronize session attachments after sandbox creation and expose tenant-scoped raw attachment bytes.
+- [x] Capture deliverable metadata from sandbox writes and provide inline visual previews plus a session Studio dock.
+- [x] Pass focused regressions, full typecheck, tests, build, and Python syntax checks; `npm test` reports 115 passed, 0 failed, 3 skipped on this Windows host.
+
+## Hackathon rehearsal remediation — implemented and locally verified
+- [x] Stream large artifact-worker payloads over stdin while preserving direct CLI argument compatibility; fix visual audit aliases, hub daemon headers, takeover visual-region access, and bounded spreadsheet formula checks.
+- [x] Allow read-only skill inspection while keeping protected writes denied; make budget resume append an actionable continuation and clear stale pause state.
+- [x] Add the root MIT license, archive root prompt scratchpads after confirming no test or script dependency, and document the hackathon contribution scope.
+- [x] Pass `npm run typecheck`, `npm run typecheck:server`, `npm test` (115 passed, 0 failed, 3 skipped), `npm run build`, and the requested Python syntax checks.
 
 ## Modal E2E Harness & Muse Glimmer (Phases 1–8) — Implemented and locally verified
 - Hosted sessions use tenant/session-scoped roots, masked host workspace facts, and Modal sandbox daemon routing for workspace reads.

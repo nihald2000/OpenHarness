@@ -343,7 +343,7 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
       return sendJson(res, 200, { owner }, { "x-oh-daemon": "1" });
     }
     const isHumanActor = req.headers["x-oh-browser-actor"] === "human" || routePath === "/browser/input" || body.actor === "human";
-    if (!isHumanActor && browserOwners.get(sandboxId) === "human" && routePath.startsWith("/browser/") && !new Set(["/browser/observe", "/browser/console_logs", "/browser/network_errors"]).has(routePath)) {
+    if (!isHumanActor && browserOwners.get(sandboxId) === "human" && routePath.startsWith("/browser/") && !new Set(["/browser/observe", "/browser/visual_regions", "/browser/console_logs", "/browser/network_errors"]).has(routePath)) {
       return sendJson(res, 423, { error: "Browser is under human control" }, { "x-oh-daemon": "1" });
     }
     try {
@@ -355,7 +355,7 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
         "x-session-key": sessionKey,
         "x-oh-request-id": String(req.headers["x-oh-request-id"] ?? ""),
       }, body);
-      res.writeHead(result.status, { ...result.headers, "content-type": "application/json; charset=utf-8" });
+      res.writeHead(result.status, { "x-oh-daemon": "1", ...result.headers, "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(result.body));
     } catch (err) {
       sendJson(res, 500, { error: (err as Error).message }, { "x-oh-daemon": "1" });

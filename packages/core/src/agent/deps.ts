@@ -185,6 +185,8 @@ export interface ProviderToolCall {
 export interface ProviderTurnRequest {
   runId: string;
   sessionId: string;
+  /** Tenant scope for resolving tenant-owned provider credentials. */
+  tenantId?: string;
   model: string;
   systemPrompt: string;
   messages: Message[];
@@ -303,6 +305,10 @@ export interface EventBus {
 }
 
 export interface StateStore {
+  getTenantSetting(tenantId: string, key: string): Promise<unknown | null>;
+  setTenantSetting(tenantId: string, key: string, value: unknown): Promise<void>;
+  deleteTenantSetting(tenantId: string, key: string): Promise<void>;
+
   getSession(tenantId: string, sessionId: string): Promise<Session | null>;
   saveSession(tenantId: string, session: Session): Promise<void>;
   listSessions(tenantId: string, limit?: number): Promise<Session[]>;

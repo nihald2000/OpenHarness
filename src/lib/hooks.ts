@@ -6,6 +6,9 @@ import { errorMessage } from "./format";
 
 export { useApp };
 
+export const DEFAULT_MODEL_STORAGE_KEY = "oh-default-model";
+export const DEFAULT_MODEL_EVENT = "oh:default-model";
+
 export function useSessions() {
   const { sessions, sessionsLoading, refreshSessions } = useApp();
   const topLevel = useMemo(
@@ -21,6 +24,24 @@ export function useSessions() {
 
 export function useCatalog() {
   const { catalog, reloadCatalog } = useApp();
+  const [preferredModel, setPreferredModel] = useState(() => {
+    try { return localStorage.getItem(DEFAULT_MODEL_STORAGE_KEY) ?? ""; } catch { return ""; }
+  });
+  useEffect(() => {
+    const onPreference = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      if (typeof detail === "string") setPreferredModel(detail);
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === DEFAULT_MODEL_STORAGE_KEY) setPreferredModel(event.newValue ?? "");
+    };
+    window.addEventListener(DEFAULT_MODEL_EVENT, onPreference);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(DEFAULT_MODEL_EVENT, onPreference);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
   const models = useMemo(
     () => catalog.models.filter((model) => !model.id.toLowerCase().startsWith("mock/")),
     [catalog.models]
@@ -32,6 +53,7 @@ export function useCatalog() {
   );
 
   const defaultModel = useMemo(() => {
+    if (preferredModel && models.some((model) => model.id === preferredModel)) return preferredModel;
     const flagged = models.find((m) => m.isDefault);
     if (flagged) return flagged.id;
     const serverDefault = catalog.info?.defaultModel;
@@ -39,7 +61,7 @@ export function useCatalog() {
       return serverDefault;
     }
     return models[0]?.id ?? "";
-  }, [models, catalog.info]);
+  }, [models, catalog.info, preferredModel]);
 
   const defaultAgent = useMemo(() => {
     if (catalog.info?.defaultAgent) return catalog.info.defaultAgent;

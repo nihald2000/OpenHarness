@@ -49,7 +49,7 @@ def build_sandbox_image() -> modal.Image:
         .add_local_file(str(ROOT / "package.json"), remote_path="/opt/oh/package.json", copy=True)
         .run_commands(
             f"cd /opt/oh && npm install --no-audit --no-fund tsx@^4.19.0 playwright@{PLAYWRIGHT}",
-            "find /opt/oh/packages -type f \\( -name '*.ts' -o -name '*.mjs' -o -name '*.js' -o -name '*.json' \\) -exec sed -i 's/\\r$//' {} +",
+        "find /opt/oh/packages -type f \\( -name '*.ts' -o -name '*.mjs' -o -name '*.js' -o -name '*.json' -o -name '*.py' \\) -exec sed -i 's/\\r$//' {} +",
             'cd /opt/oh && npx --yes esbuild packages/sandboxd/src/bin.ts --bundle --platform=node --target=node22 --format=esm "--banner:js=import { createRequire as __ohCreateRequire } from \'node:module\'; const require = __ohCreateRequire(import.meta.url);" --external:playwright --external:playwright-core --outfile=/opt/oh/oh-sandboxd.mjs',
             "cd /opt/oh && npx playwright install --with-deps chromium && chmod -R a+rX /ms-playwright",
             f"printf %s {json.dumps(WRAPPER)} > /usr/local/bin/oh-sandboxd && chmod 0755 /usr/local/bin/oh-sandboxd",

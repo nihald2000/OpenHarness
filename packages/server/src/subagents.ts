@@ -198,6 +198,7 @@ async function runSubagentUnlocked(opts: RunSubagentOptions, normalizedRole: str
       const request = (signal?: AbortSignal) => provider.generateTurn({
         runId: childSessionId,
         sessionId: ctx.sessionId,
+        tenantId: ctx.state.tenantId,
         model,
         systemPrompt,
         messages,

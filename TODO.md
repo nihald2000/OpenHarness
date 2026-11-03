@@ -2,22 +2,32 @@
 
 ## Live browser and full-stack sandbox follow-up
 - [x] Verify the browser input/streaming root-cause changes and context compaction/API wiring through the full regression suite.
-- [ ] Finish local verification and deployment of the canvas BrowserDock, takeover fixes, and repeatable browser-check verification loop.
-- [ ] Confirm browser checks run in a separate page, preserve the agent's live page, and surface failure evidence without leaking screenshot payloads into tool text.
+- [x] Finish local verification of the canvas BrowserDock, takeover fixes, and repeatable browser-check verification loop.
+- [x] Confirm browser checks run in a separate page, preserve the agent's live page, and surface failure evidence without leaking screenshot payloads into tool text.
 - [x] Add regression coverage for live ticket expiry/replay, origin allowlisting, takeover pause, process readiness routing, and service startup tool routing.
 - [x] Pass `npm run typecheck`, `npm test` (80 passed, 2 skipped), `npm run build`, Modal Python syntax, browser-worker syntax, and `git diff --check`.
 - [ ] Build the Modal image and exercise PostgreSQL/Redis initialization plus live browser WebSocket/control in the deployed hub.
 - [ ] Verify live Modal HTTPS WebSocket ingress and takeover/resume after deployment; this requires a live deployment and is not covered by local checks.
 
+## Guest-owned provider settings
+- [x] Expose personal model-provider settings in guest Settings while keeping admin-wide settings and secrets restricted.
+- [x] Store guest provider configs by tenant, encrypt API keys at rest, omit credentials from responses, and apply only that tenant's endpoint when its model is selected.
+- [x] Add focused guest-isolation and adapter-scope regressions; Postgres/Redis multi-node replay remains unverified.
+
 ## Document Studio
 - [x] Verify binary-safe file transport, image generation and document rendering, multimodal page inspection, persistent skills import, document MCP, document agent tools, and the UI with `npm run typecheck`, `npm test` (94 passed, 2 skipped), `npm run build:web`, and Modal sandbox image Python syntax check.
 
 ## Browser IPC and Studio artifact reliability follow-up
-- [ ] Validate the browser worker envelope, selector shorthand, flow timeout, and no-identical-retry behavior.
-- [ ] Validate sandbox-native document preview/extraction/conversion/inspection and deterministic Python rendering fallbacks.
-- [ ] Validate attachment synchronization and raw attachment streaming for hosted sandboxes.
-- [ ] Validate automatic deliverable metadata and the StudioCanvas viewers/dock on session changes.
-- [ ] Close this work only after focused and full typecheck/test/build/Python checks pass.
+- [x] Validate the browser worker envelope, selector shorthand, flow timeout, and no-identical-retry behavior.
+- [x] Validate sandbox-native document preview/extraction/conversion/inspection and deterministic Python rendering fallbacks.
+- [x] Validate attachment synchronization and raw attachment streaming for hosted sandboxes.
+- [x] Validate automatic deliverable metadata and the StudioCanvas viewers/dock on session changes.
+- [x] Close this work after focused and full typecheck/test/build/Python checks pass.
+
+## Hackathon rehearsal remediation
+- [x] Verify stdin-based large artifact payloads, browser alias handling, hub ownership/header behavior, skill-path shell policy, and actionable input-budget resume.
+- [x] Add the MIT license, archive unreferenced root prompt scratchpads, and identify hackathon-built scope separately from pre-existing scaffolding.
+- [x] Pass typecheck, server typecheck, full tests (115 passed, 0 failed, 3 skipped), production build, and Python syntax verification.
 
 ## Modal E2E Harness & Muse Glimmer local verification
 - [x] Implement hosted workspace isolation, preview tunnel resolution, shadow-git baseline diffs, v2 permission/pause/resume routing, model profiles, vision screenshots, and Modal deployment assets.

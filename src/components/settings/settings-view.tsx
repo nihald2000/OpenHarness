@@ -18,7 +18,7 @@ import {
 import type { SettingsPreviewResponse } from "@openharness/sdk";
 import { client } from "@/lib/client";
 import { errorMessage, isStatus } from "@/lib/format";
-import { useApp, useCatalog } from "@/lib/hooks";
+import { DEFAULT_MODEL_EVENT, DEFAULT_MODEL_STORAGE_KEY, useApp, useCatalog } from "@/lib/hooks";
 import { useAdmin } from "@/lib/use-admin";
 import { PluginsTab } from "../plugins-tab";
 import { Badge, IconButton } from "../ui";
@@ -33,6 +33,7 @@ import {
   SettingsProvider,
 } from "./controls";
 import { GeneralSection } from "./general-section";
+import { GuestProvidersSection } from "./guest-providers-section";
 import { GuardrailsSection } from "./guardrails-section";
 import { LimitsSection } from "./limits-section";
 import { McpSection } from "./mcp-section";
@@ -63,7 +64,7 @@ function isValidSection(val: string): val is SectionId {
 
 export function SettingsView() {
   const { setSidebarOpen, theme, toggleTheme } = useApp();
-  const { info, loading: catalogLoading } = useCatalog();
+  const { info, models, defaultModel, loading: catalogLoading } = useCatalog();
   const { admin, authDisabled, loading: adminLoading, expired, user, logout, markSignedOut } =
     useAdmin();
 
@@ -72,6 +73,9 @@ export function SettingsView() {
   const [error, setError] = useState<string | null>(null);
 
   const [activeSection, setActiveSection] = useState<SectionId>("general");
+  const [guestModel, setGuestModel] = useState(() => {
+    try { return localStorage.getItem(DEFAULT_MODEL_STORAGE_KEY) ?? ""; } catch { return ""; }
+  });
   const [mountedSections, setMountedSections] = useState<Set<SectionId>>(
     () => new Set(["general"])
   );
@@ -181,6 +185,12 @@ export function SettingsView() {
             <div className="mx-auto max-w-xl space-y-5 p-6">
               <SectionHeading title="Guest preferences" description="These settings are saved in this browser." />
               <Card>
+                <div className="flex items-center justify-between gap-4 border-b border-border p-4">
+                  <div><div className="text-sm font-medium text-fg">Default model</div><div className="text-xs text-muted">Choose an available model for new chats.</div></div>
+                  <select aria-label="Default model" className="max-w-56 rounded-lg border border-border bg-bg px-3 py-2 text-xs text-fg" value={models.some((model) => model.id === guestModel) ? guestModel : defaultModel} onChange={(event) => { const model = event.target.value; setGuestModel(model); try { localStorage.setItem(DEFAULT_MODEL_STORAGE_KEY, model); } catch {} window.dispatchEvent(new CustomEvent(DEFAULT_MODEL_EVENT, { detail: model })); }}>
+                    {models.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.provider}</option>)}
+                  </select>
+                </div>
                 <div className="flex items-center justify-between gap-4 p-4">
                   <div><div className="text-sm font-medium text-fg">Theme</div><div className="text-xs text-muted">Choose the interface appearance.</div></div>
                   <button type="button" onClick={toggleTheme} className={buttonSecondary}>{theme === "dark" ? "Dark" : "Light"} · Toggle</button>
@@ -192,6 +202,7 @@ export function SettingsView() {
                   </select>
                 </div>
               </Card>
+              <GuestProvidersSection />
             </div>
           ) : (
             <SignInCard expired={expired} />

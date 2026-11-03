@@ -13,9 +13,10 @@ export class ProviderHttpError extends Error {
 }
 
 export type Endpoint = { baseUrl: string; apiKey?: string };
-export type ResolvedEndpoint = (profile: ModelProfile, model: string) => Promise<Endpoint>;
+export type ResolvedEndpoint = (profile: ModelProfile, model: string, tenantId?: string) => Promise<Endpoint>;
 export type TransportOpts = {
   idleTimeoutMs?: number;
+  tenantId?: string;
   signal?: AbortSignal;
   onDelta?: (delta: { text?: string; reasoning?: string; activity?: boolean }) => void;
 };
@@ -45,7 +46,7 @@ export function createHttpTransport(resolve: ResolvedEndpoint) {
     profile: ModelProfile,
     opts: TransportOpts = {}
   ): Promise<RawProviderResponse> => {
-    const ep = await resolve(profile, payload.model);
+    const ep = await resolve(profile, payload.model, opts.tenantId);
     if (!ep.baseUrl) {
       throw new ProviderHttpError(400, `no baseUrl configured for ${payload.model}`);
     }

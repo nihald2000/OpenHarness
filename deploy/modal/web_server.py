@@ -185,6 +185,7 @@ def server():
         "OH_DEFAULT_RUNTIME": os.environ.get("OH_DEFAULT_RUNTIME", "modal"),
         "OH_MODAL_SANDBOX_RUNTIME": os.environ.get("OH_MODAL_SANDBOX_RUNTIME", "gvisor"),
         "OH_SANDBOX_IDLE_MS": os.environ.get("OH_SANDBOX_IDLE_MS", "180000"),
+        "OH_MAX_INPUT_TOKENS_PER_RUN": os.environ.get("OH_MAX_INPUT_TOKENS_PER_RUN", "800000"),
         "OH_MODAL_KEEPALIVE": "1",
         "OPENHARNESS_ISOLATE_SESSIONS": "1",
         # Give each anonymous browser a signed, isolated tenant cookie; admin

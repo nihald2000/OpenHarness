@@ -43,6 +43,33 @@ export class PostgresStateStore implements StateStore {
     }
   }
 
+  async getTenantSetting(tenantId: string, key: string): Promise<unknown | null> {
+    const res = await this.pool.query(
+      "SELECT value FROM tenant_settings WHERE tenant_id = $1 AND setting_key = $2",
+      [tenantId, key]
+    );
+    if (res.rows.length === 0) return null;
+    const value = res.rows[0].value;
+    return typeof value === "string" ? JSON.parse(value) : value;
+  }
+
+  async setTenantSetting(tenantId: string, key: string, value: unknown): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO tenant_settings (tenant_id, setting_key, value, updated_at)
+       VALUES ($1, $2, $3::jsonb, $4)
+       ON CONFLICT (tenant_id, setting_key) DO UPDATE SET
+         value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
+      [tenantId, key, JSON.stringify(value), Date.now()]
+    );
+  }
+
+  async deleteTenantSetting(tenantId: string, key: string): Promise<void> {
+    await this.pool.query(
+      "DELETE FROM tenant_settings WHERE tenant_id = $1 AND setting_key = $2",
+      [tenantId, key]
+    );
+  }
+
   async getSession(tenantId: string, sessionId: string): Promise<Session | null> {
     const res = await this.pool.query(
       "SELECT payload FROM sessions WHERE tenant_id = $1 AND id = $2",

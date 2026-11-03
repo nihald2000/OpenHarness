@@ -520,16 +520,14 @@ export function Sidebar() {
           <div className="flex items-center justify-between px-2 py-1 text-xs text-muted">
             <div className="flex items-center gap-2 min-w-0">
               <ConnectionIndicator status={globalStatus} />
-              {!info?.hostedIsolation && (
-                <Link
-                  href="/settings"
-                  aria-current={pathname === "/settings" ? "page" : undefined}
-                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted hover:bg-hover hover:text-fg"
-                >
-                  <Settings className="size-3.5" aria-hidden="true" />
-                  <span>Settings</span>
-                </Link>
-              )}
+              <Link
+                href="/settings"
+                aria-current={pathname === "/settings" ? "page" : undefined}
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted hover:bg-hover hover:text-fg"
+              >
+                <Settings className="size-3.5" aria-hidden="true" />
+                <span>Settings</span>
+              </Link>
             </div>
 
             <IconButton

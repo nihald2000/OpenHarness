@@ -658,9 +658,9 @@ export class SandboxDaemon {
       }
     }
 
-    // 2. Check for mandatory deny modifications (.git/hooks, .bashrc, .openharness/agents, etc.)
+    // 2. Check for mandatory deny modifications (.git/hooks, .bashrc, etc.)
     const mandatoryMatch = command.match(
-      /(?:\.git\/hooks(?:\/\S*)?|\.git\/config|\.bashrc|\.zshrc|\.profile|\.mcp\.json|\.openharness\/(?:agents|commands|skills))/
+      /(?:\.git\/hooks(?:\/\S*)?|\.git\/config|\.bashrc|\.zshrc|\.profile|\.mcp\.json)/
     );
     if (mandatoryMatch) {
       const target = mandatoryMatch[0]!;
@@ -671,8 +671,20 @@ export class SandboxDaemon {
       }
     }
 
+    const strippedDevNull = command.replace(/\b\d*>\s*\/dev\/null\b/g, "");
+    const protectedHarnessPath = strippedDevNull.match(/\.openharness\/(?:agents|commands|skills)/);
+    const hasWriteVector = /(?:>{1,2}|\b(?:tee|rm|mv|cp|touch|mkdir|rmdir|chmod|chown|ln|dd|truncate|install|patch|git|npm|npx|pnpm|yarn|bun|tsx|node|python3?|perl|ruby|sed\s+-i)\b)/.test(strippedDevNull);
+    if (protectedHarnessPath && hasWriteVector) {
+      const target = protectedHarnessPath[0];
+      const check = evaluateFilesystemAccess(this.config.policy, target, "write", cwd);
+      if (!check.allowed) {
+        this.emitViolation(check.kind ?? "mandatory_deny", target, check.reason);
+        return { allowed: false, error: check.reason };
+      }
+    }
+
     // 3. Check for writes outside allowed directories (e.g. `> /etc/foo` or `touch /var/foo` or `tee /usr/foo`)
-    const redirectMatch = command.match(/(?:>{1,2}|\btee\s+|\btouch\s+|\bmkdir\s+(?:-p\s+)?)(\/[A-Za-z0-9_./-]+)/);
+    const redirectMatch = strippedDevNull.match(/(?:>{1,2}|\btee\s+|\btouch\s+|\bmkdir\s+(?:-p\s+)?)(\/[A-Za-z0-9_./-]+)/);
     if (redirectMatch) {
       const target = redirectMatch[1]!;
       if (!target.startsWith("/dev/")) {
@@ -1265,8 +1277,8 @@ export class SandboxDaemon {
         this.config.runAs && process.platform === "linux" && process.getuid?.() === 0
           ? ["setpriv", "--reuid", String(this.config.runAs.uid), "--regid", String(this.config.runAs.gid), "--clear-groups", "--no-new-privs", "--"]
           : [];
-      const fullCmd = [...drop, pythonExecutable(), "-I", worker, action, encoded];
-      execFile(fullCmd[0]!, fullCmd.slice(1), {
+      const fullCmd = [...drop, pythonExecutable(), "-I", worker, action, "-"];
+      const child = execFile(fullCmd[0]!, fullCmd.slice(1), {
         cwd: this.config.tmpPath, timeout: 55_000, maxBuffer: 32 * 1024 * 1024, windowsHide: true,
         env: {
           PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
@@ -1281,6 +1293,8 @@ export class SandboxDaemon {
         try { resolve(JSON.parse(String(stdout)) as Record<string, unknown>); }
         catch { resolve({ error: "Artifact worker returned invalid JSON", stderr: String(stderr).slice(-1000) }); }
       });
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(encoded);
     });
   }
 
@@ -1306,6 +1320,7 @@ export class SandboxDaemon {
   private resolveSafePath(rawPath: string, op: "read" | "write"): {
     allowed: boolean;
     resolvedPath: string;
+    kind?: "fs_read" | "fs_write" | "mandatory_deny";
     error?: string;
   } {
     const check = evaluateFilesystemAccess(
@@ -1330,7 +1345,7 @@ export class SandboxDaemon {
     if (!check.allowed) {
       const fallbackPath = path.resolve(rootDir, relTarget);
       this.emitViolation(check.kind ?? (op === "read" ? "fs_read" : "fs_write"), rawPath, check.reason);
-      return { allowed: false, resolvedPath: fallbackPath, error: check.reason };
+      return { allowed: false, resolvedPath: fallbackPath, kind: check.kind, error: check.reason };
     }
 
     try {
@@ -1340,7 +1355,7 @@ export class SandboxDaemon {
       const fallbackPath = path.resolve(rootDir, relTarget);
       const reason = (err as Error).message;
       this.emitViolation(op === "read" ? "fs_read" : "fs_write", rawPath, reason);
-      return { allowed: false, resolvedPath: fallbackPath, error: reason };
+      return { allowed: false, resolvedPath: fallbackPath, kind: op === "read" ? "fs_read" : "fs_write", error: reason };
     }
   }
 
@@ -1453,7 +1468,7 @@ export class SandboxDaemon {
     const content = String(payload.content ?? "");
     const access = this.resolveSafePath(rawPath, "write");
     if (!access.allowed) {
-      return { status: 403, body: { error: access.error } };
+      return { status: 403, body: { error: access.error, kind: access.kind } };
     }
 
     if (fs.existsSync(access.resolvedPath)) {

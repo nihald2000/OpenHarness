@@ -172,6 +172,7 @@ export interface ModelAgnosticProviderOptions {
     profile: ModelProfile,
     opts: {
       idleTimeoutMs: number;
+      tenantId?: string;
       signal?: AbortSignal;
       onDelta?: ProviderTurnRequest["onDelta"];
     }
@@ -240,6 +241,7 @@ export class ModelAgnosticProviderAdapter implements ProviderAdapter {
         );
         return this.opts.transport(wirePayload, profile, {
           idleTimeoutMs,
+          tenantId: req.tenantId,
           signal: req.signal,
           onDelta: req.onDelta,
         });

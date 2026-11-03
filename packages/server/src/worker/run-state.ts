@@ -136,6 +136,8 @@ export class RunStateMachine {
         ...session,
         status: "queued",
         phase: "planning",
+        pauseReason: undefined,
+        error: undefined,
         runId: rec.id,
         activeRunId: rec.id,
         updatedAt: now,
@@ -175,6 +177,7 @@ export class RunStateMachine {
       status: to,
       updatedAt: now,
       lastHeartbeatAt: now,
+      ...(to === "running" || isTerminalRunStatus(to) ? { pauseReason: undefined } : {}),
       ...(isTerminalRunStatus(to) ? { completedAt: patch.completedAt ?? now } : {}),
     };
 

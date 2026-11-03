@@ -338,7 +338,12 @@ def visual_audit(args):
 
 def main():
     action = sys.argv[1]
-    args = json.loads(base64.b64decode(sys.argv[2]))
+    if len(sys.argv) >= 3 and sys.argv[2] != "-":
+        raw_arg = sys.argv[2]
+        payload_b64 = pathlib.Path(raw_arg[1:]).read_text(encoding="utf-8").strip() if raw_arg.startswith("@") else raw_arg
+    else:
+        payload_b64 = sys.stdin.read().strip()
+    args = json.loads(base64.b64decode(payload_b64))
     if action == "audit":
         print(json.dumps(visual_audit(args)))
         return

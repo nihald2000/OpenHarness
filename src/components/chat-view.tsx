@@ -760,6 +760,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     try {
       const result = await client.runs.resume(session.runId);
       if (result.queued) setWaitingForRunSlot(true);
+      if (session) upsertSession({ ...session, status: "running", pauseReason: undefined });
       await refreshSession();
     } catch (err) {
       notify("error", `Could not continue run: ${errorMessage(err)}`);
@@ -1161,7 +1162,7 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
                     </Link>
                   </div>
                 )}
-                {session?.pauseReason === "paused_budget" && session.runId && (
+                {session?.status === "awaiting_input" && session?.pauseReason === "paused_budget" && session.runId && (
                   <div className="mx-auto mb-3 flex w-full max-w-[720px] items-center justify-between rounded-xl border border-accent/30 bg-elev px-4 py-3 text-xs text-muted max-[420px]:max-w-none max-[420px]:mx-0">
                     <span>Paused at the run input-token budget. Continue to start a fresh budget window.</span>
                     <button type="button" onClick={() => void handleContinueBudgetRun()} className="ml-3 rounded-lg bg-accent px-3 py-1.5 font-semibold text-accent-fg">Continue</button>

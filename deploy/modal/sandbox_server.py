@@ -50,7 +50,7 @@ sandbox_image = (
         "printf '%s\\n' '{\"executablePath\":\"/usr/bin/chromium\",\"args\":[\"--no-sandbox\",\"--disable-setuid-sandbox\",\"--disable-dev-shm-usage\"]}' > /opt/oh/mermaid-puppeteer.json",
         "fc-cache -f",
         "chmod -R a+rX /opt/oh",
-        "find /opt/oh/packages -type f \\( -name '*.ts' -o -name '*.mjs' -o -name '*.js' -o -name '*.json' \\) -exec sed -i 's/\\r$//' {} +",
+        "find /opt/oh/packages -type f \\( -name '*.ts' -o -name '*.mjs' -o -name '*.js' -o -name '*.json' -o -name '*.py' \\) -exec sed -i 's/\\r$//' {} +",
         "chromium --version && chmod -R a+rX /opt/oh",
         "python3 -c 'import docx, openpyxl, xlsxwriter, pptx, weasyprint, reportlab, pypdf, pdfplumber, matplotlib, seaborn, PIL, pandas; print(\"doc_stack_ok\")' && soffice --version && pdftoppm -v 2>&1 | head -n 1 && pandoc --version | head -n 1",
         "cd /opt/oh && npx esbuild packages/sandboxd/src/hub.ts --bundle --platform=node --target=node22 --format=esm --external:ws --external:playwright --external:playwright-core --outfile=/opt/oh/oh-sandboxd-hub.mjs",

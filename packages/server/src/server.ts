@@ -22,6 +22,7 @@ import type {
 } from "@openharness/sdk";
 import {
   compileSandboxPolicy,
+  assertSafeResolvedExternalUrl,
   createInitialRunState,
   createJobQueue,
   DockerSandboxProvider,
@@ -95,6 +96,16 @@ export type Identity = {
   userId: string;
   admin: boolean;
 };
+
+type TenantProviderModel = { id: string; name: string; contextWindow: number };
+type TenantProviderConfig = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  encryptedApiKey: string;
+  models: TenantProviderModel[];
+};
+const TENANT_PROVIDERS_SETTING = "providers.v1";
 
 export interface OpenHarnessServerConfig {
   host?: string;
@@ -356,6 +367,42 @@ export class OpenHarnessServer {
         this.releaseRunSlot(item.tenantId, runId);
       });
     }
+  }
+  private async getTenantProviderConfigs(tenantId: string): Promise<TenantProviderConfig[]> {
+    const value = await this.stateStore.getTenantSetting(tenantId, TENANT_PROVIDERS_SETTING).catch(() => null);
+    if (!Array.isArray(value)) return [];
+    return value.filter((item): item is TenantProviderConfig => Boolean(
+      item && typeof item === "object" &&
+      typeof (item as TenantProviderConfig).id === "string" &&
+      typeof (item as TenantProviderConfig).name === "string" &&
+      typeof (item as TenantProviderConfig).baseUrl === "string" &&
+      typeof (item as TenantProviderConfig).encryptedApiKey === "string" &&
+      Array.isArray((item as TenantProviderConfig).models)
+    ));
+  }
+  private tenantModelId(tenantId: string, providerId: string, modelId: string): string {
+    const tenant = crypto.createHash("sha256").update(tenantId).digest("hex").slice(0, 12);
+    const model = Buffer.from(modelId, "utf8").toString("base64url");
+    return `guest_${tenant}__${providerId}__${model}`;
+  }
+  private async findTenantModelProvider(tenantId: string | undefined, modelId: string): Promise<{ provider: TenantProviderConfig; model: TenantProviderModel } | undefined> {
+    if (!tenantId) return undefined;
+    const providers = await this.getTenantProviderConfigs(tenantId);
+    for (const provider of providers) {
+      for (const model of provider.models) {
+        if (this.tenantModelId(tenantId, provider.id, model.id) === modelId) return { provider, model };
+      }
+    }
+    return undefined;
+  }
+  private publicTenantProviders(providers: TenantProviderConfig[]): Array<Record<string, unknown>> {
+    return providers.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      baseUrl: provider.baseUrl,
+      hasApiKey: Boolean(provider.encryptedApiKey),
+      models: provider.models.map((model) => ({ ...model })),
+    }));
   }
   private readUserSettings(): Record<string, any> {
     try {
@@ -909,6 +956,7 @@ export class OpenHarnessServer {
             const response = await providerRef.generateTurn({
               runId: toolCtx.runId,
               sessionId: toolCtx.sessionId,
+              tenantId: toolCtx.tenantId,
               model: "sam-3.1",
               systemPrompt: "You are a visual audit model. Analyze the image and return the requested compact JSON only.",
               messages: [imageMessage],
@@ -972,6 +1020,7 @@ export class OpenHarnessServer {
         const res = await providerRef.generateTurn({
           runId: state.runId,
           sessionId: state.sessionId,
+          tenantId: state.tenantId,
           model: state.model,
           systemPrompt:
             "Summarize the transcript into concise bullet points preserving key decisions, modified files, errors, and next steps.",
@@ -1004,6 +1053,7 @@ export class OpenHarnessServer {
       profileOverrides: new Proxy({} as Record<string, Partial<ModelProfile>>, {
         get: (_target, modelId) => {
           if (typeof modelId !== "string") return undefined;
+          if (modelId.startsWith("guest_")) return CONSERVATIVE_DEFAULT_PROFILE;
           const providers = this.readUserSettings().providers;
           if (!providers || typeof providers !== "object") return undefined;
           const configured = Object.values(providers as Record<string, any>).some(
@@ -1033,7 +1083,18 @@ export class OpenHarnessServer {
             usage: { prompt_tokens: 64, completion_tokens: 24 },
           };
         };
-        const httpTransport = createHttpTransport(async (profile, model) => {
+        const httpTransport = createHttpTransport(async (profile, model, tenantId) => {
+          if (model.startsWith("guest_")) {
+            const match = await this.findTenantModelProvider(tenantId, model);
+            if (!match) throw new ProviderHttpError(404, "Tenant provider model is not configured for this account");
+            const safeBaseUrl = await assertSafeResolvedExternalUrl(match.provider.baseUrl);
+            if (safeBaseUrl.protocol !== "https:") throw new ProviderHttpError(400, "Tenant provider endpoint must use HTTPS");
+            let apiKey = "";
+            try { apiKey = this.secretStore.decryptValue(match.provider.encryptedApiKey); } catch {
+              throw new ProviderHttpError(401, "Tenant provider credential could not be decrypted");
+            }
+            return { baseUrl: safeBaseUrl.toString().replace(/\/+$/, ""), apiKey };
+          }
           if (profile.apiKeyEnv === "MUSE_GLIMMER_API_KEY" && process.env.MUSE_GLIMMER_BASE_URL) {
             const providers = this.readUserSettings().providers as Record<string, any> | undefined;
             const hasCustomOverride = Object.values(providers ?? {}).some((entry) =>
@@ -1995,6 +2056,66 @@ export class OpenHarnessServer {
       }
     }
 
+    if (method === "GET" && pathname === "/v1/user/providers") {
+      return { status: 200, body: this.publicTenantProviders(await this.getTenantProviderConfigs(tenantId)) };
+    }
+    const tenantProviderMatch = pathname.match(/^\/v1\/user\/providers\/([A-Za-z0-9_-]{1,40})$/);
+    if (tenantProviderMatch && method === "PUT") {
+      try {
+        const id = tenantProviderMatch[1]!;
+        const name = typeof body?.name === "string" ? body.name.trim() : "";
+        const rawBaseUrl = typeof body?.baseUrl === "string" ? body.baseUrl.trim() : "";
+        if (!name || name.length > 64) return { status: 400, body: { error: "Provider name must be 1–64 characters." } };
+        if (!rawBaseUrl || rawBaseUrl.length > 512) return { status: 400, body: { error: "Enter a valid HTTPS provider URL." } };
+        const safeUrl = await assertSafeResolvedExternalUrl(rawBaseUrl);
+        if (safeUrl.protocol !== "https:") return { status: 400, body: { error: "Guest providers must use HTTPS." } };
+        if (!Array.isArray(body?.models) || body.models.length < 1 || body.models.length > 30) {
+          return { status: 400, body: { error: "Add between 1 and 30 model IDs." } };
+        }
+        const models: TenantProviderModel[] = [];
+        const seenModels = new Set<string>();
+        for (const entry of body.models) {
+          const modelId = typeof entry?.id === "string" ? entry.id.trim() : "";
+          if (!/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$/.test(modelId) || seenModels.has(modelId)) {
+            return { status: 400, body: { error: "Model IDs must be unique and use letters, numbers, dot, underscore, colon, slash, or hyphen." } };
+          }
+          seenModels.add(modelId);
+          const contextWindow = Number(entry?.contextWindow ?? 128_000);
+          models.push({
+            id: modelId,
+            name: typeof entry?.name === "string" && entry.name.trim() ? entry.name.trim().slice(0, 80) : modelId,
+            contextWindow: Number.isFinite(contextWindow) ? Math.min(2_000_000, Math.max(4_096, Math.floor(contextWindow))) : 128_000,
+          });
+        }
+        const providers = await this.getTenantProviderConfigs(tenantId);
+        const existing = providers.find((provider) => provider.id === id);
+        if (!existing && providers.length >= 10) return { status: 400, body: { error: "A guest account can save up to 10 providers." } };
+        const enteredKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : "";
+        if (this.hostedIsolation && !process.env.OPENHARNESS_SECRET_KEY) {
+          return { status: 503, body: { error: "Personal provider keys are unavailable until the server's OPENHARNESS_SECRET_KEY is configured." } };
+        }
+        const removeKey = body?.removeApiKey === true;
+        const encryptedApiKey = removeKey
+          ? ""
+          : enteredKey
+            ? this.secretStore.encryptValue(enteredKey)
+            : existing?.encryptedApiKey ?? "";
+        if (!encryptedApiKey) return { status: 400, body: { error: "Enter an API key to use this provider." } };
+        const next: TenantProviderConfig = { id, name, baseUrl: safeUrl.toString().replace(/\/+$/, ""), encryptedApiKey, models };
+        const updated = [...providers.filter((provider) => provider.id !== id), next];
+        await this.stateStore.setTenantSetting(tenantId, TENANT_PROVIDERS_SETTING, updated);
+        return { status: 200, body: this.publicTenantProviders(updated).find((provider) => provider.id === id) };
+      } catch (error) {
+        return { status: 400, body: { error: error instanceof Error ? error.message : "Could not save provider." } };
+      }
+    }
+    if (tenantProviderMatch && method === "DELETE") {
+      const providers = await this.getTenantProviderConfigs(tenantId);
+      const updated = providers.filter((provider) => provider.id !== tenantProviderMatch[1]);
+      await this.stateStore.setTenantSetting(tenantId, TENANT_PROVIDERS_SETTING, updated);
+      return { status: 200, body: { deleted: true } };
+    }
+
     // --- Catalog routes ---
     if (method === "GET" && pathname === "/v1/info") {
       return {
@@ -2274,6 +2395,20 @@ export class OpenHarnessServer {
           isDefault: defaultModelId === "muse-glimmer",
         });
       }
+      for (const tenantProvider of await this.getTenantProviderConfigs(tenantId)) {
+        if (!tenantProvider.encryptedApiKey) continue;
+        for (const model of tenantProvider.models) {
+          const id = this.tenantModelId(tenantId, tenantProvider.id, model.id);
+          modelMap.set(id, {
+            id,
+            name: model.name,
+            provider: tenantProvider.name,
+            providerDetail: "Your private provider",
+            contextWindow: model.contextWindow,
+            isDefault: false,
+          });
+        }
+      }
       return { status: 200, body: Array.from(modelMap.values()) };
     }
 
@@ -2428,6 +2563,7 @@ export class OpenHarnessServer {
           const result = await this.deps.provider.generateTurn({
             runId: state.runId,
             sessionId: state.sessionId,
+            tenantId: state.tenantId,
             model: state.model,
             systemPrompt: "Summarize the transcript into concise bullet points preserving key decisions, modified files, errors, and next steps.",
             messages: [{

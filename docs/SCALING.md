@@ -28,6 +28,8 @@ OpenHarness separates the stateless HTTP/SSE API layer from durable worker execu
 
 The adapter contract includes tenant-scoped schedule record storage. Migration `003_schedules.sql` adds the PostgreSQL table, and `LocalStateStore` stores records in its snapshot. This does not yet make the `/v1/schedules` manager durable: that route still uses process-local state, and PostgreSQL/Redis integration plus multi-node replay coverage remains required before distributed readiness can be claimed.
 
+Guest-owned OpenAI-compatible provider settings use tenant-scoped `StateStore` operations. `LocalStateStore` persists them in its state snapshot, while `PostgresStateStore` enforces `(tenant_id, setting_key)` predicates and migration `004_tenant_settings.sql` creates the table. API keys are encrypted before entering the state store with the server's stable `OPENHARNESS_SECRET_KEY`; hosted writes fail closed when it is missing, and API responses return only `hasApiKey`. The browser's selected default model remains local to that browser. This adapter addition has focused tests, but it does not establish multi-node Postgres/Redis replay readiness.
+
 ## Architecture Overview
 
 1. **Control Plane (`packages/server`, `packages/core`)**:

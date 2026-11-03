@@ -41,6 +41,15 @@ export interface HttpClientOptions {
   };
 }
 
+export interface TenantProviderModelInput { id: string; name?: string; contextWindow?: number }
+export interface TenantProviderView {
+  id: string;
+  name: string;
+  baseUrl: string;
+  hasApiKey: boolean;
+  models: TenantProviderModelInput[];
+}
+
 export class HttpOpenHarnessClient {
   private readonly base: string;
   private readonly token?: string;
@@ -543,6 +552,22 @@ export class HttpOpenHarnessClient {
         { section, value, force }
       );
     },
+  };
+
+  readonly userProviders = {
+    list: async (): Promise<TenantProviderView[]> => this.request<TenantProviderView[]>("GET", "/v1/user/providers"),
+    save: async (id: string, provider: {
+      name: string;
+      baseUrl: string;
+      apiKey?: string;
+      removeApiKey?: boolean;
+      models: TenantProviderModelInput[];
+    }): Promise<TenantProviderView> => this.request<TenantProviderView>(
+      "PUT",
+      `/v1/user/providers/${encodeURIComponent(id)}`,
+      provider,
+    ),
+    delete: async (id: string): Promise<void> => this.request<void>("DELETE", `/v1/user/providers/${encodeURIComponent(id)}`),
   };
 
   readonly secrets = {

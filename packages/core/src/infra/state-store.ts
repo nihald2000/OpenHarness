@@ -26,6 +26,7 @@ export interface PersistedStateDocument {
   schedules?: Record<string, ScheduleRecord & { tenantId?: string }>;
   sandboxes?: Record<string, any>;
   envImages?: Record<string, { imageId: string; expiresAt: number }>;
+  tenantSettings?: Record<string, Record<string, unknown>>;
 }
 
 export class InProcessEventBus implements EventBus {
@@ -103,6 +104,7 @@ export class LocalStateStore implements StateStore {
       schedules: {},
       sandboxes: {},
       envImages: {},
+      tenantSettings: {},
     };
     if (this.filePath && fs.existsSync(this.filePath)) {
       try {
@@ -120,6 +122,7 @@ export class LocalStateStore implements StateStore {
         empty.schedules = parsed.schedules ?? {};
         empty.sandboxes = parsed.sandboxes ?? {};
         empty.envImages = parsed.envImages ?? {};
+        empty.tenantSettings = parsed.tenantSettings ?? {};
       } catch {
         // ignore corrupt state snapshot and recover from events.jsonl if present
       }
@@ -177,6 +180,28 @@ export class LocalStateStore implements StateStore {
       }, waitMs);
       this.pendingTimer.unref?.();
     }
+  }
+
+  async getTenantSetting(tenantId: string, key: string): Promise<unknown | null> {
+    if (!tenantId || !key) return null;
+    return this.doc.tenantSettings?.[tenantId]?.[key] ?? null;
+  }
+
+  async setTenantSetting(tenantId: string, key: string, value: unknown): Promise<void> {
+    if (!tenantId || !key) throw new Error("Tenant ID and setting key are required");
+    this.doc.tenantSettings ??= {};
+    this.doc.tenantSettings[tenantId] ??= {};
+    this.doc.tenantSettings[tenantId]![key] = value;
+    this.persistToDisk(true);
+  }
+
+  async deleteTenantSetting(tenantId: string, key: string): Promise<void> {
+    if (!tenantId || !key) return;
+    const settings = this.doc.tenantSettings?.[tenantId];
+    if (!settings || !(key in settings)) return;
+    delete settings[key];
+    if (Object.keys(settings).length === 0) delete this.doc.tenantSettings![tenantId];
+    this.persistToDisk(true);
   }
 
   async getSession(tenantId: string, sessionId: string): Promise<Session | null> {

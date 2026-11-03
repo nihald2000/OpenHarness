@@ -2,9 +2,13 @@
 
 OpenHarness is a long-horizon agent workspace for building, testing, and reviewing software and polished documents. Its durable run engine, tenant-scoped APIs, and Vite SPA pair real model-provider integrations with isolated workspaces and sandbox runtimes.
 
+Licensed under the MIT License; see [LICENSE](LICENSE).
+
 **Live demo:** [openharness-web-six.vercel.app](https://openharness-web-six.vercel.app/)
 
 ## Meta Global AI Developer Hackathon — Push the Frontier
+
+**Scope & Original Hackathon Work (Oct 26 – Nov 4, 2026):** During the event window, we engineered the durable, verifiable browser-check and fix loop; isolated Modal live-browser screencasting and human takeover; orchestration across Muse Spark 1.3, Muse Spark 1.3 Contributor, Muse Wonder 1.0, self-hosted Muse Glimmer 30B on Modal GPU, Muse Image 1.0, Muse Voice Transcribe, and SAM 3.1 `visual_segment_audit`; plus the multimodal Document Studio and approval-gated import of untrusted MCP skills. The surrounding workspace and agent scaffolding predated the event; these are the hackathon-built capabilities.
 
 OpenHarness combines a coding and document agent loop with real browser checks, user takeover, voice notes, and visual evidence. The static Vercel SPA connects to the Modal control plane and isolated Modal sandbox hub; the optional Muse Glimmer GPU endpoint is discovered by the Modal app when deployed.
 
@@ -83,6 +87,8 @@ Muse Glimmer deployment is optional: normal operation works with `MODEL_API_KEY`
 ## Hosted Modal guest isolation
 
 The hosted deployment uses signed per-browser guest tenants and limits guests to one active run and 20 runs per day by default, with a global cap of two when deployed through `deploy/modal/web_server.py` (`OH_MAX_ACTIVE_RUNS`). The pinned Modal hub receives only a dedicated `OH_MODAL_SANDBOX_KEY`, runs each Linux session shell under a distinct non-root UID, and keeps session workspace/home/tmp directories private. Store the key in `openharness-sandbox-key`; never attach the `openharness-server` secret to the hub. Rotate the key by updating its dedicated secret and redeploying both Modal apps. Hub sessions still share a network namespace, and public preview ports are unauthenticated. See [Modal deployment and security details](deploy/modal/README.md).
+
+Guests can set a browser-local default model and add personal HTTPS OpenAI-compatible endpoints under Settings. Each endpoint and encrypted API key is stored under the signed guest tenant; responses reveal only whether a key exists. Hosted deployments must set a stable `OPENHARNESS_SECRET_KEY` in the server secret before guests can save provider credentials. These settings do not grant access to administrator provider configuration or secrets.
 
 ## Development, Building & Testing
 

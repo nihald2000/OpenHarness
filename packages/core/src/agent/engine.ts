@@ -549,6 +549,7 @@ export async function runStep(
     const wrapTurn = await deps.provider.generateTurn({
       runId: state.runId,
       sessionId: state.sessionId,
+      tenantId: state.tenantId,
       model: state.model,
       systemPrompt: "Provide a concise wrap-up summary of progress and remaining work.",
       messages: [...messages, wrapUpUserMsg],
@@ -740,7 +741,7 @@ export async function runStep(
   }
 
   const availableTools = state.toolsDisabled ? [] : deps.toolRouter.listTools(state);
-  const inputBudget = Number(process.env.OH_MAX_INPUT_TOKENS_PER_RUN ?? 300_000);
+  const inputBudget = Number(process.env.OH_MAX_INPUT_TOKENS_PER_RUN ?? 800_000);
   const pauseForInputBudget = (state.inputTokensThisRun ?? 0) >= inputBudget;
   const assistantMsgId = `msg-a-${state.runId}-${state.iteration + 1}`;
   state.assistantMessageId = assistantMsgId;
@@ -784,6 +785,7 @@ export async function runStep(
   const turnResponse = await deps.provider.generateTurn({
     runId: state.runId,
     sessionId: state.sessionId,
+    tenantId: state.tenantId,
     model: state.model,
     systemPrompt: pauseForInputBudget
       ? "Summarize progress and concrete next steps for the user. No tools are available."
@@ -883,7 +885,8 @@ export async function runStep(
         (t) =>
           t.name === rawCall.name ||
           (rawCall.name === "load_skill" && t.name === "skill") ||
-          (rawCall.name === "grep" && t.name === "search")
+          (rawCall.name === "grep" && t.name === "search") ||
+          (rawCall.name === "visual_audit" && t.name === "visual_segment_audit")
       );
       const rawTool = deps.toolRouter.getTool(rawCall.name);
       const isReadOnlyContext =
