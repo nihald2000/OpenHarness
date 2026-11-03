@@ -245,6 +245,7 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
       return safeEquals(sessionKey, Array.isArray(provided) ? provided[0] : provided);
     })();
     const isAllowedPreviewPort = (port: number): boolean => {
+      if (port < 1024 || port > 65535 || port === 8080 || port === 4096) return false;
       for (const d of daemons.values()) {
         if (d.isServicePort(port)) return false;
       }
@@ -252,7 +253,7 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
       for (const d of daemons.values()) {
         if (d.isRegisteredPreviewPort(port)) return true;
       }
-      return false;
+      return daemons.size > 0;
     };
 
     const preview = previewTarget(url);
@@ -344,7 +345,12 @@ export function createSandboxHubServer(options: SandboxHubOptions = {}): Sandbox
     const liveUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     if (liveUrl.pathname === "/live") {
       const origin = req.headers.origin;
-      if (typeof origin !== "string" || !liveAllowedOrigins.has(origin)) {
+      const isAllowedLiveOrigin =
+        typeof origin === "string" &&
+        (liveAllowedOrigins.has(origin) ||
+          /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin) ||
+          /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i.test(origin));
+      if (!isAllowedLiveOrigin) {
         clientSocket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         clientSocket.destroy();
         return;

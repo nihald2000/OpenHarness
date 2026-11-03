@@ -156,7 +156,11 @@ export function createRunHooks(ctx: RunHooksContext) {
       const attached = await reattachModalSandbox(state, existingHandleId);
       if (attached) return attached;
     }
-    const runtime = state.runtime || session?.runtime || "local";
+    const modalConfigured = Boolean(process.env.OH_MODAL_SANDBOX_URL && process.env.OH_MODAL_SANDBOX_KEY && ctx.providers.has("modal"));
+    const rawRuntime = state.runtime || session?.runtime || (modalConfigured ? "modal" : "local");
+    const runtime = rawRuntime === "local" && modalConfigured && Boolean(process.env.MODAL_ENVIRONMENT || process.env.OPENHARNESS_WEB_GUEST === "1")
+      ? "modal"
+      : rawRuntime;
 
     const provider = ctx.providers.get(runtime);
     if (!provider) {

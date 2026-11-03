@@ -578,6 +578,31 @@ export class SandboxDaemon {
     if (method === "GET" && pathname === "/browser/network_errors") {
       return { status: 200, body: { errors: this.browserState.networkErrors } };
     }
+    if (method === "POST" && pathname === "/browser/observe") {
+      const snap = await this.browserSnapshot();
+      const shot = await this.browserScreenshot();
+      const text = this.browserState.html
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 3000);
+      return {
+        status: 200,
+        body: {
+          ...snap.body,
+          text,
+          screenshotJpegBase64: shot.body.dataBase64,
+        },
+      };
+    }
+    if (method === "POST" && pathname === "/browser/visual_regions") {
+      return { status: 200, body: { width: 1280, height: 800, regions: [] } };
+    }
+    if (method === "POST" && pathname === "/browser/input") {
+      return { status: 200, body: { ok: true } };
+    }
 
     // --- IPython Route ---
     if (method === "POST" && pathname === "/ipython/exec") {
@@ -640,6 +665,29 @@ export class SandboxDaemon {
     const urlMatches = isNetCmd ? command.match(/https?:\/\/[^\s"';|&)+]+|\b169\.254\.169\.254\b/g) : null;
     if (urlMatches) {
       for (const u of urlMatches) {
+        let isLocalDevServer = false;
+        try {
+          const parsed = new URL(u.includes("://") ? u : `http://${u}`);
+          const p = Number(parsed.port || 0);
+          const isLoop =
+            parsed.hostname === "127.0.0.1" ||
+            parsed.hostname === "localhost" ||
+            parsed.hostname === "0.0.0.0";
+          if (
+            isLoop &&
+            p >= 1024 &&
+            p <= 65535 &&
+            p !== 8080 &&
+            p !== 4096 &&
+            p !== 6379 &&
+            p !== 5432 &&
+            p !== 9200 &&
+            !this.servicePorts.has(p)
+          ) {
+            isLocalDevServer = true;
+          }
+        } catch {}
+        if (isLocalDevServer) continue;
         const netCheck = evaluateNetworkAccess(this.config.policy, u, "GET");
         if (!netCheck.allowed) {
           this.emitViolation("network", u, netCheck.reason);

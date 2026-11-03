@@ -669,11 +669,10 @@ export class OpenHarnessServer {
     ) {
       this.defaultRuntime = "modal";
     }
-    if (
-      this.hostedIsolation && pinnedModalUrl && pinnedModalKey &&
-      !rawSavedRuntime && !envDefaultRuntime && !this.config.defaultRuntime
-    ) {
-      this.defaultRuntime = "modal";
+    if (this.hostedIsolation && pinnedModalUrl && pinnedModalKey) {
+      if (!rawSavedRuntime || rawSavedRuntime === "local") {
+        this.defaultRuntime = "modal";
+      }
     }
 
     this.providers =
@@ -744,9 +743,13 @@ export class OpenHarnessServer {
       resolvePreviewUrl: async (sandboxId, port) => {
         const handle = this.activeSandboxes.get(sandboxId);
         if (handle?.ports?.[port]) return handle.ports[port];
-        if (handle?.providerId === "modal") {
-          return (this.providers.get("modal") as { resolveTunnelUrl?: (id: string, p: number) => Promise<string | undefined> } | undefined)
+        if (handle?.providerId === "modal" || (this.hostedIsolation && process.env.OPENHARNESS_PREVIEW_BASE_URL)) {
+          const modalTunnel = await (this.providers.get("modal") as { resolveTunnelUrl?: (id: string, p: number) => Promise<string | undefined> } | undefined)
             ?.resolveTunnelUrl?.(sandboxId, port);
+          if (modalTunnel) return modalTunnel;
+          if (process.env.OPENHARNESS_PREVIEW_BASE_URL) {
+            return `${process.env.OPENHARNESS_PREVIEW_BASE_URL.replace(/\/+$/, "")}/preview/${port}/`;
+          }
         }
         return undefined;
       },
@@ -1071,7 +1074,7 @@ export class OpenHarnessServer {
             runId: state.runId,
             phase: "agent",
             workspacePath: isModal ? "/workspace" : sessionWorkspaceRoot,
-            networkMode: "allowlist",
+            networkMode: "open",
           }),
           allowUnsandboxedAutonomy: this.config.allowUnsandboxedAutonomy,
         };
@@ -1713,10 +1716,86 @@ export class OpenHarnessServer {
       }
       const key = process.env.OH_MODAL_SANDBOX_KEY ?? "";
       const endpoint = process.env.OH_MODAL_SANDBOX_URL ?? "";
-      if (key.length < 32 || !endpoint) return { status: 503, body: { error: "Live browser is not configured" } };
-      const wsBase = endpoint.replace(/^http/i, "ws").replace(/\/+$/, "");
-      const ticket = signLiveTicket(sandboxId, mode, key);
-      return { status: 200, body: { url: `${wsBase}/live?ticket=${encodeURIComponent(ticket)}` } };
+      if (key.length >= 32 && endpoint && sandboxId.startsWith("modal_")) {
+        const wsBase = endpoint.replace(/^http/i, "ws").replace(/\/+$/, "");
+        const ticket = signLiveTicket(sandboxId, mode, key);
+        return { status: 200, body: { url: `${wsBase}/live?ticket=${encodeURIComponent(ticket)}`, mode: "websocket" } };
+      }
+      return { status: 200, body: { url: "", mode: "http-poll", sessionId } };
+    }
+
+    const browserStateMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/browser\/state$/);
+    if (method === "GET" && browserStateMatch) {
+      const sessionId = decodeURIComponent(browserStateMatch[1]!);
+      const session = await this.stateStore.getSession(tenantId, sessionId);
+      if (!session) return { status: 404, body: { error: "Session not found" } };
+      const runId = session.activeRunId ?? session.runId;
+      const checkpoint = runId ? await this.stateStore.getStepCheckpoint(tenantId, runId) : null;
+      const daemon = await this.resolveSessionDaemon(session);
+      const transport = session.sandboxHandleId ? this.activeSandboxes.get(session.sandboxHandleId)?.transport : undefined;
+      if (!daemon && !transport) {
+        return {
+          status: 200,
+          body: {
+            active: false,
+            url: checkpoint?.state.previewUrl ?? "",
+            title: session.title || "Sandbox Browser",
+            previewUrl: checkpoint?.state.previewUrl ?? null,
+            screenshotJpegBase64: null,
+            ports: [],
+          },
+        };
+      }
+      const [observed, portsRes] = await Promise.all([
+        daemon
+          ? daemon.handleRequest("POST", "/browser/observe", { "x-session-key": daemon.config.sessionKey }, {})
+          : transport!.request("POST", "/browser/observe", {}),
+        daemon
+          ? daemon.handleRequest("GET", "/ports", { "x-session-key": daemon.config.sessionKey })
+          : transport!.request("GET", "/ports"),
+      ]).catch(() => [{ status: 503, body: {} as Record<string, unknown> }, { status: 200, body: { ports: [] } as Record<string, unknown> }]);
+      const obsBody = (observed?.body ?? {}) as Record<string, unknown>;
+      const rawPorts = Array.isArray((portsRes?.body as any)?.ports) ? ((portsRes!.body as any).ports as Array<{ port: number; previewUrl?: string }>) : [];
+      const latestPort = rawPorts[rawPorts.length - 1]?.port;
+      const effectivePreviewUrl =
+        checkpoint?.state.previewUrl ??
+        (latestPort
+          ? process.env.OPENHARNESS_PREVIEW_BASE_URL
+            ? `${process.env.OPENHARNESS_PREVIEW_BASE_URL.replace(/\/+$/, "")}/preview/${latestPort}/`
+            : `/preview/${latestPort}/`
+          : null);
+      return {
+        status: 200,
+        body: {
+          active: true,
+          url: String(obsBody.url ?? effectivePreviewUrl ?? ""),
+          title: String(obsBody.title ?? ""),
+          text: String(obsBody.text ?? ""),
+          snapshot: String(obsBody.snapshot ?? ""),
+          screenshotJpegBase64: typeof obsBody.screenshotJpegBase64 === "string" ? obsBody.screenshotJpegBase64 : null,
+          previewUrl: effectivePreviewUrl,
+          ports: rawPorts,
+        },
+      };
+    }
+
+    const browserActionMatch = pathname.match(/^\/v1\/sessions\/([^/]+)\/browser\/action$/);
+    if (method === "POST" && browserActionMatch) {
+      const sessionId = decodeURIComponent(browserActionMatch[1]!);
+      const session = await this.stateStore.getSession(tenantId, sessionId);
+      if (!session) return { status: 404, body: { error: "Session not found" } };
+      const daemon = await this.resolveSessionDaemon(session);
+      const transport = session.sandboxHandleId ? this.activeSandboxes.get(session.sandboxHandleId)?.transport : undefined;
+      if (!daemon && !transport) return { status: 409, body: { error: "Session has no active browser sandbox" } };
+      const action = String(body?.action ?? "navigate");
+      if (!["navigate", "input", "click", "type", "press", "observe"].includes(action)) {
+        return { status: 400, body: { error: "Unsupported browser action" } };
+      }
+      const actionPayload = (body?.payload && typeof body.payload === "object" ? body.payload : body ?? {}) as Record<string, unknown>;
+      const result = daemon
+        ? await daemon.handleRequest("POST", `/browser/${action}`, { "x-session-key": daemon.config.sessionKey }, actionPayload)
+        : await transport!.request("POST", `/browser/${action}`, actionPayload);
+      return { status: result.status, body: result.body };
     }
 
     if (method === "GET" && pathname === "/v1/admin/session") {
@@ -2096,7 +2175,9 @@ export class OpenHarnessServer {
         agent: typeof payload.agent === "string" ? payload.agent : "assistant",
         model: selectedModel,
         runtime:
-          typeof payload.runtime === "string" ? payload.runtime : this.defaultRuntime,
+          typeof payload.runtime === "string" && !(this.hostedIsolation && this.defaultRuntime === "modal" && payload.runtime === "local")
+            ? payload.runtime
+            : this.defaultRuntime,
         mode: (payload.mode as "chat" | "ask" | "task" | "long_task") ?? "task",
         status: "idle",
         updatedAt: Date.now(),

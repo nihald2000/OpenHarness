@@ -88,6 +88,90 @@ function isOriginAllowed(origin: string): boolean {
   return false;
 }
 
+function parsePreviewRoute(urlStr: string): { port: number; targetPath: string } | null {
+  const m = urlStr.match(/^\/preview\/(\d{1,5})(\/[^?#]*)?(\?[^#]*)?$/);
+  if (!m) return null;
+  const port = Number(m[1]);
+  if (port < 1024 || port > 65535 || port === 8080 || port === 4096 || port === 5432 || port === 6379) return null;
+  return { port, targetPath: `${m[2] || "/"}${m[3] || ""}` };
+}
+
+function parseRefererPreviewPort(referer: string | undefined): number | null {
+  if (!referer) return null;
+  try {
+    const u = new URL(referer);
+    const m = u.pathname.match(/^\/preview\/(\d{1,5})(?:\/|$)/);
+    if (!m) return null;
+    const port = Number(m[1]);
+    return port >= 1024 && port <= 65535 && port !== 8080 && port !== 4096 && port !== 5432 && port !== 6379 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+function proxyLocalOrModalPreview(req: http.IncomingMessage, res: http.ServerResponse, port: number, targetPath: string): void {
+  res.removeHeader("x-frame-options");
+  res.setHeader("referrer-policy", "same-origin");
+  const localReq = http.request(
+    {
+      hostname: "127.0.0.1",
+      port,
+      method: req.method,
+      path: targetPath,
+      headers: { ...req.headers, host: `127.0.0.1:${port}` },
+    },
+    (upRes) => {
+      const headers = { ...upRes.headers };
+      delete headers["x-frame-options"];
+      res.writeHead(upRes.statusCode ?? 502, headers);
+      upRes.pipe(res);
+    }
+  );
+  localReq.on("error", async () => {
+    const modalUrl = process.env.OH_MODAL_SANDBOX_URL?.trim().replace(/\/+$/, "");
+    const modalKey = process.env.OH_MODAL_SANDBOX_KEY?.trim() ?? "";
+    if (modalUrl) {
+      try {
+        const target = `${modalUrl}/preview/${port}${targetPath.startsWith("/") ? targetPath : `/${targetPath}`}`;
+        const resp = await fetch(target, {
+          method: req.method ?? "GET",
+          headers: {
+            ...(modalKey ? { "x-session-key": modalKey } : {}),
+            accept: String(req.headers.accept ?? "*/*"),
+          },
+          redirect: "manual",
+          signal: AbortSignal.timeout(15_000),
+        });
+        const outHeaders: Record<string, string> = {};
+        resp.headers.forEach((v, k) => {
+          if (k.toLowerCase() !== "x-frame-options" && k.toLowerCase() !== "content-encoding" && k.toLowerCase() !== "transfer-encoding") {
+            outHeaders[k] = v;
+          }
+        });
+        const buf = Buffer.from(await resp.arrayBuffer());
+        outHeaders["content-length"] = String(buf.byteLength);
+        res.writeHead(resp.status, outHeaders);
+        res.end(buf);
+        return;
+      } catch {
+        // Fall through to starting message
+      }
+    }
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
+    const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="2"><style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:grid;place-items:center;height:90vh;margin:0;text-align:center}.card{border:1px solid #334155;background:#1e293b;padding:24px 32px;border-radius:12px;max-width:420px}h2{margin:0 0 8px;font-size:16px}p{margin:0;font-size:13px;color:#94a3b8}</style></head><body><div class="card"><h2>Preview server on port ${port} is starting…</h2><p>This page will refresh automatically as soon as port ${port} accepts connections.</p></div></body></html>`;
+    res.writeHead(502, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": String(Buffer.byteLength(html)),
+      "cache-control": "no-store",
+    });
+    res.end(html);
+  });
+  req.pipe(localReq);
+}
+
 export function createHttpServer(
   app: OpenHarnessServer,
   cfg?: Partial<LoadedServerConfig>
@@ -126,6 +210,22 @@ export function createHttpServer(
       if (url.pathname === "/health") {
         const health = await app.handleRequest("GET", "/health", {});
         return send(res, health.status, health.body, health.headers);
+      }
+      const barePreviewMatch = url.pathname.match(/^\/preview\/(\d{1,5})$/);
+      if (req.method === "GET" && barePreviewMatch) {
+        res.removeHeader("x-frame-options");
+        res.writeHead(302, { location: `/preview/${barePreviewMatch[1]}/${url.search}` });
+        return res.end();
+      }
+      const previewMatch = parsePreviewRoute(req.url ?? "/");
+      if (previewMatch) {
+        proxyLocalOrModalPreview(req, res, previewMatch.port, previewMatch.targetPath);
+        return;
+      }
+      const refererPreviewPort = parseRefererPreviewPort(typeof req.headers.referer === "string" ? req.headers.referer : undefined);
+      if (req.method === "GET" && refererPreviewPort && !url.pathname.startsWith("/v1/") && url.pathname !== "/health") {
+        proxyLocalOrModalPreview(req, res, refererPreviewPort, `${url.pathname}${url.search}`);
+        return;
       }
       if (req.method === "GET" && url.pathname === "/v1/internal/hold") {
         if (!sameSecret(req.headers["x-oh-internal"], INTERNAL_HOLD_KEY)) {
@@ -200,6 +300,7 @@ export function createHttpServer(
         const unsafeInlineMime = Boolean(file.mimeType && /^(?:text\/html|image\/svg\+xml|application\/xhtml\+xml|text\/xml|application\/xml)/i.test(file.mimeType));
         const forceAttachment = url.searchParams.get("download") === "1" || unsafeInlineMime;
         const safeName = (file.filename ?? "download").replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
+        res.removeHeader("x-frame-options");
         res.writeHead(200, {
           "content-type": file.mimeType ?? "application/octet-stream",
           "content-length": String(file.buffer.byteLength),

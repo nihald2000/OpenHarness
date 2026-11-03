@@ -57,6 +57,15 @@ const studioSkills: LoadedSkill[] = studioSkillRows.map(([id, name, triggers, bo
 export const BUILTIN_SKILLS: LoadedSkill[] = [
   ...studioSkills,
   {
+    id: "agent-desktop",
+    name: "agent-desktop",
+    source: "builtin",
+    description:
+      "Computer use and semantic UI observation workflow inspired by vercel-labs/agent-desktop: snapshot accessibility trees with snapshot-qualified refs, act deterministically, and re-observe.",
+    triggers: ["agent-desktop", "desktop app", "computer use", "accessibility tree", "native ui"],
+    content: "# Agent Desktop & Semantic UI Observation Skill (vercel-labs/agent-desktop)\n\n## Core Observation-Action-Verification Loop\n1. **Observe First**: Capture an accessibility snapshot with element refs before acting (browser_snapshot for web apps, or agent-desktop snapshot -i when driving native OS apps).\n2. **Act on Qualified Refs**: Every element ref belongs to the snapshot it was observed in ([ref=eN] in web snapshots or @snapshot_id:eN in agent-desktop). Never guess coordinates when an accessibility ref is available.\n3. **Re-Observe After Every State Change**: After clicking, typing, or navigating, always take a fresh snapshot to verify the UI transition and obtain updated refs before the next action.\n4. **Human Takeover When Blocked**: When login, 2FA, CAPTCHA, or subjective visual inspection is required, call request_takeover with clear instructions so the user can interact directly in the Live Browser dock and return control.",
+  },
+  {
     id: "fullstack-web-app",
     name: "fullstack-web-app",
     source: "builtin",

@@ -33,6 +33,9 @@ const NOTHING_TO_COMPACT = "Nothing to compact yet.";
 
 function maskModalPreviewUrl(value: string | null | undefined): string | null {
   if (!value) return null;
+  if (value.startsWith("/preview/")) {
+    return `${window.location.origin}${value}`;
+  }
   try {
     const url = new URL(value);
     if (
@@ -41,6 +44,15 @@ function maskModalPreviewUrl(value: string | null | undefined): string | null {
       url.pathname.startsWith("/preview/")
     ) {
       return `${window.location.origin}${url.pathname}${url.search}${url.hash}`;
+    }
+    if (
+      (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "0.0.0.0") &&
+      url.port &&
+      url.port !== "3000" &&
+      url.port !== "4096" &&
+      url.port !== "8080"
+    ) {
+      return `${window.location.origin}/preview/${url.port}${url.pathname === "/" ? "/" : url.pathname}${url.search}${url.hash}`;
     }
   } catch {
     // Keep non-URL values out of the preview link state.
@@ -168,17 +180,34 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
         setQuestionAnswer("");
       } else if (ev.type === "takeover.requested") {
         setTakeover({ runId: ev.runId, reason: ev.reason, instructions: ev.instructions });
+        setStudioOpen(false);
         setBrowserDock("expanded");
       } else if (ev.type === "verify:browser_check") {
         setBrowserVerification({ check: ev.check, status: ev.status });
-      } else if (ev.type === "part.updated" && ev.part.type === "tool" && ev.part.tool.startsWith("browser_")) {
-        if (!browserAutoOpened.current) {
+      } else if (
+        ev.type === "part.updated" &&
+        ev.part.type === "tool" &&
+        (ev.part.tool.startsWith("browser_") || ev.part.tool === "process_start" || ev.part.tool === "preview_url" || ev.part.tool === "request_takeover")
+      ) {
+        const outObj = ev.part.output && typeof ev.part.output === "object" ? (ev.part.output as Record<string, unknown>) : undefined;
+        if (typeof outObj?.previewUrl === "string") {
+          setPreviewUrl(maskModalPreviewUrl(outObj.previewUrl));
+        }
+        setStudioOpen(false);
+        if (ev.part.tool === "request_takeover") {
+          setBrowserDock("expanded");
+        } else if (!browserAutoOpened.current) {
           browserAutoOpened.current = true;
           setBrowserDock("docked");
         }
       } else if (ev.type === "preview.ready") {
         pendingStateRevision.current += 1;
         setPreviewUrl(maskModalPreviewUrl(ev.url));
+        setStudioOpen(false);
+        if (!browserAutoOpened.current) {
+          browserAutoOpened.current = true;
+          setBrowserDock("docked");
+        }
       } else if (ev.type === "run.completed") {
         pendingStateRevision.current += 1;
         if (ev.changedFiles) setChangedFiles(ev.changedFiles);
@@ -231,7 +260,9 @@ export function ChatView({ sessionId }: { sessionId?: string }) {
     const count = messages.reduce((total, message) => total + message.parts.reduce((sum, part) => {
       if (part.type !== "tool") return sum;
       const artifacts = part.metadata?.artifacts;
-      return sum + (Array.isArray(artifacts) ? artifacts.length : 0);
+      if (!Array.isArray(artifacts)) return sum;
+      const studioArtifacts = artifacts.filter((a: any) => a && a.kind && a.kind !== "html");
+      return sum + studioArtifacts.length;
     }, 0), 0);
     if (artifactSessionSeen.current !== sessionId) {
       artifactSessionSeen.current = sessionId;
